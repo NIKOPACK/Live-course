@@ -1,0 +1,32 @@
+import { describe, it, expect } from 'vitest';
+import enUS from '@/lib/i18n/locales/en-US.json';
+import zhCN from '@/lib/i18n/locales/zh-CN.json';
+
+const locales = {
+  'en-US': enUS,
+  'zh-CN': zhCN,
+};
+
+// New keys introduced for the TTS provider-enablement model (#665).
+const KEYS = [
+  'settings.ttsProviderEnabledLabel',
+  'settings.ttsProviderEnabledHint',
+  'settings.ttsProviderUnavailableHint',
+  'settings.ttsProviderDisabledByAdmin',
+];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- locale JSON traversal
+const get = (o: any, k: string) => k.split('.').reduce((a, p) => a?.[p], o);
+
+describe('TTS enablement locale coverage (#665)', () => {
+  it('every key exists, non-empty, and does not echo the key, in all shipped locales', () => {
+    for (const [code, data] of Object.entries(locales)) {
+      for (const k of KEYS) {
+        const v = get(data, k);
+        expect(typeof v, `${code} missing ${k}`).toBe('string');
+        expect((v as string).trim(), `${code} empty ${k}`).not.toBe('');
+        expect(v, `${code} echoes ${k}`).not.toBe(k);
+      }
+    }
+  });
+});

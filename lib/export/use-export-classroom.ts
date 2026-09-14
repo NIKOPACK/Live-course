@@ -1,0 +1,223 @@
+'use client';
+
+import { useState, useCallback } from 'react';
+import { saveAs } from 'file-saver';
+import { toast } from 'sonner';
+import { useStageStore } from '@/lib/store/stage';
+import { useI18n } from '@/lib/hooks/use-i18n';
+import {
+  CLASSROOM_ZIP_FORMAT_VERSION,
+  CLASSROOM_ZIP_EXTENSION,
+  manifestAgentFromConfig,
+  type ClassroomManifest,
+  type ManifestStage,
+  type ManifestAgent,
+  type ManifestScene,
+  type MediaIndexEntry,
+} from './classroom-zip-types';
+import { collectAudioFiles, collectMediaFiles, actionsToManifest } from './classroom-zip-utils';
+import type { SpeechAction } from '@/lib/types/action';
+import { createLogger } from '@/lib/logger';
+import {
+  inlineHtmlAssets,
+  createAssetFetcher,
+  type InlineOptions,
+  type InlineReport,
+} from './inline-assets';
+import { createProxiedFetch } from './proxied-fetch';
+import type { SceneContent } from '@/lib/types/stage';
+import { preparePBLScenesForDocumentPersistence } from '@/lib/pbl/v2/runtime/document-persistence';
+import { accessDocument } from '@/lib/document-store';
+
+export async function inlineSceneContent(
+  content: SceneContent,
+  options?: InlineOptions,
+): Promise<{ content: SceneContent; report: InlineReport }> {
+  if (content?.type !== 'interactive' || !('html' in content) || !content.html) {
+    return { content, report: { inlined: [], failed: [] } };
+  }
+  const { html, report } = await inlineHtmlAssets(content.html, options);
+  return { content: { ...content, html }, report };
+}
+
+const log = createLogger('ExportClassroom');
+
+export function useExportClassroom() {
+  const [exporting, setExporting] = useState(false);
+  const { t } = useI18n();
+
+  const exportClassroomZip = useCallback(async () => {
+    const { stage, scenes } = useStageStore.getState();
+    if (!stage?.id || scenes.length === 0) return;
+
+    setExporting(true);
+    const toastId = toast.loading(t('export.exporting'));
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const documentScenes = await preparePBLScenesForDocumentPersistence(stage.id, scenes);
+
+      // 1. Read latest stage name from the document aggregate (it may have been renamed at home).
+      const freshDocument = await accessDocument(stage.id);
+      const latestName = freshDocument.document?.stage.name || stage.name;
+
+      // 2. Collect the roster from the stage document (single source of truth;
+      // the in-memory stage already carries any lazily migrated voice fields).
+      const agentConfigs = stage.generatedAgentConfigs ?? [];
+
+      // 3. Collect audio files
+      const audioFiles = await collectAudioFiles(scenes);
+
+      // 4. Collect media files (generated images/videos)
+      const mediaFiles = await collectMediaFiles(stage.id);
+
+      // 5. Build audioId → zipPath mapping for manifest
+      const audioIdToPath = new Map<string, string>();
+      for (const af of audioFiles) {
+        audioIdToPath.set(af.record.id, af.zipPath);
+      }
+
+      // 6. Build manifest
+      const manifestStage: ManifestStage = {
+        name: latestName,
+        description: stage.description,
+        language: stage.languageDirective,
+        style: stage.style,
+        videoManifest: stage.videoManifest,
+        createdAt: stage.createdAt,
+        updatedAt: stage.updatedAt,
+      };
+
+      const manifestAgents: ManifestAgent[] = agentConfigs.map(manifestAgentFromConfig);
+
+      // Build agent ID → index mapping for multiAgent references
+      const agentIdToIndex = new Map<string, number>();
+      agentConfigs.forEach((a, i) => agentIdToIndex.set(a.id, i));
+
+      const aggregateReport: InlineReport = { inlined: [], failed: [] };
+      const sharedFetcher = createAssetFetcher({ fetchImpl: createProxiedFetch() });
+      const manifestScenes: ManifestScene[] = await Promise.all(
+        documentScenes.map(async (scene) => {
+          const { content, report } = await inlineSceneContent(scene.content, {
+            fetcher: sharedFetcher,
+          });
+          for (const u of report.inlined)
+            if (!aggregateReport.inlined.includes(u)) aggregateReport.inlined.push(u);
+          for (const f of report.failed)
+            if (!aggregateReport.failed.some((g) => g.url === f.url))
+              aggregateReport.failed.push(f);
+          return {
+            type: scene.type,
+            title: scene.title,
+            order: scene.order,
+            content,
+            actions: scene.actions
+              ? actionsToManifest(scene.actions, audioIdToPath, agentIdToIndex)
+              : undefined,
+            whiteboards: scene.whiteboards,
+            ...(scene.multiAgent?.enabled
+              ? {
+                  multiAgent: {
+                    enabled: true,
+                    agentIndices: (scene.multiAgent.agentIds ?? [])
+                      .map((id) => agentIdToIndex.get(id))
+                      .filter((i): i is number => i !== undefined),
+                    directorPrompt: scene.multiAgent.directorPrompt,
+                  },
+                }
+              : {}),
+          };
+        }),
+      );
+
+      // 7. Build mediaIndex
+      const mediaIndex: Record<string, MediaIndexEntry> = {};
+
+      for (const af of audioFiles) {
+        mediaIndex[af.zipPath] = {
+          type: 'audio',
+          format: af.record.format,
+          duration: af.record.duration,
+          voice: af.record.voice,
+        };
+      }
+      for (const mf of mediaFiles) {
+        mediaIndex[mf.zipPath] = {
+          type: 'generated',
+          mimeType: mf.record.mimeType,
+          size: mf.record.size,
+          prompt: mf.record.prompt,
+        };
+      }
+
+      // Check for missing audio references
+      for (const scene of scenes) {
+        for (const action of scene.actions ?? []) {
+          if (action.type === 'speech') {
+            const audioId = (action as SpeechAction).audioId;
+            if (audioId && !audioIdToPath.has(audioId)) {
+              const missingPath = `audio/${audioId}.mp3`;
+              mediaIndex[missingPath] = { type: 'audio', missing: true };
+            }
+          }
+        }
+      }
+
+      // 8. Assemble manifest
+      const manifest: ClassroomManifest = {
+        formatVersion: CLASSROOM_ZIP_FORMAT_VERSION,
+        exportedAt: new Date().toISOString(),
+        appVersion: process.env.npm_package_version || '0.0.0',
+        stage: manifestStage,
+        agents: manifestAgents,
+        scenes: manifestScenes,
+        mediaIndex,
+      };
+
+      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+      // 9. Add media blobs to ZIP
+      for (const af of audioFiles) {
+        zip.file(af.zipPath, af.record.blob);
+      }
+      for (const mf of mediaFiles) {
+        zip.file(mf.zipPath, mf.record.blob);
+        if (mf.record.poster) {
+          zip.file(mf.zipPath.replace(/\.\w+$/, '.poster.jpg'), mf.record.poster);
+        }
+      }
+
+      // 10. Generate and download
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const safeName = latestName.replace(/[\\/:*?"<>|]/g, '_') || 'classroom';
+      saveAs(zipBlob, `${safeName}${CLASSROOM_ZIP_EXTENSION}`);
+
+      if (aggregateReport.failed.length > 0) {
+        log.warn('Some interactive-scene assets could not be inlined:', aggregateReport.failed);
+        const hosts = [
+          ...new Set(
+            aggregateReport.failed.map((f) => {
+              try {
+                return new URL(f.url).host;
+              } catch {
+                return f.url;
+              }
+            }),
+          ),
+        ];
+        toast.warning(t('export.inlinePartial', { count: aggregateReport.failed.length }), {
+          description: hosts.join(', '),
+        });
+      }
+      toast.success(t('export.exportSuccess'), { id: toastId });
+    } catch (error) {
+      log.error('Classroom ZIP export failed:', error);
+      toast.error(t('export.exportFailed'), { id: toastId });
+    } finally {
+      setExporting(false);
+    }
+  }, [t]);
+
+  return { exporting, exportClassroomZip };
+}

@@ -1,0 +1,59 @@
+export interface HtmlMediaReference {
+  readonly ref: string;
+  readonly kind: 'image-src' | 'video-src' | 'video-poster';
+  readonly start: number;
+  readonly end: number;
+  readonly owner: number;
+}
+
+/** Literal media attributes only: never rewrite prose, inline scripts or arbitrary substrings. */
+export function htmlMediaReferences(html: string): HtmlMediaReference[] {
+  const references: HtmlMediaReference[] = [];
+  const tags =
+    /<!--[\s\S]*?-->|<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<(img|video|audio|source)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  for (const tag of html.matchAll(tags)) {
+    if (!tag[1]) continue;
+    const attributes = /\s([^\s=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    for (const attribute of tag[0].matchAll(attributes)) {
+      if (!/^(src|poster)$/i.test(attribute[1])) continue;
+      const ref = attribute[2] ?? attribute[3] ?? attribute[4];
+      if (!ref) continue;
+      const prefix = /^\s(?:src|poster)\s*=\s*["']?/i.exec(attribute[0])![0];
+      const start = tag.index + attribute.index + prefix.length;
+      references.push({
+        ref,
+        kind:
+          attribute[1].toLowerCase() === 'poster'
+            ? 'video-poster'
+            : tag[1].toLowerCase() === 'img'
+              ? 'image-src'
+              : 'video-src',
+        start,
+        end: start + ref.length,
+        owner: tag.index,
+      });
+    }
+  }
+  return references;
+}
+
+export function replaceHtmlMediaReferences(
+  html: string,
+  replacements: Readonly<Record<string, string>>,
+): string {
+  let result = html;
+  for (const reference of htmlMediaReferences(html).reverse()) {
+    if (!Object.hasOwn(replacements, reference.ref)) continue;
+    const replacement = replacements[reference.ref]
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('`', '&#96;')
+      .replaceAll('=', '&#61;')
+      .replace(/\s/g, (character) => `&#${character.charCodeAt(0)};`);
+    result = result.slice(0, reference.start) + replacement + result.slice(reference.end);
+  }
+  return result;
+}

@@ -1,0 +1,13 @@
+<svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Zhihu</title>
+  <rect width="48" height="48" rx="10" fill="#0066FF"/>
+  <text
+    x="24"
+    y="31"
+    text-anchor="middle"
+    fill="#FFFFFF"
+    font-size="22"
+    font-weight="700"
+    font-family="system-ui, 'PingFang SC', 'Noto Sans SC', sans-serif"
+  >知</text>
+</svg>

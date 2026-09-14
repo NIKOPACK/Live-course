@@ -1,0 +1,35 @@
+# Dependencies & lock files
+pnpm-lock.yaml
+node_modules/
+
+# Vendor packages
+packages/pptxgenjs/
+packages/mathml2omml/
+
+# @livecourse workspace packages: the source is formatted to the root style, but skip
+# generated build output and the vendored legacy reference under the importer.
+packages/@livecourse/*/dist/
+packages/@livecourse/importer/src1/
+
+# Docs site (separate Fumadocs app with its own toolchain)
+packages/docs/
+
+# Build output
+.next/
+out/
+tmp/
+.codex/task-ledger/**/ledger.json
+.codex/task-ledger/**/evidence/
+docs/ppt/
+
+# Generated files
+*.min.js
+*.min.css
+
+# Markdown & YAML
+*.md
+*.yml
+*.yaml
+
+# SVG arc helper (vendored declaration)
+lib/export/svg-arc-to-cubic-bezier.d.ts

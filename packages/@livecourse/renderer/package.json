@@ -1,0 +1,101 @@
+{
+  "name": "@livecourse/renderer",
+  "private": true,
+  "version": "0.0.5",
+  "description": "React component for rendering PPTist-style Slide JSON, extracted from LiveCourse.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./elements": {
+      "types": "./dist/elements/index.d.ts",
+      "import": "./dist/elements/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./snapshot": {
+      "types": "./dist/snapshot/index.d.ts",
+      "import": "./dist/snapshot/index.js"
+    },
+    "./editing": {
+      "types": "./dist/editing/index.d.ts",
+      "import": "./dist/editing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "gen-katex-fonts": "node scripts/generate-katex-fonts.mjs",
+    "build": "node scripts/generate-katex-fonts.mjs && rm -rf dist && rollup -c && tsc --emitDeclarationOnly --declarationDir dist",
+    "dev": "rollup -c -w",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "slide",
+    "renderer",
+    "pptist",
+    "canvas",
+    "react"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NIKOPACK/livecourse",
+    "directory": "packages/@livecourse/renderer"
+  },
+  "peerDependencies": {
+    "echarts": ">=5",
+    "motion": ">=11",
+    "react": ">=18",
+    "react-dom": ">=18",
+    "shiki": ">=1.0.0",
+    "tailwindcss": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "echarts": {
+      "optional": true
+    },
+    "shiki": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@livecourse/dsl": "workspace:^",
+    "clsx": "^2.1.1",
+    "html-to-image": "^1.11.13",
+    "html2canvas-pro": "^2.0.4",
+    "katex": "^0.16.33",
+    "lucide-react": "^0.562.0",
+    "tailwind-merge": "^3.4.0",
+    "tinycolor2": "^1.6.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/katex": "^0.16.8",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/tinycolor2": "^1.4.6",
+    "jsdom": "^29.1.1",
+    "rollup": "^4.35.0",
+    "rollup-plugin-preserve-directives": "^0.4.0",
+    "tslib": "^2.8.0",
+    "typescript": "^5"
+  }
+}

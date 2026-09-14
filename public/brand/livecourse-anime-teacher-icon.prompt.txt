@@ -1,0 +1,8 @@
+Use case: logo-brand
+Asset type: single square anime app icon for LiveCourse, an AI self-directed learning application.
+Primary request: A HUMAN anime teacher actively teaching, as a friendly human personification of an AI tutor. Genuine transparent background (alpha), no background color.
+Subject: One warm young adult human teacher with short dark teal hair, expressive anime eyes and a confident gentle smile, wearing a cream shirt and teal cardigan, small voice headset with microphone. Waist-up bust, one hand holding an open book at chest level and the other holding a short teaching pointer diagonally upward, clear natural teaching gesture. Clearly human, not a robot or anthropomorphic book. Anatomically natural hands.
+Style: polished original Japanese anime cel-shaded illustration, crisp clean dark teal outlines, restrained shading, appealing professional educational app mascot, strong compact silhouette that reads at small sizes.
+Palette: deep teal #0b806f, mint #d9f1e9, warm ivory #f5f6f1, dark ink #202a27 and natural warm skin tones.
+Composition: centered single character and book, fills roughly 80 percent of square canvas, head, hands, book and pointer all fully within frame, generous safe margins; clean deliberate lower bust edge.
+Constraints: truly transparent background with alpha channel; no checkerboard drawn into the image, no solid backdrop, no circular badge, no classroom scenery, no text, no watermark, no other people, no logos, no photorealism, no graduation cap. One finished icon, not a presentation sheet.

@@ -1,0 +1,51 @@
+{
+  "name": "@livecourse/dsl",
+  "private": true,
+  "version": "0.8.0",
+  "description": "The LiveCourse slide DSL: the pure, dependency-free contract (types + JSON Schema + validators + version/migration helpers) that @livecourse/renderer and @livecourse/importer both depend on.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema/*": "./dist/schema/*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/gen-schema.mjs",
+    "build:schema": "node scripts/gen-schema.mjs",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "livecourse",
+    "dsl",
+    "slide",
+    "schema",
+    "contract"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NIKOPACK/livecourse",
+    "directory": "packages/@livecourse/dsl"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ts-json-schema-generator": "~2.4.0",
+    "typescript": "^5",
+    "vitest": "^4.1.8"
+  }
+}

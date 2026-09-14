@@ -1,0 +1,22 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* LiveCourse brand — match Live Demo --primary (blue) */
+:root {
+  --color-fd-primary: #2e61d1;
+  --color-fd-ring: #2e61d1;
+}
+.dark {
+  --color-fd-primary: #477aea;
+  --color-fd-ring: #477aea;
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
