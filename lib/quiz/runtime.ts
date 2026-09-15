@@ -14,6 +14,7 @@ import {
 } from '@/lib/quiz/persistence';
 import { getLearnerKey } from '@/lib/runtime/learner-key';
 import { getRuntimeStore } from '@/lib/runtime/store';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 export interface QuizAttemptPayload extends QuizAttemptSkeleton {
   payloadVersion: 1;
@@ -223,11 +224,7 @@ async function withAttemptLock<T>(attemptId: string, work: () => Promise<T>): Pr
 }
 
 function mintId(): string {
-  const suffix =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `quiz-record:${suffix}`;
+  return `quiz-record:${createBrowserUuid()}`;
 }
 
 function asQuizPayload(record: RuntimeRecord | undefined): QuizAttemptPayload | undefined {

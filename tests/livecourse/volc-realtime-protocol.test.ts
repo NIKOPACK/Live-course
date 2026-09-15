@@ -81,4 +81,18 @@ describe('Volc realtime protocol', () => {
       text: '误差会沿计算图逐段乘上局部导数。',
     });
   });
+
+  it('accepts a learner query as a separate action from scripted narration', () => {
+    expect(
+      volcRealtimeActionSchema.parse({
+        action: 'query',
+        sessionId: 'session-1',
+        text: '傅里叶变换和拉普拉斯变换有什么区别？',
+      }),
+    ).toEqual({
+      action: 'query',
+      sessionId: 'session-1',
+      text: '傅里叶变换和拉普拉斯变换有什么区别？',
+    });
+  });
 });

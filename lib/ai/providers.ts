@@ -1562,6 +1562,11 @@ export const PROVIDERS: Record<ProviderId, ProviderConfig> = {
           streaming: true,
           tools: true,
           vision: false,
+          thinking: {
+            toggleable: true,
+            budgetAdjustable: true,
+            defaultEnabled: true,
+          },
         },
       },
       {
@@ -2010,9 +2015,7 @@ export function getModel(config: ModelConfig): ModelWithInfo {
           }
           const normalizedReasoningResponse = streaming
             ? wrapResponseWithReasoning(response)
-            : providerId === 'kimi' && config.modelId === 'kimi-k3'
-              ? await wrapJsonResponseWithReasoning(response)
-              : response;
+            : await wrapJsonResponseWithReasoning(response);
 
           if (providerId !== 'lemonade') {
             return normalizedReasoningResponse;

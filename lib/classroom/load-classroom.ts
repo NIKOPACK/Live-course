@@ -16,6 +16,7 @@ import {
 import type { MediaFileRecord } from '@/lib/utils/database';
 import { unmarkStageDeleted } from '@/lib/utils/deleted-stages';
 import type { GeneratedAgentConfig, Scene, Stage } from '@/lib/types/stage';
+import type { SceneOutline } from '@/lib/types/generation';
 import { parseCoursePlan, type CoursePlan } from '@/lib/livecourse/domain/course-plan';
 import { lessonPlanSchema, type LessonPlan } from '@/lib/livecourse/domain/schemas';
 import type { PPTElement } from '@livecourse/dsl';
@@ -298,6 +299,8 @@ export function applyClassroomStageAndScenes(
     chatSnapshot?: ChatStorageSnapshot;
     coursePlan?: CoursePlan;
     lessonPlan?: LessonPlan;
+    outlines?: SceneOutline[];
+    generationComplete?: boolean;
   } = {},
 ): void {
   // Explicit document (re)creation point: deletion only removes client-side
@@ -320,7 +323,8 @@ export function applyClassroomStageAndScenes(
     chatSnapshot: options.chatSnapshot ?? { sessions: [], restoreMarker: null },
     coursePlan: options.coursePlan ?? null,
     lessonPlan: options.lessonPlan ?? null,
-    generationComplete: false,
+    outlines: options.outlines ?? state.outlines,
+    generationComplete: options.generationComplete ?? false,
     generationEpoch: state.generationEpoch + 1,
     mode: 'playback',
   }));

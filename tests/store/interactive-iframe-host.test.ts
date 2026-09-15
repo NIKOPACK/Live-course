@@ -33,6 +33,25 @@ afterEach(async () => {
   container.remove();
 });
 
+it('does not cover the page when an optional image resource fails to load', async () => {
+  await act(async () => root.render(createElement(InteractiveIframeHost)));
+  const frame = document.querySelector('iframe')!;
+  await act(async () =>
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: frame.contentWindow,
+        data: {
+          __livecourseInteractive: true,
+          kind: 'runtime-error',
+          errorKind: 'resource',
+          message: 'Failed to load resource: https://livecourse.nikopack.works/classroom/lesson_img_scene_1_1',
+        },
+      }),
+    ),
+  );
+  expect(document.querySelector('[role=alert]')).toBeNull();
+});
+
 it('exposes sourced runtime failures and retries the same HTML without changing the scene pool', async () => {
   await act(async () => root.render(createElement(InteractiveIframeHost)));
   const frame = document.querySelector('iframe')!;

@@ -400,4 +400,13 @@ describe('resolveLlmText', () => {
       }),
     ).toBe('<!DOCTYPE html><html><body>ok</body></html>');
   });
+
+  it('falls back to reasoning parts when reasoningText is missing', () => {
+    expect(
+      resolveLlmText({
+        text: '',
+        reasoning: [{ text: '<!DOCTYPE html><html><body>ok</body></html>' }],
+      }),
+    ).toBe('<!DOCTYPE html><html><body>ok</body></html>');
+  });
 });

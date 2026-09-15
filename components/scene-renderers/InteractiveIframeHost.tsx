@@ -146,6 +146,8 @@ function PooledIframe({ sceneId, entry, visible }: PooledIframeProps) {
         | undefined;
       if (!d || d.__livecourseInteractive !== true || d.kind !== 'runtime-error') return;
       const kind = typeof d.errorKind === 'string' ? d.errorKind : 'error';
+      // Missing images/fonts must not cover the lesson. Script crashes still do.
+      if (kind === 'resource') return;
       const msg = typeof d.message === 'string' ? d.message : String(d.message ?? '');
       useSceneRuntimeErrors.getState().addError(sceneId, `[${kind}] ${msg}`);
     };

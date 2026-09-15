@@ -22,6 +22,7 @@ import { resolveModel } from '@/lib/server/resolve-model';
 import { getStageModel, type LlmStage } from '@/lib/server/model-routes';
 import type { LanguageModel } from 'ai';
 import type { ThinkingConfig } from '@/lib/types/provider';
+import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 import { buildSearchQuery } from '@/lib/server/search-query-builder';
 import { formatSearchResultsAsContext, searchWeb } from '@/lib/web-search';
@@ -324,9 +325,10 @@ export async function generateClassroom(
   // and thinking config, because PBL scene generation drives its own LLM
   // calls through the model object (generatePBLSceneContent) rather than the
   // aiCall closure, and consumes the route's thinking config separately.
-  const resolveSceneContentCall = async (outlineType?: string) => {
+  const resolveSceneContentCall = async (outlineType?: string, htmlClassroom = false) => {
     const stage = (outlineType ? `scene-content:${outlineType}` : 'scene-content') as LlmStage;
     const { model, outputWindow, thinking } = await resolveStageModel(stage);
+    const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinking);
     const aiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
       const result = await callLLM(
         {
@@ -340,11 +342,11 @@ export async function generateClassroom(
         },
         'generate-classroom-scene',
         undefined,
-        thinking,
+        pageThinking,
       );
       return resolveLlmText(result);
     };
-    return { aiCall, model, thinking };
+    return { aiCall, model, thinking: pageThinking };
   };
 
   // agent-profiles routes via the `agent-profiles` stage (matches the browser
@@ -374,9 +376,10 @@ export async function generateClassroom(
 
   // scene-actions routes via the `scene-actions` stage.
   let sceneActionsAiCall: AICallFn | undefined;
-  const getSceneActionsAiCall = async (): Promise<AICallFn> => {
+  const getSceneActionsAiCall = async (htmlClassroom = false): Promise<AICallFn> => {
     if (sceneActionsAiCall) return sceneActionsAiCall;
     const { model, outputWindow, thinking } = await resolveStageModel('scene-actions');
+    const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinking);
     sceneActionsAiCall = async (systemPrompt, userPrompt, _images) => {
       const result = await callLLM(
         {
@@ -390,7 +393,7 @@ export async function generateClassroom(
         },
         'generate-classroom-scene',
         undefined,
-        thinking,
+        pageThinking,
       );
       return resolveLlmText(result);
     };
@@ -650,7 +653,10 @@ export async function generateClassroom(
     // resolved model object, since generatePBLSceneContent drives its own LLM
     // calls through it instead of the aiCall closure — without it PBL scenes
     // silently fail (return null) on this one-shot path.
-    const contentCall = await resolveSceneContentCall(safeOutline.type);
+    const contentCall = await resolveSceneContentCall(
+      safeOutline.type,
+      lessonPlan?.presentation?.mode === 'html',
+    );
     const content = await (async () => {
       try {
         return await withGenerationRetry(
@@ -689,7 +695,7 @@ export async function generateClassroom(
       continue;
     }
 
-    const actionsAiCall = await getSceneActionsAiCall();
+    const actionsAiCall = await getSceneActionsAiCall(lessonPlan?.presentation?.mode === 'html');
     const actions = await withGenerationRetry(
       () =>
         generateSceneActions(safeOutline, content, actionsAiCall, {

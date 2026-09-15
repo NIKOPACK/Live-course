@@ -46,6 +46,7 @@ vi.mock('@/lib/store/avatar-settings', () => ({
 
 vi.mock('@/lib/livecourse/realtime/client/audio-bridge', () => ({
   getActiveRealtimeAudioBridge: () => null,
+  getActiveLipSyncAudioNode: () => null,
   subscribeRealtimeAudioBridge: () => () => undefined,
 }));
 

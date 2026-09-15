@@ -1,16 +1,44 @@
 type RealtimeAudioBridgeListener = () => void;
 
 let activeRealtimeAudioBridge: RealtimeAudioBridge | null = null;
+let activeLipSyncAudioNode: AudioNode | null = null;
 const activeRealtimeAudioBridgeListeners = new Set<RealtimeAudioBridgeListener>();
+
+function notifyRealtimeAudioListeners(): void {
+  for (const listener of activeRealtimeAudioBridgeListeners) listener();
+}
 
 function publishActiveRealtimeAudioBridge(bridge: RealtimeAudioBridge | null): void {
   if (activeRealtimeAudioBridge === bridge) return;
   activeRealtimeAudioBridge = bridge;
-  for (const listener of activeRealtimeAudioBridgeListeners) listener();
+  notifyRealtimeAudioListeners();
 }
 
 export function getActiveRealtimeAudioBridge(): RealtimeAudioBridge | null {
   return activeRealtimeAudioBridge;
+}
+
+/** Lip-sync source: Volc PCM tap, else the OpenAI realtime media element. */
+export function getActiveLipSyncAudioNode(): AudioNode | null {
+  return activeLipSyncAudioNode ?? activeRealtimeAudioBridge?.audioNode ?? null;
+}
+
+export function registerLipSyncAudioNode(node: AudioNode): () => void {
+  if (activeLipSyncAudioNode === node) {
+    return () => {
+      if (activeLipSyncAudioNode === node) {
+        activeLipSyncAudioNode = null;
+        notifyRealtimeAudioListeners();
+      }
+    };
+  }
+  activeLipSyncAudioNode = node;
+  notifyRealtimeAudioListeners();
+  return () => {
+    if (activeLipSyncAudioNode !== node) return;
+    activeLipSyncAudioNode = null;
+    notifyRealtimeAudioListeners();
+  };
 }
 
 export function subscribeRealtimeAudioBridge(listener: RealtimeAudioBridgeListener): () => void {

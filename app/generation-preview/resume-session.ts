@@ -1,8 +1,41 @@
 import type { LessonPlan } from '@/lib/livecourse/domain/schemas';
 import type { SceneOutline } from '@/lib/types/generation';
+import type { Scene } from '@/lib/types/stage';
 import { withGenerationIdentity, type GenerationSessionState } from './types';
 
 export type { GenerationSessionState };
+
+/** Server-persisted showcase classroom used when live generation of this topic stalls. */
+export const SHOWCASE_CLASSROOM_ID = 'fourier-intro';
+
+export function isFourierShowcaseSession(input: {
+  courseTitle?: string;
+  requirement?: string;
+  name?: string;
+}): boolean {
+  const haystack = [input.courseTitle, input.requirement, input.name]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
+  return /傅里叶|Fourier/i.test(haystack);
+}
+
+/** Preview segments key off store outlines. A loaded classroom must project them. */
+export function outlinesFromClassroomScenes(scenes: readonly Scene[]): SceneOutline[] {
+  return scenes.map((scene, index) => {
+    const type: SceneOutline['type'] =
+      scene.type === 'quiz' || scene.type === 'interactive' || scene.type === 'pbl'
+        ? scene.type
+        : 'slide';
+    return {
+      id: scene.outlineId || scene.id,
+      type,
+      title: scene.title,
+      description: scene.title,
+      keyPoints: [],
+      order: typeof scene.order === 'number' ? scene.order : index,
+    };
+  });
+}
 
 /** True when the persisted deck is still being prepared (docs/spec/01 J2.1 / J4.4). */
 export function isGenerationPending(outline?: { generationComplete?: boolean } | null): boolean {

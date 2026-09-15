@@ -127,13 +127,26 @@ export function createReasoningContentRewriter() {
       // the block BEFORE it so the answer isn't absorbed into the reasoning
       // (some providers send the reasoning→answer transition in one delta).
       const origContent = typeof delta.content === 'string' ? delta.content : '';
-      const prefix = open ? '' : '<think>';
-      open = true;
+      const finishing = choice?.finish_reason != null;
       if (origContent !== '') {
+        const prefix = open ? '' : '<think>';
         delta.content = prefix + reasoning + '</think>' + origContent;
+        open = true;
+        closed = true;
+      } else if (finishing && !open) {
+        // The whole completion arrived in `reasoning_content` (DeepSeek-V4 Flash
+        // on aiping). Treat it as the answer so HTML/JSON validators see a body.
+        delta.content = reasoning;
+        closed = true;
+      } else if (finishing) {
+        const prefix = open ? '' : '<think>';
+        delta.content = prefix + reasoning + '</think>';
+        open = true;
         closed = true;
       } else {
+        const prefix = open ? '' : '<think>';
         delta.content = prefix + reasoning;
+        open = true;
       }
       delete delta.reasoning_content;
       return chunk;
@@ -221,7 +234,12 @@ export async function wrapJsonResponseWithReasoning(response: Response): Promise
     if (typeof record.reasoning_content !== 'string' || record.reasoning_content === '') continue;
 
     const content = typeof record.content === 'string' ? record.content : '';
-    record.content = `<think>${record.reasoning_content}</think>${content}`;
+    const hasToolCalls = Array.isArray(record.tool_calls) && record.tool_calls.length > 0;
+    if (!hasToolCalls && content.trim() === '') {
+      record.content = record.reasoning_content;
+    } else {
+      record.content = `<think>${record.reasoning_content}</think>${content}`;
+    }
     delete record.reasoning_content;
     changed = true;
   }

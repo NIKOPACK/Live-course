@@ -38,6 +38,13 @@ function shouldRewriteSearchQuery(
   return normalizedRequirement.length > 400 || Boolean(normalizedPdfExcerpt);
 }
 
+export function needsSearchQueryRewrite(requirement: string, pdfText?: string): boolean {
+  return shouldRewriteSearchQuery(
+    normalizeSearchRequirement(requirement),
+    normalizePdfExcerpt(pdfText),
+  );
+}
+
 export async function buildSearchQuery(
   requirement: string,
   pdfText: string | undefined,

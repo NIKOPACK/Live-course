@@ -91,6 +91,15 @@ describe('Volc realtime server relay', () => {
       type: 'speech_text_buffer.commit',
       text: '误差会沿计算图逐段乘上局部导数。',
     });
+    session.sendQuery('为什么要乘局部导数？');
+    expect(JSON.parse(socket.sent[4])).toMatchObject({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '为什么要乘局部导数？' }],
+      },
+    });
 
     session.close();
     expect(registry.get(session.id)).toBeUndefined();

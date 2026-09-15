@@ -10,6 +10,35 @@
  * replaces both storages with an in-memory implementation when the real ones are
  * inaccessible, keeping the sandbox intact while letting storage-using pages run.
  */
+/**
+ * `crypto.randomUUID` is SecureContext-only. Sandboxed `allow-scripts` iframes
+ * are a null origin, so generated classroom pages throw
+ * "crypto.randomUUID is not a function" on load / page switch.
+ */
+const CRYPTO_SHIM = `<script data-iframe-crypto-shim>
+(function () {
+  try {
+    var c = window.crypto;
+    if (!c || typeof c.randomUUID === 'function') return;
+    function uuid() {
+      var bytes = new Uint8Array(16);
+      if (typeof c.getRandomValues === 'function') c.getRandomValues(bytes);
+      else for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      var hex = [];
+      for (var i = 0; i < 16; i++) hex.push(('0' + bytes[i].toString(16)).slice(-2));
+      return hex.slice(0, 4).join('') + '-' + hex.slice(4, 6).join('') + '-' + hex.slice(6, 8).join('') + '-' + hex.slice(8, 10).join('') + '-' + hex.slice(10).join('');
+    }
+    try {
+      Object.defineProperty(c, 'randomUUID', { value: uuid, configurable: true });
+    } catch (e) {
+      c.randomUUID = uuid;
+    }
+  } catch (e) {}
+})();
+</script>`;
+
 const STORAGE_SHIM = `<script data-iframe-storage-shim>
 (function () {
   function makeStore() {
@@ -101,8 +130,9 @@ const ERROR_CAPTURE_SHIM = `<script data-iframe-error-shim>
 /**
  * Patch embedded HTML to display correctly inside an iframe.
  *
- * Injects a runtime-error capture shim + a storage shim (so sandboxed pages that
- * use localStorage don't crash) plus CSS that ensures proper sizing and scrolling
+ * Injects a runtime-error capture shim, a crypto.randomUUID polyfill (sandboxed
+ * pages are not a secure context), a storage shim (so sandboxed pages that use
+ * localStorage don't crash) plus CSS that ensures proper sizing and scrolling
  * behavior when HTML content is rendered via srcDoc in an iframe. The shims are
  * placed first so they run before the page's own scripts (error capture first, so
  * it also observes the storage shim).
@@ -123,7 +153,8 @@ export function patchHtmlForIframe(html: string): string {
   body { min-height: 100vh; }
 </style>`;
 
-  const injection = '\n' + ERROR_CAPTURE_SHIM + '\n' + STORAGE_SHIM + '\n' + iframeCss;
+  const injection =
+    '\n' + ERROR_CAPTURE_SHIM + '\n' + CRYPTO_SHIM + '\n' + STORAGE_SHIM + '\n' + iframeCss;
 
   // Insert right after <head> or at the start of the document
   const headIdx = html.indexOf('<head>');

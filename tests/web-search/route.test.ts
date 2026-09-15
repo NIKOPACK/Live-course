@@ -190,6 +190,13 @@ describe('POST /api/web-search', () => {
     );
   });
 
+  it('does not resolve a rewrite model for a short query with no PDF', async () => {
+    vi.stubEnv('ZHIHU_API_KEY', 'zhihu-server-key');
+    const res = await postWebSearch({ query: 'solidity' });
+    expect(res.status).toBe(200);
+    expect(mocks.resolveModelFromRequest).not.toHaveBeenCalled();
+  });
+
   it('requires query', async () => {
     const res = await postWebSearch({ providerId: 'zhihu', apiKey: 'k' });
     expect(res.status).toBe(400);

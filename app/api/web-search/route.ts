@@ -6,7 +6,7 @@
  */
 
 import { NextRequest } from 'next/server';
-import { callLLM } from '@/lib/ai/llm';
+import { callLLM, resolveLlmText } from '@/lib/ai/llm';
 import { formatSearchResultsAsContext, searchWeb } from '@/lib/web-search';
 import {
   isServerConfiguredProvider,
@@ -17,6 +17,7 @@ import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import {
   buildSearchQuery,
+  needsSearchQueryRewrite,
   SEARCH_QUERY_REWRITE_EXCERPT_LENGTH,
 } from '@/lib/server/search-query-builder';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
@@ -117,30 +118,32 @@ export async function POST(req: NextRequest) {
     const boundedPdfText = pdfText?.slice(0, SEARCH_QUERY_REWRITE_EXCERPT_LENGTH);
 
     let aiCall: AICallFn | undefined;
-    try {
-      const { model: languageModel, thinkingConfig } = await resolveModelFromRequest(
-        req,
-        body,
-        'web-search-query-rewrite',
-      );
-      aiCall = async (systemPrompt, userPrompt) => {
-        const result = await callLLM(
-          {
-            model: languageModel,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-            maxOutputTokens: 256,
-          },
+    if (needsSearchQueryRewrite(query, boundedPdfText)) {
+      try {
+        const { model: languageModel } = await resolveModelFromRequest(
+          req,
+          body,
           'web-search-query-rewrite',
-          undefined,
-          thinkingConfig,
         );
-        return result.text;
-      };
-    } catch (error) {
-      log.warn('Search query rewrite model unavailable, falling back to raw requirement:', error);
+        aiCall = async (systemPrompt, userPrompt) => {
+          const result = await callLLM(
+            {
+              model: languageModel,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+              maxOutputTokens: 256,
+            },
+            'web-search-query-rewrite',
+            undefined,
+            { mode: 'disabled', enabled: false },
+          );
+          return resolveLlmText(result);
+        };
+      } catch (error) {
+        log.warn('Search query rewrite model unavailable, falling back to raw requirement:', error);
+      }
     }
 
     const searchQuery = await buildSearchQuery(query, boundedPdfText, aiCall);

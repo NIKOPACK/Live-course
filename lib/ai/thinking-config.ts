@@ -109,6 +109,24 @@ function defaultLevelForCapability(thinking: ThinkingCapability): ThinkingLevel 
   return thinking.defaultLevel ?? thinking.levelValues?.[0];
 }
 
+/**
+ * Classroom HTML pages must land in `content`. DeepSeek-V4 Flash (aiping
+ * DeepSeek-V4.1-Flash included) defaults thinking on; the model then writes the
+ * whole page into `reasoning_content` and leaves the answer empty, which the
+ * complete-HTML validator rejects.
+ */
+export const HTML_PAGE_THINKING_CONFIG: ThinkingConfig = {
+  mode: 'disabled',
+  enabled: false,
+};
+
+export function thinkingConfigForHtmlClassroom(
+  isHtmlClassroom: boolean,
+  userConfig: ThinkingConfig | undefined,
+): ThinkingConfig | undefined {
+  return isHtmlClassroom ? HTML_PAGE_THINKING_CONFIG : userConfig;
+}
+
 export function getDefaultThinkingConfig(
   thinking?: ThinkingCapability,
 ): ThinkingConfig | undefined {

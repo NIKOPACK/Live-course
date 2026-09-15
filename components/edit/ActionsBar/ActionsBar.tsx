@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils/cn';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { flushStageSave, useStageStore } from '@/lib/store/stage';
 import { useCanvasStore } from '@/lib/store/canvas';
@@ -1107,8 +1108,7 @@ export function ActionsBar({ sceneId }: { sceneId: string }) {
     document.body.style.cursor = '';
   }, []);
 
-  const newId = () =>
-    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `a-${Date.now()}`;
+  const newId = () => createBrowserUuid();
 
   // Insert path for the ActionPicker (header pill / inline "+" drop-zone
   // buttons): appends a discussion (terminal, at-most-one) or inserts an

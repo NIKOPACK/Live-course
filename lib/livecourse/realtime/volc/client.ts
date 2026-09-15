@@ -11,6 +11,7 @@ import {
   type VolcRealtimeUpstreamEvent,
   type VolcRealtimeVoice,
 } from './protocol';
+import { registerLipSyncAudioNode } from '@/lib/livecourse/realtime/client/audio-bridge';
 
 const REALTIME_API_URL = '/api/livecourse/realtime/volc';
 const RECORDER_BUFFER_SIZE = 4_096;
@@ -22,6 +23,7 @@ export type VolcRealtimeBrowserEvent =
   | { type: 'status'; status: VolcRealtimeBrowserStatus }
   | { type: 'transcript'; speaker: 'teacher' | 'student'; text: string }
   | { type: 'speaking'; speaking: boolean }
+  | { type: 'learner_turn_started' }
   | { type: 'error'; error: Error };
 
 interface VolcRealtimeBrowserSessionOptions {
@@ -42,6 +44,17 @@ interface PendingSpeech {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function volcErrorMessage(event: VolcRealtimeUpstreamEvent): string {
+  if (typeof event.message === 'string' && event.message.trim()) return event.message;
+  const nested = event.error;
+  if (typeof nested === 'string' && nested.trim()) return nested;
+  if (nested && typeof nested === 'object' && 'message' in nested) {
+    const message = (nested as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return 'Volc realtime failed';
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -100,6 +113,8 @@ export function downsampleToPcm16(
 class PcmStreamPlayer {
   #nextPlayTime = 0;
   readonly #sources = new Set<AudioBufferSourceNode>();
+  #tap: GainNode | null = null;
+  #releaseLipSync: (() => void) | null = null;
 
   async enqueue(bytes: Uint8Array): Promise<void> {
     if (bytes.length < Int16Array.BYTES_PER_ELEMENT) return;
@@ -114,6 +129,7 @@ class PcmStreamPlayer {
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
+    if (this.#tap) source.connect(this.#tap);
     source.onended = () => {
       this.#sources.delete(source);
       source.disconnect();
@@ -125,7 +141,7 @@ class PcmStreamPlayer {
   }
 
   async prepare(): Promise<void> {
-    await activatePlaybackContext();
+    await this.#activate();
   }
 
   async finish(): Promise<void> {
@@ -146,8 +162,20 @@ class PcmStreamPlayer {
     this.#nextPlayTime = 0;
   }
 
+  dispose(): void {
+    this.#releaseLipSync?.();
+    this.#releaseLipSync = null;
+    this.#tap = null;
+  }
+
   async #activate(): Promise<AudioContext> {
-    return activatePlaybackContext();
+    const context = await activatePlaybackContext();
+    if (!this.#tap) {
+      this.#tap = context.createGain();
+      this.#tap.gain.value = 1;
+      this.#releaseLipSync = registerLipSyncAudioNode(this.#tap);
+    }
+    return context;
   }
 }
 
@@ -170,6 +198,7 @@ export class VolcRealtimeBrowserSession {
   #pendingSpeech: PendingSpeech | null = null;
   #closed = false;
   #failing = false;
+  #muted = false;
 
   constructor(options: VolcRealtimeBrowserSessionOptions = {}) {
     this.#options = options;
@@ -229,6 +258,7 @@ export class VolcRealtimeBrowserSession {
     this.#rejectPendingSpeech(new Error('Volc model narration was interrupted'));
     await this.#stopMicrophone();
     await this.#player?.stop();
+    this.#player?.dispose();
     this.#player = null;
     this.#emit({ type: 'speaking', speaking: false });
     if (sessionId) {
@@ -253,36 +283,47 @@ export class VolcRealtimeBrowserSession {
     if (!sessionId || this.#closed) return;
     this.#rejectPendingSpeech(new Error('Volc model narration was interrupted'));
     await this.#player?.stop();
+    this.#player?.dispose();
     this.#player = null;
     this.#emit({ type: 'speaking', speaking: false });
     await this.#post({ action: 'cancel', sessionId }).catch(() => {});
   }
 
+  mute(muted: boolean): void {
+    this.#muted = muted;
+  }
+
   async speakText(text: string): Promise<void> {
+    return this.#awaitModelTurn({ action: 'text', text });
+  }
+
+  /** Send a learner question so the model answers live, not as scripted TTS. */
+  async askQuestion(text: string): Promise<void> {
+    return this.#awaitModelTurn({ action: 'query', text });
+  }
+
+  async #awaitModelTurn(action: { action: 'text' | 'query'; text: string }): Promise<void> {
     const sessionId = this.#sessionId;
     if (!sessionId || this.#closed) {
       throw new Error('Volc realtime session is not connected');
     }
     if (this.#pendingSpeech) {
-      throw new Error('Volc model narration is already speaking');
+      await this.cancelNarration();
     }
 
     const completion = new Promise<void>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
-        const error = new Error('Volc model narration timed out');
-        this.#rejectPendingSpeech(error);
-        void this.#fail(error);
+        this.#failTurn(new Error('Volc model narration timed out'));
       }, MODEL_SPEECH_TIMEOUT_MS);
       this.#pendingSpeech = { resolve, reject, timeout };
     });
     void completion.catch(() => {});
 
     try {
-      await this.#post({ action: 'text', sessionId, text });
+      await this.#post({ ...action, sessionId });
     } catch (error) {
       const failure = toError(error);
-      this.#rejectPendingSpeech(failure);
-      await this.#fail(failure);
+      this.#failTurn(failure);
       throw failure;
     }
     return completion;
@@ -290,30 +331,38 @@ export class VolcRealtimeBrowserSession {
 
   async #startMicrophone(): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('当前浏览器不支持麦克风实时采集');
+      return;
     }
-    this.#mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
-    const context = new AudioContext();
-    const source = context.createMediaStreamSource(this.#mediaStream);
-    const processor = context.createScriptProcessor(RECORDER_BUFFER_SIZE, 1, 1);
-    processor.onaudioprocess = (event) => {
-      if (this.#closed) return;
-      this.#appendAudio(downsampleToPcm16(event.inputBuffer.getChannelData(0), context.sampleRate));
-    };
-    source.connect(processor);
-    processor.connect(context.destination);
-    this.#recorderContext = context;
-    this.#recorderSource = source;
-    this.#recorderNode = processor;
-    this.#frameTimer = window.setInterval(() => this.#sendNextAudioFrame(), VOLC_INPUT_FRAME_MS);
-    this.#sendNextAudioFrame();
+    try {
+      this.#mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+    } catch {
+      return;
+    }
+    try {
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(this.#mediaStream);
+      const processor = context.createScriptProcessor(RECORDER_BUFFER_SIZE, 1, 1);
+      processor.onaudioprocess = (event) => {
+        if (this.#closed) return;
+        this.#appendAudio(downsampleToPcm16(event.inputBuffer.getChannelData(0), context.sampleRate));
+      };
+      source.connect(processor);
+      processor.connect(context.destination);
+      this.#recorderContext = context;
+      this.#recorderSource = source;
+      this.#recorderNode = processor;
+      this.#frameTimer = window.setInterval(() => this.#sendNextAudioFrame(), VOLC_INPUT_FRAME_MS);
+      this.#sendNextAudioFrame();
+    } catch {
+      await this.#stopMicrophone();
+    }
   }
 
   async #stopMicrophone(): Promise<void> {
@@ -362,7 +411,9 @@ export class VolcRealtimeBrowserSession {
     const action: VolcRealtimeAction = {
       action: 'audio',
       sessionId,
-      audio: bytesToBase64(this.#takeFrame()),
+      audio: bytesToBase64(
+        this.#muted ? new Uint8Array(VOLC_INPUT_FRAME_BYTES) : this.#takeFrame(),
+      ),
     };
     const sending = this.#sendChain.then(() => this.#post(action)).then(() => undefined);
     this.#sendChain = sending;
@@ -379,14 +430,11 @@ export class VolcRealtimeBrowserSession {
     }
 
     if (message.type === 'local.connected') {
-      const ready =
-        this.#options.captureMicrophone === false ? Promise.resolve() : this.#startMicrophone();
-      void ready
-        .then(() => {
-          this.#emit({ type: 'status', status: 'connected' });
-          this.#resolveConnection();
-        })
-        .catch((error) => this.#fail(toError(error)));
+      this.#emit({ type: 'status', status: 'connected' });
+      this.#resolveConnection();
+      if (this.#options.captureMicrophone !== false) {
+        void this.#startMicrophone();
+      }
       return;
     }
     if (message.type === 'local.error') {
@@ -403,10 +451,13 @@ export class VolcRealtimeBrowserSession {
   #handleUpstreamEvent(event: VolcRealtimeUpstreamEvent): void {
     const eventType = event.type;
     if (eventType === 'conversation.item.input_audio_transcription.started') {
+      this.#rejectPendingSpeech(new Error('Volc model narration was interrupted'));
       void this.#player?.stop();
+      this.#player?.dispose();
       this.#player = null;
       this.#assistantText = '';
       this.#emit({ type: 'speaking', speaking: false });
+      this.#emit({ type: 'learner_turn_started' });
       return;
     }
     if (
@@ -459,9 +510,11 @@ export class VolcRealtimeBrowserSession {
       return;
     }
     if (eventType === 'error') {
-      const message = typeof event.message === 'string' ? event.message : 'Volc realtime failed';
-      const error = new Error(message);
-      this.#rejectPendingSpeech(error);
+      const error = new Error(volcErrorMessage(event));
+      if (this.#pendingSpeech) {
+        this.#failTurn(error);
+        return;
+      }
       void this.#fail(error);
     }
   }
@@ -525,5 +578,11 @@ export class VolcRealtimeBrowserSession {
     this.#pendingSpeech = null;
     window.clearTimeout(pending.timeout);
     pending.reject(error);
+  }
+
+  /** Drop the current model turn without tearing down the realtime session. */
+  #failTurn(error: Error): void {
+    this.#rejectPendingSpeech(error);
+    void this.cancelNarration();
   }
 }

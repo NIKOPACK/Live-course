@@ -1,12 +1,10 @@
 import type { PBLProjectV2, PBLRuntimeActorType, PBLRuntimeEvent, PBLUiPhase } from '../../types';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 export const MAX_RUNTIME_EVENTS = 500;
 
 export function mintRuntimeEventId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return createBrowserUuid();
 }
 
 export function appendRuntimeEvent(project: PBLProjectV2, event: PBLRuntimeEvent): PBLRuntimeEvent {

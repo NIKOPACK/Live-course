@@ -91,7 +91,9 @@ export function TeacherAvatarHost({
         switch (action.type) {
           case 'avatar.speech_start':
             setMode('speaking');
-            setExpression('happy');
+            // relaxed: no fake open mouth. Lip-sync drives speech; happy+aa
+            // froze a half-open grimace while looking off-camera.
+            setExpression('relaxed');
             break;
           case 'avatar.speech_end':
             setMode('idle');
@@ -172,7 +174,9 @@ export function TeacherAvatarHost({
           <TeacherAvatar
             mode={isPaused ? 'idle' : mode}
             expression={isPaused ? 'neutral' : expression}
-            lookAt={lookAt}
+            // Lectern VRM is its own canvas — `slides`/`whiteboard` gaze
+            // stares into empty space beside the learner.
+            lookAt="camera"
             className="absolute inset-0 size-full"
           />
         </div>

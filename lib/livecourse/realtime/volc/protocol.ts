@@ -49,6 +49,13 @@ export const volcRealtimeActionSchema = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
+      action: z.literal('query'),
+      sessionId: sessionIdSchema,
+      text: z.string().trim().min(1).max(4_000),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal('commit'),
       sessionId: sessionIdSchema,
     })

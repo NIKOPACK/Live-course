@@ -386,6 +386,7 @@ const THINKING_CAPABILITIES: Record<string, ThinkingCapability> = {
   // provider (DeepSeek reasoning_effort, GLM/Kimi thinking toggle). Qwen3-Max
   // has no declared thinking capability and stays in the non-configurable
   // allowlist in the drift guard test.
+  [getModelMetadataKey('aiping', 'DeepSeek-V4.1-Flash')]: deepseekEffort,
   [getModelMetadataKey('aiping', 'DeepSeek-V3.2')]: deepseekEffort,
   [getModelMetadataKey('aiping', 'GLM-4.6')]: toggleCapability('glm'),
   [getModelMetadataKey('aiping', 'Kimi-K2-Thinking')]: toggleCapability('kimi'),

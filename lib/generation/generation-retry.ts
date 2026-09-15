@@ -15,6 +15,7 @@ export interface GenerationRetryOptions<T> {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
   shouldRetryResult?: (result: T) => boolean;
+  shouldRetryError?: (error: unknown) => boolean;
   onRetry?: (event: GenerationRetryEvent) => Promise<void> | void;
 }
 
@@ -213,7 +214,8 @@ export async function withGenerationRetry<T>(
 
       throwIfAborted(options.signal);
 
-      if (attempt >= maxAttempts || !isRetryableGenerationError(error)) {
+      const retryable = options.shouldRetryError ?? isRetryableGenerationError;
+      if (attempt >= maxAttempts || !retryable(error)) {
         throw error;
       }
 

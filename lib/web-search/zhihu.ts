@@ -13,6 +13,14 @@ const ZHIHU_DEFAULT_BASE_URL = 'https://developer.zhihu.com';
 const ZHIHU_ENDPOINT_PATH = '/api/v1/content/global_search';
 const ZHIHU_MAX_RESULTS = 20;
 const ZHIHU_DEFAULT_RESULTS = 10;
+export const ZHIHU_SEARCH_TIMEOUT_MS = 12_000;
+
+function abortAfter(ms: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  if (typeof timer === 'object' && typeof timer.unref === 'function') timer.unref();
+  return controller.signal;
+}
 
 export function buildZhihuSearchUrl(baseUrl?: string): string {
   const trimmed = (baseUrl || ZHIHU_DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -97,14 +105,23 @@ export async function searchWithZhihu(params: {
   if (searchDB && searchDB !== 'all') searchParams.set('SearchDB', searchDB);
 
   const url = `${buildZhihuSearchUrl(baseUrl)}?${searchParams.toString()}`;
-  const res = await proxyFetch(url, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      'X-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
-    },
-  });
+  let res: Response;
+  try {
+    res = await proxyFetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'X-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
+      },
+      signal: abortAfter(ZHIHU_SEARCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Zhihu Global Search timed out after ${ZHIHU_SEARCH_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  }
 
   if (!res.ok) {
     const errorText = await res.text().catch(() => '');

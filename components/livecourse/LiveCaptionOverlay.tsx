@@ -19,16 +19,20 @@ export function LiveCaptionOverlay() {
   const { t } = useI18n();
   const reduceMotion = useReducedMotion();
   const caption = useLiveCaptionStore((state) => state.caption);
+  const held = useLiveCaptionStore((state) => state.holdCount > 0);
   // Hides exactly the caption that was current when the timer fired; a newer
   // caption (different `at`) re-shows itself without an extra state write.
   const [staleAt, setStaleAt] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!caption) return;
+    if (!caption || held) {
+      setStaleAt(null);
+      return;
+    }
     const at = caption.at;
     const timer = setTimeout(() => setStaleAt(at), CAPTION_STALE_MS);
     return () => clearTimeout(timer);
-  }, [caption]);
+  }, [caption, held]);
 
   const visible = caption !== null && caption.at !== staleAt;
 

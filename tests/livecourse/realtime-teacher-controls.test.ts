@@ -44,6 +44,8 @@ vi.mock('@/lib/livecourse/realtime/client/audio-bridge', () => ({
       mocks.registryCleanupCount += 1;
     };
   },
+  getActiveLipSyncAudioNode: () => null,
+  subscribeRealtimeAudioBridge: () => () => undefined,
 }));
 
 vi.mock('@/lib/livecourse/realtime/client/session', () => ({
@@ -207,11 +209,18 @@ vi.mock('next/image', () => ({
 }));
 
 vi.mock('@/components/livecourse/TeacherAvatar', () => ({
-  TeacherAvatar: () => createElement('div', { 'data-testid': 'teacher-avatar' }),
+  TeacherAvatar: (props: { lookAt?: string; expression?: string; mode?: string }) =>
+    createElement('div', {
+      'data-testid': 'teacher-avatar',
+      'data-avatar-look-at': props.lookAt,
+      'data-avatar-expression': props.expression,
+      'data-avatar-mode': props.mode,
+    }),
 }));
 
 import { RealtimeTeacherControls } from '@/components/livecourse/RealtimeTeacherControls';
 import { TeacherAvatarHost } from '@/components/livecourse/TeacherAvatarHost';
+import { teachingActionBus } from '@/lib/livecourse/actions/bus';
 import { ClassroomAppendUncertaintyError } from '@/lib/livecourse/session/controller';
 import { RealtimePlaybackControlError } from '@/lib/livecourse/session/realtime-playback-control';
 
@@ -739,5 +748,51 @@ describe('Realtime teacher controls lifecycle', () => {
     expect(container.querySelector('aside')?.className.split(' ')).toContain('flex');
     expect(container.querySelector('audio')).not.toBeNull();
     expect(container.querySelector('[data-testid="teacher-avatar"]')).toBeNull();
+  });
+
+  it('keeps the lectern teacher facing the learner when the board is a slide', async () => {
+    const { container } = await render(
+      createElement(TeacherAvatarHost, { presence: true, docked: true }),
+    );
+    await act(async () => {
+      await teachingActionBus.publish({
+        schemaVersion: 1,
+        id: 'action-look',
+        courseId: 'course-1',
+        lessonId: 'lesson-1',
+        nodeId: 'node-1',
+        sequence: 1,
+        timestamp: '2026-09-14T00:00:00.000Z',
+        idempotencyKey: 'look-1',
+        type: 'avatar.look_at',
+        payload: { target: 'slides' },
+      });
+    });
+    expect(container.querySelector('[data-avatar-look-at]')?.getAttribute('data-avatar-look-at')).toBe(
+      'camera',
+    );
+  });
+
+  it('does not freeze a grinning open mouth while the lectern teacher speaks', async () => {
+    const { container } = await render(
+      createElement(TeacherAvatarHost, { presence: true, docked: true }),
+    );
+    await act(async () => {
+      await teachingActionBus.publish({
+        schemaVersion: 1,
+        id: 'action-speak',
+        courseId: 'course-1',
+        lessonId: 'lesson-1',
+        nodeId: 'node-1',
+        sequence: 1,
+        timestamp: '2026-09-14T00:00:00.000Z',
+        idempotencyKey: 'speak-1',
+        type: 'avatar.speech_start',
+        payload: { text: '今天这堂课只做一件事。' },
+      });
+    });
+    const avatar = container.querySelector('[data-testid="teacher-avatar"]');
+    expect(avatar?.getAttribute('data-avatar-mode')).toBe('speaking');
+    expect(avatar?.getAttribute('data-avatar-expression')).toBe('relaxed');
   });
 });

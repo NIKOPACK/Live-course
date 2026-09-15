@@ -47,6 +47,7 @@ export async function POST(request: Request): Promise<Response> {
     if (action.action === 'audio') session.sendAudio(action.audio);
     if (action.action === 'update') session.updateInstructions(action.instructions);
     if (action.action === 'text') session.sendText(action.text);
+    if (action.action === 'query') session.sendQuery(action.text);
     if (action.action === 'commit') session.commitAudio();
     if (action.action === 'cancel') session.cancelResponse();
     if (action.action === 'close') session.close();

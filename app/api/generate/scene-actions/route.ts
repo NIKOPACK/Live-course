@@ -8,6 +8,7 @@
 
 import { NextRequest } from 'next/server';
 import { completeLLMText } from '@/lib/ai/llm';
+import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
 import {
   generateSceneActions,
   buildCompleteScene,
@@ -94,6 +95,11 @@ export async function POST(req: NextRequest) {
 
     // Detect vision capability
     const hasVision = !!modelInfo?.capabilities?.vision;
+    const htmlClassroom =
+      typeof content === 'object' &&
+      content !== null &&
+      ('htmlPresentation' in content || 'html' in content);
+    const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinkingConfig);
 
     // AI call function (actions typically don't use vision, but kept for consistency)
     const aiCall = async (
@@ -117,7 +123,7 @@ export async function POST(req: NextRequest) {
             abortSignal: req.signal,
           },
           'scene-actions',
-          thinkingConfig,
+          pageThinking,
         );
       }
       return completeLLMText(
@@ -130,7 +136,7 @@ export async function POST(req: NextRequest) {
           abortSignal: req.signal,
         },
         'scene-actions',
-        thinkingConfig,
+        pageThinking,
       );
     };
 

@@ -109,7 +109,13 @@ function stripReasoningPrefix(response: string): string {
   const matches = [...trimmed.matchAll(/<\/(?:think|thinking|reasoning)>\s*/gi)];
   const lastMatch = matches.at(-1);
   if (!lastMatch || lastMatch.index === undefined) return trimmed;
-  return trimmed.slice(lastMatch.index + lastMatch[0].length).trim();
+  const after = trimmed.slice(lastMatch.index + lastMatch[0].length).trim();
+  if (after) return after;
+  // The whole payload was inside a think block (DeepSeek-V4 mis-channel).
+  const inner = trimmed.match(
+    /<(?:think|thinking|reasoning)>\s*([\s\S]*?)\s*<\/(?:think|thinking|reasoning)>/i,
+  );
+  return inner?.[1]?.trim() || trimmed;
 }
 
 function stripHtmlFences(response: string): string {
@@ -124,8 +130,7 @@ function sliceFromHtmlStart(html: string): string {
   const doctype = html.search(/<!doctype\s+html\b/i);
   const htmlTag = html.search(/<html\b/i);
   if (doctype === -1 && htmlTag === -1) return html;
-  const start =
-    doctype === -1 ? htmlTag : htmlTag === -1 ? doctype : Math.min(doctype, htmlTag);
+  const start = doctype === -1 ? htmlTag : htmlTag === -1 ? doctype : Math.min(doctype, htmlTag);
   return html.slice(start).trim();
 }
 

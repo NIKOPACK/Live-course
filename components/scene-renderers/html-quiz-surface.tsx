@@ -86,6 +86,7 @@ export function HtmlQuizSurface({
       if (
         data.__livecourseInteractive === true &&
         data.kind === 'runtime-error' &&
+        data.errorKind !== 'resource' &&
         typeof data.message === 'string'
       ) {
         setFailure({ html, message: data.message.slice(0, 1200) });

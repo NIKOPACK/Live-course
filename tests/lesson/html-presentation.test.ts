@@ -238,9 +238,10 @@ describe('model-authored classroom pages', () => {
   it('extracts a complete document from preface, thinking, JSON, or a missing head', () => {
     expect(parseClassroomHtml(`好的，这是完整页面：\n${html}`)).toBe(html);
     expect(parseClassroomHtml(`</think>\n${html}`)).toBe(html);
-    expect(
-      parseClassroomHtml(`Here is the page:\n\`\`\`html\n${html}\n\`\`\`\nThanks.`),
-    ).toBe(html);
+    expect(parseClassroomHtml(`<think>${html}</think>`)).toBe(html);
+    expect(parseClassroomHtml(`Here is the page:\n\`\`\`html\n${html}\n\`\`\`\nThanks.`)).toBe(
+      html,
+    );
     expect(parseClassroomHtml(JSON.stringify({ html }))).toBe(html);
     expect(
       parseClassroomHtml(

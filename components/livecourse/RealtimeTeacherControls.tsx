@@ -33,6 +33,7 @@ import { useLiveCaptionStore } from '@/lib/store/live-caption';
 import type { SpeechAction } from '@/lib/types/action';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
 import { cn } from '@/lib/utils';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 export type RealtimePlaybackHandler = (nodeId: string) => void | Promise<void>;
 
@@ -44,7 +45,7 @@ type InterruptionTransactionPhase =
   | 'resume-compensation-pending';
 
 function createInterruptionKey(): string {
-  return `realtime:interrupt:${crypto.randomUUID()}`;
+  return `realtime:interrupt:${createBrowserUuid()}`;
 }
 
 function commandToActionInput(command: RealtimeTeachingCommand): TeachingActionInput {
@@ -315,34 +316,12 @@ export function RealtimeTeacherControls({
     const preferVolc = Boolean(
       useSettingsStore.getState().realtimeProvidersConfig?.volc?.isServerConfigured,
     );
-    if (!realtime && preferVolc) {
-      realtime = new VolcTeacherSpeechSession({
-        getInstructions: () => teachingContextRef.current,
-        onEvent: handleEvent,
-      });
-      realtimeRef.current = realtime;
-    }
-    if (!realtime) {
-      audioBridge = new RealtimeAudioBridge(audioRef.current);
-      realtime = new LiveCourseRealtimeSession({
-        courseId: livecourse.courseId,
-        lessonId: livecourse.lessonId,
-        learnerId: livecourse.learnerId,
-        getClientSecretApiKey: () =>
-          resolveRealtimeClientApiKey('openai', useSettingsStore.getState()),
-        audioBridge,
-        getLocation: () => locationRef.current,
-        getTeachingContext: () => teachingContextRef.current,
-        dispatchCommand: async (command) => {
-          const emitAction = emitActionRef.current;
-          if (!emitAction) throw new Error('LiveCourse session is not ready');
-          await emitAction(commandToActionInput(command));
-        },
-        canInterrupt: () => {
-          const state = classroomStateRef.current;
-          return state === 'teaching' || state === 'checking' || state === 'interrupted';
-        },
-        interruptNode: async (nodeId) => {
+    const getLocation = () => locationRef.current;
+    const canInterrupt = () => {
+      const state = classroomStateRef.current;
+      return state === 'teaching' || state === 'checking' || state === 'interrupted';
+    };
+    const interruptNode = async (nodeId: string) => {
           const interruptPlayback = playbackInterruptRef.current;
           const resumePlayback = playbackResumeRef.current;
           if (Boolean(interruptPlayback) !== Boolean(resumePlayback)) {
@@ -405,8 +384,8 @@ export function RealtimeTeacherControls({
             interruptionPhaseRef.current = 'idle';
             throw cause;
           }
-        },
-        resumeNode: async (nodeId) => {
+    };
+    const resumeNode = async (nodeId: string) => {
           const emitAction = emitActionRef.current;
           if (!emitAction) throw new Error('LiveCourse session is not ready');
           const interruptionKey = interruptionKeyRef.current;
@@ -486,7 +465,37 @@ export function RealtimeTeacherControls({
           interruptionKeyRef.current = null;
           interruptionResumeAttemptRef.current = 0;
           interruptionPhaseRef.current = 'idle';
+        };
+    if (!realtime && preferVolc) {
+      realtime = new VolcTeacherSpeechSession({
+        getInstructions: () => teachingContextRef.current,
+        onEvent: handleEvent,
+        getLocation,
+        canInterrupt,
+        interruptNode,
+        resumeNode,
+      });
+      realtimeRef.current = realtime;
+    }
+    if (!realtime) {
+      audioBridge = new RealtimeAudioBridge(audioRef.current);
+      realtime = new LiveCourseRealtimeSession({
+        courseId: livecourse.courseId,
+        lessonId: livecourse.lessonId,
+        learnerId: livecourse.learnerId,
+        getClientSecretApiKey: () =>
+          resolveRealtimeClientApiKey('openai', useSettingsStore.getState()),
+        audioBridge,
+        getLocation,
+        getTeachingContext: () => teachingContextRef.current,
+        dispatchCommand: async (command) => {
+          const emitAction = emitActionRef.current;
+          if (!emitAction) throw new Error('LiveCourse session is not ready');
+          await emitAction(commandToActionInput(command));
         },
+        canInterrupt,
+        interruptNode,
+        resumeNode,
         onEvent: handleEvent,
       });
       realtimeRef.current = realtime;
@@ -519,13 +528,24 @@ export function RealtimeTeacherControls({
         const realtime = realtimeRef.current;
         if (!realtime?.connected)
           return Promise.reject(new Error(translateRef.current('livecourse.voiceRequired')));
-        return realtime.speak(text, options);
+        const captions = useLiveCaptionStore.getState();
+        captions.holdCaption();
+        return realtime.speak(text, options).finally(() => {
+          captions.releaseCaption();
+        });
       },
       ask: async (text) => {
-        await startRef.current();
-        const realtime = realtimeRef.current;
-        if (!realtime?.connected) throw new Error(translateRef.current('livecourse.voiceRequired'));
-        await realtime.ask(text);
+        const captions = useLiveCaptionStore.getState();
+        captions.holdCaption();
+        try {
+          await startRef.current();
+          const realtime = realtimeRef.current;
+          if (!realtime?.connected)
+            throw new Error(translateRef.current('livecourse.voiceRequired'));
+          await realtime.ask(text);
+        } finally {
+          captions.releaseCaption();
+        }
       },
     };
     onTeacherChange?.(teacher);

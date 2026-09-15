@@ -439,14 +439,14 @@ export function streamLLM<T extends StreamTextParams>(
 export function resolveLlmText(result: {
   text?: string;
   reasoningText?: string;
+  reasoning?: Array<{ text?: string }>;
 }): string {
   const text = result.text ?? '';
   if (text.trim()) return text;
-  const reasoning = result.reasoningText ?? '';
+  const reasoning =
+    result.reasoningText ?? result.reasoning?.map((part) => part.text ?? '').join('') ?? '';
   if (reasoning.trim()) {
-    log.warn(
-      `Empty answer text; falling back to reasoning output (${reasoning.length} chars)`,
-    );
+    log.warn(`Empty answer text; falling back to reasoning output (${reasoning.length} chars)`);
     return reasoning;
   }
   return text;
@@ -458,8 +458,13 @@ export async function completeLLMText(
   thinking?: ThinkingConfig,
 ): Promise<string> {
   const result = streamLLM(params, source, thinking);
+  const [text, reasoningText, reasoningParts] = await Promise.all([
+    result.text,
+    result.reasoningText,
+    result.reasoning,
+  ]);
   return resolveLlmText({
-    text: await result.text,
-    reasoningText: await result.reasoningText,
+    text,
+    reasoningText: reasoningText || reasoningParts.map((part) => part.text).join(''),
   });
 }

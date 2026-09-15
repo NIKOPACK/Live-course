@@ -26,7 +26,6 @@ const MODELS_WITHOUT_CONFIGURABLE_THINKING = new Set<string>([
   'grok:grok-code-fast-1',
   'atlascloud:qwen/qwen3.5-flash',
   'aiping:Qwen3-Max',
-  'aiping:DeepSeek-V4.1-Flash',
   'ollama:llama3.3',
   'ollama:gemma3',
   'ollama:deepseek-r1',
@@ -76,6 +75,9 @@ describe('model metadata thinking capabilities', () => {
   it('resolves thinking capabilities for the previously missing explicit models', () => {
     expect(getCatalogThinkingCapability('siliconflow', 'deepseek-ai/DeepSeek-V3.2')).toBeDefined();
     expect(getCatalogThinkingCapability('lemonade', 'Gemma-4-26B-A4B-it-GGUF')).toBeDefined();
+    expect(getCatalogThinkingCapability('aiping', 'DeepSeek-V4.1-Flash')).toMatchObject({
+      requestAdapter: 'deepseek',
+    });
   });
 
   it('assigns fixed thinking only to the compatible Grok reasoning model', () => {

@@ -18,6 +18,7 @@ import {
   ensureRegisteredVoice,
   type VoiceRegistrationRequestConfig,
 } from '@/lib/audio/voice-registration-client';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 export type VoxCPMVoiceProfile = VoiceProfileRecord;
 
@@ -30,10 +31,7 @@ function notifyVoiceProfilesChanged(): void {
 }
 
 function createId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return createBrowserUuid();
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {

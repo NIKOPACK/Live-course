@@ -72,4 +72,22 @@ describe('classroom caption layout', () => {
     });
     expect(container.textContent).toContain('Let us try another example.');
   });
+
+  it('keeps the current utterance visible while speech is held, then fades after release', async () => {
+    const text = '今天这堂课只做一件事：让傅里叶变换不再吓人。';
+    await act(async () => {
+      root.render(createElement(LiveCaptionOverlay));
+      const captions = useLiveCaptionStore.getState();
+      captions.setCaption({ speaker: 'teacher', text });
+      captions.holdCaption();
+    });
+    await act(async () => vi.advanceTimersByTime(6001));
+    expect(container.textContent).toContain(text);
+    await act(async () => {
+      useLiveCaptionStore.getState().releaseCaption();
+    });
+    expect(container.textContent).toContain(text);
+    await act(async () => vi.advanceTimersByTime(6001));
+    expect(container.textContent).not.toContain(text);
+  });
 });

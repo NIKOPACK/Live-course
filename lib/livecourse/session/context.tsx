@@ -37,6 +37,7 @@ import {
 } from '@/lib/livecourse/domain';
 import type { Scene, Stage } from '@/lib/types/stage';
 import { listEvidenceRecords } from '@/lib/livecourse/evidence/runtime-repository';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 import { createLiveCourseEvidenceService } from '@/lib/livecourse/evidence/runtime-port';
 import {
   createTeachingActionRepository,
@@ -611,13 +612,7 @@ export class LiveCourseSessionDisabledError extends Error {
 }
 
 function mintId(prefix: string): string {
-  // crypto.randomUUID is secure-context only; over plain HTTP (e.g. a LAN or
-  // bare-IP deployment) it is undefined, so fall back to a timestamp id.
-  const id =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `${prefix}:${id}`;
+  return `${prefix}:${createBrowserUuid()}`;
 }
 
 /**

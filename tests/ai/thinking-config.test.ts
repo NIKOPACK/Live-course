@@ -7,6 +7,7 @@ import {
   getThinkingDisplayValue,
   normalizeThinkingConfig,
   supportsConfigurableThinking,
+  thinkingConfigForHtmlClassroom,
 } from '@/lib/ai/thinking-config';
 import type { ProviderId } from '@/lib/types/provider';
 
@@ -98,6 +99,17 @@ describe('thinking config metadata', () => {
 });
 
 describe('thinking config normalization', () => {
+  it('forces thinking off for HTML classroom pages', () => {
+    expect(thinkingConfigForHtmlClassroom(true, { mode: 'enabled', effort: 'high' })).toEqual({
+      mode: 'disabled',
+      enabled: false,
+    });
+    expect(thinkingConfigForHtmlClassroom(false, { mode: 'enabled', effort: 'high' })).toEqual({
+      mode: 'enabled',
+      effort: 'high',
+    });
+  });
+
   it('shares one settings key between GPT-5.6 Sol and its alias', () => {
     expect(getThinkingConfigKey('openai', 'gpt-5.6-sol')).toBe('openai:gpt-5.6');
     expect(getThinkingConfigKey('openai', 'gpt-5.6')).toBe('openai:gpt-5.6');

@@ -169,6 +169,19 @@ export class VolcRealtimeServerSession {
     this.#send({ type: 'speech_text_buffer.commit', event_id: randomUUID(), text });
   }
 
+  /** Learner text becomes a user turn so the model answers, instead of TTS of a script. */
+  sendQuery(text: string): void {
+    this.#send({
+      type: 'conversation.item.create',
+      event_id: randomUUID(),
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text }],
+      },
+    });
+  }
+
   cancelResponse(): void {
     this.#send({ type: 'response.cancel', event_id: randomUUID() });
   }

@@ -29,6 +29,7 @@ import {
   resolveLessonPlan,
 } from '@/lib/livecourse/session/context';
 import { getLearnerKey } from '@/lib/runtime/learner-key';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 import { getRuntimeStore } from '@/lib/runtime/store';
 import { useStageStore } from '@/lib/store';
 import type { ReplayEngineControls, ReplayPresentationBridge } from './ReplayPresentationBoundary';
@@ -520,7 +521,7 @@ export function LiveCourseReplayHost({
           learnerId,
           courseId,
           lessonId,
-          replayId: crypto.randomUUID(),
+          replayId: createBrowserUuid(),
         });
         let presentationOwner: ReplayOwner | null = null;
         const applyPresentation = createTeachingPresentationApplier({

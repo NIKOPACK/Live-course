@@ -7,6 +7,7 @@ describe('patchHtmlForIframe', () => {
       '<!DOCTYPE html><html><head><title>t</title></head><body></body></html>',
     );
     expect(out).toContain('data-iframe-storage-shim');
+    expect(out).toContain('data-iframe-crypto-shim');
     expect(out).toContain('data-iframe-patch');
     expect(out).toContain('box-sizing: border-box');
   });
@@ -64,9 +65,34 @@ describe('patchHtmlForIframe', () => {
     // error shim runs first → before storage shim → before page scripts, so it
     // catches errors from everything that follows.
     expect(out.indexOf('data-iframe-error-shim')).toBeLessThan(
+      out.indexOf('data-iframe-crypto-shim'),
+    );
+    expect(out.indexOf('data-iframe-crypto-shim')).toBeLessThan(
       out.indexOf('data-iframe-storage-shim'),
     );
     expect(out.indexOf('data-iframe-storage-shim')).toBeLessThan(out.indexOf('boom()'));
+  });
+
+  it('polyfills crypto.randomUUID when the sandboxed iframe has no secure-context API', () => {
+    const out = patchHtmlForIframe('<html><head></head><body></body></html>');
+    const shim = out.match(/<script data-iframe-crypto-shim>([\s\S]*?)<\/script>/)?.[1];
+    expect(shim).toBeTruthy();
+
+    const bytes = new Uint8Array(16);
+    const cryptoObj: { getRandomValues: (b: Uint8Array) => Uint8Array; randomUUID?: unknown } = {
+      getRandomValues(target: Uint8Array) {
+        target.set(bytes.fill(3));
+        return target;
+      },
+    };
+    const win = { crypto: cryptoObj };
+    new Function('window', shim as string)(win);
+
+    expect(typeof cryptoObj.randomUUID).toBe('function');
+    const id = (cryptoObj.randomUUID as () => string)();
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 
   it('the error shim posts runtime errors (onerror / resource / rejection / console.error) to the parent', () => {

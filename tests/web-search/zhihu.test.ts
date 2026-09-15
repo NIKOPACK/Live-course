@@ -6,14 +6,18 @@ vi.mock('@/lib/server/proxy-fetch', () => ({
   proxyFetch: proxyFetchMock,
 }));
 
-import { buildZhihuSearchUrl, searchWithZhihu, stripZhihuHighlight } from '@/lib/web-search/zhihu';
+import {
+  buildZhihuSearchUrl,
+  searchWithZhihu,
+  stripZhihuHighlight,
+  ZHIHU_SEARCH_TIMEOUT_MS,
+} from '@/lib/web-search/zhihu';
 
 const SAMPLE_ITEM = {
   Title: 'ChatGPT现在还值得开会员吗？',
   ContentType: 'Answer',
   ContentID: '1903044959663284716',
-  ContentText:
-    '首先要澄清一个常见误解：ChatGPT的免费版和付费版使用的是<em>不同模型</em>。',
+  ContentText: '首先要澄清一个常见误解：ChatGPT的免费版和付费版使用的是<em>不同模型</em>。',
   Url: 'https://www.zhihu.com/answer/1903044959663284716?utm_medium=openapi_platform',
   CommentCount: 22,
   VoteUpCount: 18,
@@ -67,6 +71,7 @@ describe('searchWithZhihu', () => {
     );
     expect(parsed.searchParams.get('SearchDB')).toBe('realtime');
     expect(init.method).toBe('GET');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(init.headers).toEqual({
       'Content-Type': 'application/json',
       Authorization: 'Bearer zhihu-secret',
@@ -168,6 +173,25 @@ describe('searchWithZhihu', () => {
       'Zhihu Global Search API error (1001): quota exceeded',
     );
   });
+
+  it('times out a hung Zhihu request instead of blocking generation', async () => {
+    proxyFetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        }),
+    );
+
+    const pending = expect(searchWithZhihu({ query: 'solidity', apiKey: 'key' })).rejects.toThrow(
+      `timed out after ${ZHIHU_SEARCH_TIMEOUT_MS}ms`,
+    );
+    await vi.advanceTimersByTimeAsync(ZHIHU_SEARCH_TIMEOUT_MS);
+    await pending;
+  });
 });
 
 describe('zhihu helpers', () => {
@@ -176,8 +200,6 @@ describe('zhihu helpers', () => {
   });
 
   it('builds the official endpoint from the default host', () => {
-    expect(buildZhihuSearchUrl()).toBe(
-      'https://developer.zhihu.com/api/v1/content/global_search',
-    );
+    expect(buildZhihuSearchUrl()).toBe('https://developer.zhihu.com/api/v1/content/global_search');
   });
 });

@@ -87,6 +87,7 @@ import {
   type CheckpointFeedbackInput,
 } from '@/lib/livecourse/session/teaching-flow';
 import { splitLongSpeechText } from '@/lib/audio/tts-utils';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 const MOBILE_LAYOUT_MEDIA_QUERY = '(max-width: 767px)';
 // Bound even slow Chinese narration below Realtime's per-response audio budget.
@@ -227,10 +228,7 @@ function createTeachingControlKey(
   nodeId: string,
   generation: number,
 ): string {
-  const nonce =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const nonce = createBrowserUuid();
   // The action schema caps identifiers at 240 characters. Keep the useful
   // node prefix while leaving room for the operation generation and nonce.
   return `lesson.${kind}:${nodeId.slice(0, 96)}:${generation}:${nonce}`;
@@ -917,7 +915,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             : {
                 nodeId,
                 targetNodeId: next.id,
-                idempotencyKey: `teaching:advance:${crypto.randomUUID()}`,
+                idempotencyKey: `teaching:advance:${createBrowserUuid()}`,
                 epoch: sessionEpochRef.current,
                 confirmed: false,
               };
@@ -1773,6 +1771,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             ? { skipRoundtableDiscussion: true }
             : {}),
           onSpeechCancel: () => {
+            useLiveCaptionStore.getState().releaseCaption();
             if (playbackAttemptRef.current !== attempt) return;
             const cycle = attempt.activeSpeech;
             if (!cycle) return;
@@ -1825,7 +1824,9 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             // Project it as the classroom caption so J3.1 is visible even when
             // the transport does not emit audio-transcript events.
             if (text.trim()) {
-              useLiveCaptionStore.getState().setCaption({ speaker: 'teacher', text });
+              const captions = useLiveCaptionStore.getState();
+              captions.setCaption({ speaker: 'teacher', text });
+              captions.holdCaption();
             }
             const nodeId = nodeIdForScene(currentScene.id);
             attempt.speechGeneration += 1;
@@ -1910,6 +1911,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             }
           },
           onSpeechEnd: () => {
+            useLiveCaptionStore.getState().releaseCaption();
             // Don't clear lectureSpeech — let it persist until the next
             // onSpeechStart replaces it or the scene transitions.
             // Clearing here causes fallback to idleText (first sentence).
@@ -2820,7 +2822,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         saveSceneResumePosition(sceneId, currentPlaybackActionIndexRef.current);
         clearAutoAdvanceTimer();
         const sessionId = lectureSessionIdRef.current;
-        if (engine.getMode() === 'idle') {
+        if (engine.getMode() === 'idle' || engine.getMode() === 'paused') {
           realtimeFrozenNodeRef.current = nodeId;
           return;
         }
@@ -2937,7 +2939,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           throw new Error('Finish the current interactive step before relistening');
         }
         clearAutoAdvanceTimer();
-        const operationId = crypto.randomUUID();
+        const operationId = createBrowserUuid();
         const origin = existing ?? {
           originNodeId: session.currentNodeId,
           originSceneId: currentScene.id,

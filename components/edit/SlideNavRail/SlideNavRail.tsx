@@ -6,6 +6,7 @@ import { AnimatePresence, Reorder, motion, useReducedMotion } from 'motion/react
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 import { LiveCourseMark } from '@/components/livecourse/LiveCourseMark';
 import { markStagePersistenceDirty, useStageStore } from '@/lib/store/stage';
 import { useSettingsStore } from '@/lib/store/settings';
@@ -248,12 +249,7 @@ export function SlideNavRail() {
           ? duplicateSlideScene(source, t('edit.nav.copySuffix'), newOrder)
           : {
               ...source,
-              // crypto.randomUUID is secure-context only; fall back when the
-              // app is served over plain HTTP (bare-IP/LAN deployments).
-              id:
-                typeof crypto !== 'undefined' && 'randomUUID' in crypto
-                  ? crypto.randomUUID()
-                  : `scene-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              id: createBrowserUuid(),
               title: `${source.title} ${t('edit.nav.copySuffix')}`,
               order: newOrder,
               createdAt: Date.now(),

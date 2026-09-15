@@ -14,7 +14,7 @@ import type {
   AiriVrmStatusDetail,
 } from '@/lib/livecourse/avatar/airi-vrm-element';
 import {
-  getActiveRealtimeAudioBridge,
+  getActiveLipSyncAudioNode,
   subscribeRealtimeAudioBridge,
 } from '@/lib/livecourse/realtime/client/audio-bridge';
 import { useAvatarSettingsStore } from '@/lib/store/avatar-settings';
@@ -100,7 +100,7 @@ export function TeacherAvatar({
 
         const connectActiveAudio = () => {
           if (!disposed) {
-            avatar.connectAudio(getActiveRealtimeAudioBridge()?.audioNode ?? null);
+            avatar.connectAudio(getActiveLipSyncAudioNode());
           }
         };
         removeAudioSubscription = subscribeRealtimeAudioBridge(connectActiveAudio);
@@ -154,6 +154,8 @@ export function TeacherAvatar({
       role="group"
       aria-label={t('home.teacherTitle')}
       data-avatar-mode={mode}
+      data-avatar-look-at={lookAt}
+      data-avatar-expression={expression}
       data-avatar-status={status}
       className={cn('lc-avatar relative isolate overflow-hidden', className)}
     >

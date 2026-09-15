@@ -100,6 +100,32 @@ describe('scene API retry boundary', () => {
     expect(mocks.applyOutlineFallbacks).not.toHaveBeenCalled();
   });
 
+  it('disables thinking when generating an HTML classroom page', async () => {
+    vi.resetModules();
+    mocks.generateSceneContent.mockImplementation(async (_outline, aiCall) => {
+      await aiCall('system', 'user');
+      return {
+        html: '<html><head></head><body>Lesson</body></html>',
+        htmlPresentation: true,
+      };
+    });
+    mocks.resolveModelFromRequest.mockResolvedValue({
+      model: { id: 'language-model' },
+      modelInfo: { outputWindow: 4096, capabilities: {} },
+      modelString: 'aiping:DeepSeek-V4.1-Flash',
+      thinkingConfig: { mode: 'enabled', effort: 'high' },
+    });
+
+    const { POST } = await import('@/app/api/generate/scene-content/route');
+    const response = await POST(
+      mockRequest({
+        presentation: { mode: 'html', visualStyle: 'Editorial ink and teal diagrams.' },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.callLLM.mock.calls[0][2]).toEqual({ mode: 'disabled', enabled: false });
+  });
+
   it('rejects an invalid direction instead of silently switching a new page to templates', async () => {
     const { POST } = await import('@/app/api/generate/scene-content/route');
     const response = await POST(mockRequest({ presentation: { mode: 'html', visualStyle: '' } }));
@@ -147,6 +173,40 @@ describe('scene API retry boundary', () => {
 
     expect(body.success).toBe(true);
     expect(mocks.callLLM.mock.calls[0][0].maxRetries).toBe(0);
+  });
+
+  it('disables thinking when generating teacher actions for an HTML page', async () => {
+    vi.resetModules();
+    mocks.generateSceneActions.mockImplementation(async (_outline, _content, aiCall) => {
+      await aiCall('system', 'user');
+      return [];
+    });
+    mocks.buildCompleteScene.mockReturnValue({
+      id: 'scene-1',
+      type: 'interactive',
+      title: outline.title,
+      order: outline.order,
+      content: { html: '<html><head></head><body>Lesson</body></html>' },
+      actions: [],
+    });
+    mocks.resolveModelFromRequest.mockResolvedValue({
+      model: { id: 'language-model' },
+      modelInfo: { outputWindow: 4096, capabilities: {} },
+      modelString: 'aiping:DeepSeek-V4.1-Flash',
+      thinkingConfig: { mode: 'enabled', effort: 'high' },
+    });
+
+    const { POST } = await import('@/app/api/generate/scene-actions/route');
+    const response = await POST(
+      mockRequest({
+        content: {
+          html: '<html><head></head><body>Lesson</body></html>',
+          htmlPresentation: true,
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.callLLM.mock.calls[0][2]).toEqual({ mode: 'disabled', enabled: false });
   });
 
   it('normalizes stored legacy PBL content before generating actions and building the scene', async () => {

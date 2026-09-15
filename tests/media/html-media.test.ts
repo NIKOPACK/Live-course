@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { htmlMediaReferences, replaceHtmlMediaReferences } from '@/lib/livecourse/html/media';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  htmlMediaReferences,
+  iframeSafeMediaUrl,
+  replaceHtmlMediaReferences,
+  UNRESOLVED_HTML_MEDIA_SRC,
+} from '@/lib/livecourse/html/media';
 import { collectStageAssetRefs } from '@/lib/media/collect-stage-asset-refs';
 import type { Scene } from '@/lib/types/stage';
 
@@ -46,4 +51,28 @@ describe('model HTML media references', () => {
       expect(refs.referenceCounts.get('asset-1')).toBe(1);
     },
   );
+});
+
+describe('iframeSafeMediaUrl', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('inlines parent blob URLs as data URLs the sandboxed iframe can load', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'image/png' } })),
+    );
+    await expect(iframeSafeMediaUrl('blob:https://livecourse.nikopack.works/abc')).resolves.toBe(
+      `data:image/png;base64,${btoa('\x01\x02\x03')}`,
+    );
+    expect(fetch).toHaveBeenCalledWith('blob:https://livecourse.nikopack.works/abc');
+  });
+
+  it('leaves https and data URLs unchanged', async () => {
+    await expect(iframeSafeMediaUrl('https://cdn.example/a.png')).resolves.toBe(
+      'https://cdn.example/a.png',
+    );
+    await expect(iframeSafeMediaUrl(UNRESOLVED_HTML_MEDIA_SRC)).resolves.toBe(UNRESOLVED_HTML_MEDIA_SRC);
+  });
 });

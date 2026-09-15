@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  getActiveLipSyncAudioNode,
   getActiveRealtimeAudioBridge,
   RealtimeAudioBridge,
+  registerLipSyncAudioNode,
   registerRealtimeAudioBridge,
   subscribeRealtimeAudioBridge,
 } from '@/lib/livecourse/realtime/client/audio-bridge';
@@ -49,5 +51,16 @@ describe('Realtime audio bridge registry', () => {
     expect(snapshots).toEqual([bridge, null]);
     expect(audioElement.pause).toHaveBeenCalledOnce();
     unsubscribe();
+  });
+
+  it('prefers a Volc playback tap over the OpenAI media-element bridge for lip-sync', () => {
+    const tap = {} as AudioNode;
+    const bridge = { audioNode: {} as AudioNode } as RealtimeAudioBridge;
+    cleanupActiveBridge = registerRealtimeAudioBridge(bridge);
+    const releaseTap = registerLipSyncAudioNode(tap);
+
+    expect(getActiveLipSyncAudioNode()).toBe(tap);
+    releaseTap();
+    expect(getActiveLipSyncAudioNode()).toBe(bridge.audioNode);
   });
 });

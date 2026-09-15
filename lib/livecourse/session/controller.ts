@@ -17,6 +17,7 @@ import {
   type CourseStateSnapshot,
   type CourseStateSnapshotInput,
 } from '@/lib/livecourse/session/course-state-snapshot';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 /**
  * 课堂状态机（docs/spec/04-detailed-design.md §1，A2）。任何失败保持原状态
@@ -1427,7 +1428,7 @@ export class ClassroomController {
     const event = lessonCompletionEventSchema.parse({
       schemaVersion: 1,
       type: 'lesson.complete_node',
-      id: deps.createEventId?.() ?? `lesson-completion:${crypto.randomUUID()}`,
+      id: deps.createEventId?.() ?? `lesson-completion:${createBrowserUuid()}`,
       idempotencyKey: input.idempotencyKey,
       classroomSessionId: deps.classroomSessionId,
       courseId: deps.courseId,
@@ -1724,7 +1725,7 @@ export class ReplaySessionController {
   constructor(deps: ReplaySessionDeps) {
     this.#deps = deps;
     this.#now = deps.now ?? (() => new Date().toISOString());
-    this.#createActionId = deps.createActionId ?? (() => `replay-action:${crypto.randomUUID()}`);
+    this.#createActionId = deps.createActionId ?? (() => `replay-action:${createBrowserUuid()}`);
   }
 
   getState(): ReplaySessionState {

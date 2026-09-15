@@ -13,6 +13,7 @@
 import { BrowserKVStore, type KVStore } from '@livecourse/storage';
 
 import { registerRuntimeStorageResetHook, resolveConfiguredLearnerKey } from './config';
+import { createBrowserUuid } from '@/lib/utils/random-id';
 
 export const LEARNER_KEY_KV_KEY = 'runtime.learnerKey';
 
@@ -29,11 +30,7 @@ registerRuntimeStorageResetHook(() => {
 });
 
 function mintLearnerKey(): string {
-  const uuid =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `anon:${uuid}`;
+  return `anon:${createBrowserUuid()}`;
 }
 
 async function mintPersisted(store: KVStore): Promise<string> {

@@ -68,7 +68,9 @@ import { getLearnerKey } from '@/lib/runtime/learner-key';
 import { getRuntimeStore } from '@/lib/runtime/store';
 import { createGenerationIdentity } from './generation-preview/types';
 import {
+  SHOWCASE_CLASSROOM_ID,
   buildGenerationResumeSession,
+  isFourierShowcaseSession,
   parseGenerationSession,
   shouldOpenGenerationPreview,
   type GenerationSessionState,
@@ -278,6 +280,31 @@ function HomePage() {
           outline: stageData?.outline,
         })
       ) {
+        if (
+          isFourierShowcaseSession({
+            name: classroom.name,
+            courseTitle: liveSession?.courseTitle,
+            requirement: liveSession?.requirements.requirement,
+          })
+        ) {
+          if (liveSession) {
+            sessionStorage.setItem(
+              'generationSession',
+              JSON.stringify({
+                ...liveSession,
+                stageId: SHOWCASE_CLASSROOM_ID,
+                currentStep: 'complete',
+                previewPhase: 'generating-content',
+              }),
+            );
+          }
+          courseEntryActionRef.current = 'continue';
+          courseEntryRequestEpochRef.current += 1;
+          courseEntryRef.current = null;
+          setCourseEntry(null);
+          router.push(`/classroom/${SHOWCASE_CLASSROOM_ID}`);
+          return;
+        }
         const keepLive =
           liveSession?.stageId === classroom.id && liveSession.currentStep !== 'complete';
         if (!keepLive) {

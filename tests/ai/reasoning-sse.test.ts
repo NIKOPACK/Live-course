@@ -85,6 +85,14 @@ describe('createReasoningContentRewriter', () => {
     expect(contentOf(out)).toBe('</think>');
   });
 
+  it('treats a reasoning-only completion as the answer when finish arrives on the first reasoning chunk', () => {
+    const rw = createReasoningContentRewriter();
+    const page = '<!DOCTYPE html><html><head></head><body><p>ok</p></body></html>';
+    const out = rw(chunk({ reasoning_content: page }, 'stop'));
+    expect(contentOf(out)).toBe(page);
+    expect(hasRC(out)).toBe(false);
+  });
+
   it('closes the block within a chunk that carries BOTH reasoning_content and content', () => {
     const rw = createReasoningContentRewriter();
     // Some providers send the transition in one delta: reasoning + answer.
@@ -127,6 +135,18 @@ describe('wrapResponseWithReasoning', () => {
     expect(contents.join('')).toBe('<think>We think</think>391');
     expect(text).toContain('data: [DONE]');
     expect(text).not.toContain('reasoning_content');
+  });
+
+  it('emits a reasoning-only page as content when finish_reason is on the first reasoning chunk', async () => {
+    const page = '<!DOCTYPE html><html><head></head><body>ok</body></html>';
+    const res = wrapResponseWithReasoning(
+      sseResponse([dataLine({ reasoning_content: page }, 'stop'), 'data: [DONE]\n\n']),
+    );
+    const text = await readAll(res);
+    const contents = [...text.matchAll(/"content":"((?:[^"\\]|\\.)*)"/g)].map((m) =>
+      JSON.parse(`"${m[1]}"`),
+    );
+    expect(contents.join('')).toBe(page);
   });
 
   it('preserves framing when a data: line is split across read chunks', async () => {
@@ -219,6 +239,30 @@ describe('Kimi reasoning preservation', () => {
       content: '<think>tool rationale</think>',
       tool_calls: [{ id: 'call-1' }],
     });
+    expect(body.choices[0].message).not.toHaveProperty('reasoning_content');
+  });
+
+  it('promotes a reasoning-only page into content instead of wrapping it as think', async () => {
+    const page = '<!DOCTYPE html><html><head></head><body><p>ok</p></body></html>';
+    const response = await wrapJsonResponseWithReasoning(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: '',
+                reasoning_content: page,
+              },
+            },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    const body = await response.json();
+    expect(body.choices[0].message.content).toBe(page);
     expect(body.choices[0].message).not.toHaveProperty('reasoning_content');
   });
 });

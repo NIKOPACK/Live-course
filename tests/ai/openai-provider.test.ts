@@ -343,6 +343,7 @@ describe('OpenAI provider defaults', () => {
     ['grok', 'grok-4.5', { mode: 'enabled', effort: 'medium' }, { reasoning_effort: 'medium' }],
     ['grok', 'grok-4.3', { mode: 'disabled', effort: 'none' }, { reasoning_effort: 'none' }],
     ['kimi', 'kimi-k2.6', { mode: 'disabled' }, { thinking: { type: 'disabled' } }],
+    ['aiping', 'DeepSeek-V4.1-Flash', { mode: 'disabled' }, { thinking: { type: 'disabled' } }],
     ['glm', 'glm-5.1', { mode: 'enabled' }, { thinking: { type: 'enabled' } }],
     [
       'glm',

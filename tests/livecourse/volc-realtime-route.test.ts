@@ -82,4 +82,19 @@ describe('Volc realtime route', () => {
       error: { code: 'REALTIME_SESSION_NOT_FOUND' },
     });
   });
+
+  it('accepts a learner query as a typed action before resolving its session', async () => {
+    const response = await POST(
+      request({
+        action: 'query',
+        sessionId: 'missing-query-session',
+        text: '傅里叶变换和拉普拉斯变换有什么区别？',
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'REALTIME_SESSION_NOT_FOUND' },
+    });
+  });
 });

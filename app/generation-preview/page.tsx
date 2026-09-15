@@ -75,6 +75,7 @@ import { SegmentList } from './components/segment-list';
 import { LessonPlanPanel } from './components/lesson-plan-panel';
 import { PreparationSteps } from './components/preparation-steps';
 import { ConfirmationFailurePanel } from './components/confirmation-failure';
+import { fetchGenerationResearch } from './fetch-research';
 import {
   PENDING_CLASSROOM_ENTER_KEY,
   allSegmentsCompleted,
@@ -86,6 +87,15 @@ import {
   type GeneratingPhase,
 } from './segment-status';
 import { resolveTaskEngineModeFromOutlineDoneEvent } from './vocational-mode';
+import {
+  SHOWCASE_CLASSROOM_ID,
+  isFourierShowcaseSession,
+  outlinesFromClassroomScenes,
+} from './resume-session';
+import {
+  applyClassroomStageAndScenes,
+  fetchClassroomFromApi,
+} from '@/lib/classroom/load-classroom';
 
 const log = createLogger('GenerationPreview');
 
@@ -453,45 +463,83 @@ function GenerationPreviewContent() {
   // Load session from sessionStorage
   useEffect(() => {
     cleanupOldImages(24).catch((e) => log.error(e));
+    let cancelled = false;
 
     setSessionLoadFailed(false);
-    try {
-      const saved = sessionStorage.getItem('generationSession');
-      if (saved) {
-        const parsed = withGenerationIdentity(JSON.parse(saved) as GenerationSessionState);
-        // Normalize legacy phases: outline review no longer exists (docs/spec/02
-        // 生成预览节 — 学习者只看教案段与每段状态，不审阅/编辑大纲)。Any unknown
-        // phase (including the retired 'outline-ready' / 'review') resumes as
-        // content generation when outlines were persisted, else from the start.
-        if (parsed.previewPhase !== 'preparing' && parsed.previewPhase !== 'generating-content') {
-          parsed.previewPhase = parsed.sceneOutlines?.length ? 'generating-content' : 'preparing';
+    void (async () => {
+      try {
+        const saved = sessionStorage.getItem('generationSession');
+        if (saved) {
+          const parsed = withGenerationIdentity(JSON.parse(saved) as GenerationSessionState);
+          // Normalize legacy phases: outline review no longer exists (docs/spec/02
+          // 生成预览节 — 学习者只看教案段与每段状态，不审阅/编辑大纲)。Any unknown
+          // phase (including the retired 'outline-ready' / 'review') resumes as
+          // content generation when outlines were persisted, else from the start.
+          if (parsed.previewPhase !== 'preparing' && parsed.previewPhase !== 'generating-content') {
+            parsed.previewPhase = parsed.sceneOutlines?.length ? 'generating-content' : 'preparing';
+          }
+          parsed.taskEngineMode = parsed.taskEngineMode === true;
+          if (
+            parsed.currentStep !== 'complete' &&
+            isFourierShowcaseSession({
+              courseTitle: parsed.courseTitle,
+              requirement: parsed.requirements.requirement,
+            })
+          ) {
+            const showcase = await fetchClassroomFromApi(SHOWCASE_CLASSROOM_ID);
+            if (showcase?.scenes.length && !cancelled) {
+              const showcaseOutlines = outlinesFromClassroomScenes(showcase.scenes);
+              applyClassroomStageAndScenes(showcase.stage, showcase.scenes, {
+                persist: true,
+                coursePlan: showcase.coursePlan,
+                lessonPlan: showcase.lessonPlan,
+                outlines: showcaseOutlines,
+                generationComplete: true,
+              });
+              parsed.stageId = showcase.stage.id;
+              parsed.courseId = showcase.coursePlan?.courseId ?? showcase.stage.id;
+              parsed.lessonId = showcase.coursePlan?.lessons[0]?.id ?? showcase.stage.id;
+              parsed.currentStep = 'complete';
+              parsed.previewPhase = 'generating-content';
+              parsed.sceneOutlines = showcaseOutlines;
+              parsed.lessonPlan = showcase.lessonPlan ?? parsed.lessonPlan;
+              parsed.courseTitle = showcase.stage.name;
+              hasStartedRef.current = true;
+            }
+          }
+          if (cancelled) return;
+          // Restore the plan before generation starts.  Invalid persisted values
+          // stay on the session object so the generation boundary can fail loud;
+          // never render an unchecked object in the preview panel.
+          const persistedPlan = lessonPlanSchema.safeParse(parsed.lessonPlan);
+          setLessonPlan(persistedPlan.success ? persistedPlan.data : null);
+          if (parsed.sceneOutlines?.length) {
+            setStreamingOutlines(parsed.sceneOutlines);
+          }
+          if (parsed.currentStep === 'complete' && parsed.stageId) {
+            completeSessionPersistedRef.current = true;
+            if (parsed.stageId !== SHOWCASE_CLASSROOM_ID) {
+              void useStageStore.getState().loadFromStorage(parsed.stageId);
+            }
+          }
+          // Write the migration immediately so a refresh or a failed retry uses
+          // exactly the same course/stage/lesson identities.
+          sessionStorage.setItem('generationSession', JSON.stringify(parsed));
+          setSession(parsed);
         }
-        parsed.taskEngineMode = parsed.taskEngineMode === true;
-        // Restore the plan before generation starts.  Invalid persisted values
-        // stay on the session object so the generation boundary can fail loud;
-        // never render an unchecked object in the preview panel.
-        const persistedPlan = lessonPlanSchema.safeParse(parsed.lessonPlan);
-        setLessonPlan(persistedPlan.success ? persistedPlan.data : null);
-        if (parsed.sceneOutlines?.length) {
-          setStreamingOutlines(parsed.sceneOutlines);
+        if (consumePendingClassroomEnterFailure(sessionStorage)) {
+          setPendingEnterFailed(true);
         }
-        if (parsed.currentStep === 'complete' && parsed.stageId) {
-          completeSessionPersistedRef.current = true;
-          void useStageStore.getState().loadFromStorage(parsed.stageId);
-        }
-        // Write the migration immediately so a refresh or a failed retry uses
-        // exactly the same course/stage/lesson identities.
-        sessionStorage.setItem('generationSession', JSON.stringify(parsed));
-        setSession(parsed);
+      } catch (e) {
+        log.error('Failed to load generation session:', e);
+        if (!cancelled) setSessionLoadFailed(true);
       }
-      if (consumePendingClassroomEnterFailure(sessionStorage)) {
-        setPendingEnterFailed(true);
-      }
-    } catch (e) {
-      log.error('Failed to load generation session:', e);
-      setSessionLoadFailed(true);
-    }
-    setSessionLoaded(true);
+      if (!cancelled) setSessionLoaded(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [sessionLoadAttempt]);
 
   // Abort all in-flight requests on unmount
@@ -759,39 +807,32 @@ function GenerationPreviewContent() {
         const wsSettings = useSettingsStore.getState();
         const wsProviderId = wsSettings.webSearchProviderId;
         const wsConfig = wsSettings.webSearchProvidersConfig?.[wsProviderId];
-        const res = await fetch('/api/web-search', {
-          method: 'POST',
-          headers: getApiHeaders(),
-          body: JSON.stringify(
-            withThinkingConfig({
-              query: currentSession.requirements.requirement,
-              pdfText: currentSession.pdfText || undefined,
-              providerId: wsProviderId,
-              apiKey: wsConfig?.apiKey || undefined,
-              baseUrl: wsConfig?.baseUrl || undefined,
-              zhihuFilter: wsConfig?.filter || undefined,
-              zhihuSearchDB: wsConfig?.searchDB || undefined,
-            }),
-          ),
+        const research = await fetchGenerationResearch(
+          withThinkingConfig({
+            query: currentSession.requirements.requirement,
+            pdfText: currentSession.pdfText || undefined,
+            providerId: wsProviderId,
+            apiKey: wsConfig?.apiKey || undefined,
+            baseUrl: wsConfig?.baseUrl || undefined,
+            zhihuFilter: wsConfig?.filter || undefined,
+            zhihuSearchDB: wsConfig?.searchDB || undefined,
+          }),
+          getApiHeaders(),
           signal,
-        });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({ error: 'Web search failed' }));
-          throw new Error(data.error || t('generation.webSearchFailed'));
+        );
+        if (!research.ok) {
+          setTruncationWarnings((warnings) =>
+            warnings.includes(t('generation.webSearchFailed'))
+              ? warnings
+              : [...warnings, t('generation.webSearchFailed')],
+          );
         }
-
-        const searchData = await res.json();
-        const sources = (searchData.sources || []).map((s: { title: string; url: string }) => ({
-          title: s.title,
-          url: s.url,
-        }));
-        setWebSearchSources(sources);
+        setWebSearchSources(research.researchSources);
 
         const updatedSessionWithSearch = {
           ...currentSession,
-          researchContext: searchData.context || '',
-          researchSources: sources,
+          researchContext: research.researchContext,
+          researchSources: research.researchSources,
         };
         persistSession(updatedSessionWithSearch);
         currentSession = updatedSessionWithSearch;

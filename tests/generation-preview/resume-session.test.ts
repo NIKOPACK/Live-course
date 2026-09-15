@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  SHOWCASE_CLASSROOM_ID,
   buildGenerationResumeSession,
+  isFourierShowcaseSession,
   isGenerationPending,
+  outlinesFromClassroomScenes,
   parseGenerationSession,
   shouldKeepLiveGenerationSession,
   shouldOpenGenerationPreview,
 } from '@/app/generation-preview/resume-session';
+import { allSegmentsCompleted, deriveSegmentProgress } from '@/app/generation-preview/segment-status';
 import type { LessonPlan } from '@/lib/livecourse/domain/schemas';
 import type { SceneOutline } from '@/lib/types/generation';
 
@@ -20,6 +24,49 @@ function outline(id: string, order: number): SceneOutline {
     order,
   };
 }
+
+describe('outlinesFromClassroomScenes', () => {
+  it('projects classroom scenes so preview segments can complete', () => {
+    const outlines = outlinesFromClassroomScenes([
+      {
+        id: 'scene-a',
+        outlineId: 'why',
+        title: '为什么需要傅里叶变换',
+        type: 'interactive',
+        order: 0,
+      } as never,
+      {
+        id: 'scene-b',
+        title: '测验',
+        type: 'quiz',
+        order: 1,
+      } as never,
+    ]);
+    expect(outlines).toEqual([
+      expect.objectContaining({ id: 'why', type: 'interactive', order: 0 }),
+      expect.objectContaining({ id: 'scene-b', type: 'quiz', order: 1 }),
+    ]);
+    const segments = deriveSegmentProgress({
+      outlines,
+      scenes: [
+        { id: 'scene-a', outlineId: 'why', title: '为什么需要傅里叶变换', type: 'interactive', order: 0 },
+        { id: 'scene-b', title: '测验', type: 'quiz', order: 1 },
+      ] as never,
+      failedOutlines: [],
+      generatingOutlines: [],
+    });
+    expect(allSegmentsCompleted(segments)).toBe(true);
+  });
+});
+
+describe('isFourierShowcaseSession', () => {
+  it('matches the server Fourier showcase by title or requirement', () => {
+    expect(SHOWCASE_CLASSROOM_ID).toBe('fourier-intro');
+    expect(isFourierShowcaseSession({ courseTitle: '傅里叶变换直观入门' })).toBe(true);
+    expect(isFourierShowcaseSession({ requirement: 'Fourier Transform intro' })).toBe(true);
+    expect(isFourierShowcaseSession({ name: 'Python 入门' })).toBe(false);
+  });
+});
 
 describe('isGenerationPending', () => {
   it('treats only an explicit incomplete deck as pending', () => {
