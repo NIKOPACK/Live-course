@@ -65,6 +65,50 @@ describe('VolcTeacherSpeechSession', () => {
     vi.unstubAllGlobals();
   });
 
+  it('reconnects and preserves mute when an input timeout interrupts authored narration', async () => {
+    sessionMocks.speakText.mockRejectedValueOnce(
+      new Error('sami error: codes=52000033, desc=AudioServerNoAudioInputTooLongError'),
+    );
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Current node context.',
+      speechRetry: instantRetry,
+    });
+    await session.connect();
+    session.mute(true);
+    await session.speak('Repeat only this unfinished sentence.');
+    expect(sessionMocks.connect).toHaveBeenCalledTimes(2);
+    expect(sessionMocks.speakText).toHaveBeenCalledTimes(2);
+    expect(sessionMocks.speakText).toHaveBeenLastCalledWith(
+      'Repeat only this unfinished sentence.',
+      { requireAudio: true },
+    );
+    expect(sessionMocks.mute).toHaveBeenCalledTimes(2);
+    expect(sessionMocks.mute).toHaveBeenLastCalledWith(true);
+    await session.close();
+  });
+
+  it('reconnects a failed typed question without repeating the interruption transaction', async () => {
+    sessionMocks.askQuestion.mockRejectedValueOnce(
+      new Error('AudioServerNoAudioInputTooLongError'),
+    );
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi.fn(async () => undefined);
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Current node context.',
+      getLocation: () => ({ sceneId: 'current-scene', nodeId: 'current-node' }),
+      interruptNode,
+      resumeNode,
+      speechRetry: instantRetry,
+    });
+    await session.connect();
+    await session.ask('Why?');
+    expect(sessionMocks.connect).toHaveBeenCalledTimes(2);
+    expect(sessionMocks.askQuestion).toHaveBeenCalledTimes(2);
+    expect(interruptNode).toHaveBeenCalledExactlyOnceWith('current-node');
+    expect(resumeNode).toHaveBeenCalledExactlyOnceWith('current-node');
+    await session.close();
+  });
+
   it('waits for real oral feedback, follows up twice and never uses ordinary interruption/resume', async () => {
     const interruptNode = vi.fn();
     const resumeNode = vi.fn();

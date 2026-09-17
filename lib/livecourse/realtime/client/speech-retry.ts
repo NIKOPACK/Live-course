@@ -1,4 +1,5 @@
 import { isAbortError, isRetryableGenerationError } from '@/lib/generation/generation-retry';
+import { isVolcAudioInputTimeout } from '@/lib/livecourse/realtime/volc/protocol';
 
 const SPEECH_MAX_RETRIES = 2;
 const SPEECH_BASE_DELAY_MS = 400;
@@ -14,6 +15,7 @@ export function isRetryableRealtimeSpeechError(error: unknown): boolean {
   if (isAbortError(error)) return false;
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (NON_RETRYABLE_SPEECH.test(message)) return false;
+  if (isVolcAudioInputTimeout(error)) return true;
   if (RETRYABLE_SPEECH.test(message)) return true;
   return isRetryableGenerationError(error);
 }

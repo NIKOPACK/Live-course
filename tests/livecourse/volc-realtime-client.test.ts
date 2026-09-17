@@ -444,4 +444,82 @@ describe('Volc realtime browser narration', () => {
     ).toHaveLength(0);
     await session.close();
   });
+
+  it('closes a timed-out input session instead of retrying a turn on a dead connection', async () => {
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    const source = new FakeEventSource();
+    const events: Array<{ type: string; status?: string }> = [];
+    const requests: Array<{ action: string }> = [];
+    const session = new VolcRealtimeBrowserSession({
+      captureMicrophone: false,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        requests.push(body);
+        return Response.json(
+          body.action === 'connect' ? { sessionId: 'idle-session' } : { success: true },
+        );
+      },
+      eventSourceFactory: () => source as unknown as EventSource,
+      onEvent: (event) => events.push(event),
+    });
+    const connecting = session.connect('Teach');
+    await vi.waitFor(() => expect(source.onmessage).toBeTypeOf('function'));
+    source.emit({ type: 'local.connected', sessionId: 'idle-session' });
+    await connecting;
+    const speaking = session.speakText('Continue the current sentence.');
+    const rejected = expect(speaking).rejects.toThrow('52000033');
+    source.emit({
+      type: 'upstream.event',
+      event: {
+        type: 'error',
+        error: {
+          code: '55000000',
+          message: 'sami error: codes=52000033, desc=AudioServerNoAudioInputTooLongError',
+        },
+      },
+    });
+    await rejected;
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.action === 'close')).toBe(true),
+    );
+    expect(events).toContainEqual({ type: 'status', status: 'error' });
+    expect(events.some((event) => event.type === 'audio_completed')).toBe(false);
+    await expect(session.speakText('Must reconnect first.')).rejects.toThrow('not connected');
+  });
+
+  it('releases a microphone permission grant that arrives after the session closed', async () => {
+    vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval });
+    const createContext = vi.fn(function () {
+      throw new Error('A closed session must not initialize a recorder');
+    });
+    vi.stubGlobal('AudioContext', createContext);
+    let grant!: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void;
+    const stop = vi.fn();
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: () =>
+          new Promise((resolve) => {
+            grant = resolve;
+          }),
+      },
+    });
+    const source = new FakeEventSource();
+    const session = new VolcRealtimeBrowserSession({
+      fetchImpl: async (_url, init) =>
+        Response.json(
+          JSON.parse(String(init?.body)).action === 'connect'
+            ? { sessionId: 'late-microphone' }
+            : { success: true },
+        ),
+      eventSourceFactory: () => source as unknown as EventSource,
+    });
+    const connecting = session.connect('Teach');
+    await vi.waitFor(() => expect(source.onmessage).toBeTypeOf('function'));
+    source.emit({ type: 'local.connected', sessionId: 'late-microphone' });
+    await connecting;
+    await session.close();
+    grant({ getTracks: () => [{ stop }] });
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    expect(createContext).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,10 @@ import WebSocket, { type ClientOptions, type RawData } from 'ws';
 
 import {
   buildVolcSessionCreate,
+  isVolcSessionFailure,
+  VOLC_INPUT_FRAME_BYTES,
+  VOLC_INPUT_FRAME_MS,
+  VOLC_MAX_INPUT_BUFFER_BYTES,
   VOLC_REALTIME_RESOURCE_ID,
   VOLC_REALTIME_URL,
   type VolcRealtimeVoice,
@@ -16,6 +20,7 @@ const CONNECTION_TIMEOUT_MS = 15_000;
 const SESSION_LIFETIME_MS = 15 * 60_000;
 const MAX_BUFFERED_EVENTS = 100;
 const MAX_ACTIVE_SESSIONS = 8;
+const INPUT_IDLE_MS = 1_000;
 
 type EventListener = (event: VolcRealtimeRelayEvent) => void;
 type WebSocketFactory = (url: string, options: ClientOptions) => WebSocket;
@@ -53,6 +58,14 @@ export class VolcRealtimeServerSession {
   readonly #lifetimeTimer: ReturnType<typeof setTimeout>;
   #socket: WebSocket | null = null;
   #closed = false;
+  #inputTimer: ReturnType<typeof setTimeout> | undefined;
+  #inputBuffer: Buffer = Buffer.alloc(0);
+  #inputGeneration = 0;
+  #inputEnabled = true;
+  #upstreamInputMuted = false;
+  #lastInputAt: number | null = null;
+  #nextInputAt = 0;
+  #inputCommitPending = false;
 
   constructor(options: VolcRealtimeServerSessionOptions) {
     this.#options = options;
@@ -149,11 +162,84 @@ export class VolcRealtimeServerSession {
     return () => this.#listeners.delete(listener);
   }
 
-  sendAudio(audio: string): void {
-    this.#send({ type: 'input_audio_buffer.append', event_id: randomUUID(), audio });
+  sendAudio(audio: string, generation = 0): void {
+    if (this.#closed || this.#socket?.readyState !== WebSocket.OPEN) {
+      throw new VolcRealtimeUpstreamError('Volc realtime session is not connected');
+    }
+    if (!this.#inputEnabled || generation !== this.#inputGeneration) return;
+    const bytes = Buffer.from(audio, 'base64');
+    if (!bytes.length || bytes.length % Int16Array.BYTES_PER_ELEMENT !== 0) {
+      throw new VolcRealtimeUpstreamError('Invalid realtime PCM input');
+    }
+    if (this.#inputBuffer.length + bytes.length > VOLC_MAX_INPUT_BUFFER_BYTES) {
+      throw new VolcRealtimeUpstreamError('Realtime audio input backlog exceeded its limit');
+    }
+    this.#inputBuffer = Buffer.concat([this.#inputBuffer, bytes]);
+  }
+
+  setInputEnabled(enabled: boolean, generation: number): void {
+    if (generation < this.#inputGeneration) return;
+    this.#inputGeneration = generation;
+    this.#inputEnabled = enabled;
+    this.#inputBuffer = Buffer.alloc(0);
+    this.#inputCommitPending = false;
+    if (!enabled && this.#inputTimer) this.#setUpstreamInputMuted(true);
+  }
+
+  #setUpstreamInputMuted(muted: boolean): void {
+    if (this.#upstreamInputMuted === muted) return;
+    this.#send({
+      type: muted ? 'input_audio_mute.commit' : 'input_audio_unmute.commit',
+      event_id: randomUUID(),
+    });
+    this.#upstreamInputMuted = muted;
+  }
+
+  #pumpInput(): void {
+    if (this.#closed) return;
+    try {
+      if (
+        this.#inputBuffer.length >= VOLC_INPUT_FRAME_BYTES ||
+        (this.#inputCommitPending && this.#inputBuffer.length > 0)
+      ) {
+        this.#setUpstreamInputMuted(false);
+        const frame = this.#inputBuffer.subarray(0, VOLC_INPUT_FRAME_BYTES);
+        this.#send({
+          type: 'input_audio_buffer.append',
+          event_id: randomUUID(),
+          audio: frame.toString('base64'),
+        });
+        this.#inputBuffer = this.#inputBuffer.subarray(VOLC_INPUT_FRAME_BYTES);
+        this.#lastInputAt = Date.now();
+        if (this.#inputCommitPending && !this.#inputBuffer.length) {
+          this.#send({ type: 'input_audio_buffer.commit', event_id: randomUUID() });
+          this.#inputCommitPending = false;
+        }
+      } else if (this.#lastInputAt === null || Date.now() - this.#lastInputAt >= INPUT_IDLE_MS) {
+        this.#setUpstreamInputMuted(true);
+      }
+    } catch (error) {
+      this.#emit({
+        type: 'local.error',
+        message: error instanceof Error ? error.message : 'Volc realtime audio input failed',
+      });
+      this.close();
+      return;
+    }
+    // Correct timer drift without bursting queued audio after an event-loop stall.
+    this.#nextInputAt = Math.max(
+      this.#nextInputAt + VOLC_INPUT_FRAME_MS,
+      Date.now() + VOLC_INPUT_FRAME_MS / 2,
+    );
+    this.#inputTimer = setTimeout(() => this.#pumpInput(), this.#nextInputAt - Date.now());
+    this.#inputTimer.unref?.();
   }
 
   commitAudio(): void {
+    if (this.#inputBuffer.length) {
+      this.#inputCommitPending = true;
+      return;
+    }
     this.#send({ type: 'input_audio_buffer.commit', event_id: randomUUID() });
   }
 
@@ -189,12 +275,16 @@ export class VolcRealtimeServerSession {
   close(): void {
     if (this.#closed) return;
     const socket = this.#socket;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'session.close', event_id: randomUUID() }));
-      socket.close();
-      return;
-    }
     this.#finishClose();
+    if (socket?.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: 'session.close', event_id: randomUUID() }));
+        socket.close();
+      } catch (error) {
+        console.warn('Volc realtime socket close failed', error);
+        socket.terminate();
+      }
+    }
   }
 
   #send(payload: Record<string, unknown>): void {
@@ -213,7 +303,18 @@ export class VolcRealtimeServerSession {
       this.#emit({ type: 'local.error', message: 'Volc realtime returned invalid JSON' });
       return;
     }
+    if (event.type === 'session.created' && !this.#inputTimer && !this.#closed) {
+      // The duplex service requires explicit mute, not fake microphone audio.
+      this.#nextInputAt = Date.now();
+      this.#pumpInput();
+    }
     this.#emit({ type: 'upstream.event', event });
+    if (
+      event.type === 'session.closed' ||
+      (event.type === 'error' && isVolcSessionFailure(event))
+    ) {
+      this.close();
+    }
   }
 
   #emit(event: VolcRealtimeRelayEvent): void {
@@ -229,6 +330,10 @@ export class VolcRealtimeServerSession {
     if (this.#closed) return;
     this.#closed = true;
     clearTimeout(this.#lifetimeTimer);
+    clearTimeout(this.#inputTimer);
+    this.#inputTimer = undefined;
+    this.#inputBuffer = Buffer.alloc(0);
+    this.#inputCommitPending = false;
     this.#emit({ type: 'local.closed' });
     this.#listeners.clear();
     this.#options.onClosed?.();

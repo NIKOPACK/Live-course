@@ -2,9 +2,11 @@
 
 import {
   extractVolcEventText,
+  isVolcSessionFailure,
+  volcErrorMessage,
   VOLC_INPUT_FRAME_BYTES,
-  VOLC_INPUT_FRAME_MS,
   VOLC_INPUT_SAMPLE_RATE,
+  VOLC_MAX_INPUT_BUFFER_BYTES,
   VOLC_OUTPUT_SAMPLE_RATE,
   type VolcRealtimeAction,
   type VolcRealtimeRelayEvent,
@@ -12,10 +14,15 @@ import {
   type VolcRealtimeVoice,
 } from './protocol';
 import { registerLipSyncAudioNode } from '@/lib/livecourse/realtime/client/audio-bridge';
+import { createLogger } from '@/lib/logger';
 
 const REALTIME_API_URL = '/api/livecourse/realtime/volc';
 const RECORDER_BUFFER_SIZE = 4_096;
 const MODEL_SPEECH_TIMEOUT_MS = 60_000;
+const INPUT_BATCH_INTERVAL_MS = 100;
+const MAX_INPUT_BATCH_BYTES = VOLC_INPUT_FRAME_BYTES * 25;
+const INPUT_REQUEST_TIMEOUT_MS = 10_000;
+const log = createLogger('VolcRealtimeBrowserSession');
 
 export type VolcRealtimeBrowserStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 
@@ -49,17 +56,6 @@ interface PendingSpeech {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-function volcErrorMessage(event: VolcRealtimeUpstreamEvent): string {
-  if (typeof event.message === 'string' && event.message.trim()) return event.message;
-  const nested = event.error;
-  if (typeof nested === 'string' && nested.trim()) return nested;
-  if (nested && typeof nested === 'object' && 'message' in nested) {
-    const message = (nested as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
-  }
-  return 'Volc realtime failed';
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -203,6 +199,9 @@ export class VolcRealtimeBrowserSession {
   #frameTimer: number | null = null;
   #bufferedBytes = 0;
   #sendChain = Promise.resolve();
+  #inputState = Promise.resolve();
+  #inputAbort = new AbortController();
+  #sendingInput = false;
   #player: PcmStreamPlayer | null = null;
   #assistantText = '';
   #connectResolve: (() => void) | null = null;
@@ -228,6 +227,7 @@ export class VolcRealtimeBrowserSession {
     if (this.#sessionId) return;
     this.#closed = false;
     this.#failing = false;
+    this.#inputAbort = new AbortController();
     this.#audioQueue = Promise.resolve();
     this.#emit({ type: 'status', status: 'connecting' });
     const connected = new Promise<void>((resolve, reject) => {
@@ -272,6 +272,7 @@ export class VolcRealtimeBrowserSession {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#inputAbort.abort();
     const sessionId = this.#sessionId;
     this.#sessionId = null;
     this.#eventSource?.close();
@@ -284,8 +285,11 @@ export class VolcRealtimeBrowserSession {
     this.#player = null;
     this.#emit({ type: 'speaking', speaking: false });
     if (sessionId) {
-      await this.#sendChain.catch(() => {});
-      await this.#post({ action: 'close', sessionId }).catch(() => {});
+      await Promise.allSettled([this.#sendChain, this.#inputState]);
+      await this.#post(
+        { action: 'close', sessionId },
+        AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS),
+      ).catch((error) => log.warn('Realtime session close request failed', error));
     }
     this.#emit({ type: 'status', status: 'closed' });
   }
@@ -321,13 +325,32 @@ export class VolcRealtimeBrowserSession {
   }
 
   mute(muted: boolean): void {
-    if (this.#muted !== muted) this.#clearInput();
+    if (this.#muted === muted) return;
     this.#muted = muted;
+    this.#clearInput();
+    this.#syncInputState();
   }
 
   setInputEnabled(enabled: boolean): void {
-    if (this.#inputEnabled !== enabled) this.#clearInput();
+    if (this.#inputEnabled === enabled) return;
     this.#inputEnabled = enabled;
+    this.#clearInput();
+    this.#syncInputState();
+  }
+
+  #syncInputState(): void {
+    const sessionId = this.#sessionId;
+    if (!sessionId || this.#closed) return;
+    this.#inputState = this.#post(
+      {
+        action: 'input',
+        sessionId,
+        enabled: this.#inputEnabled && !this.#muted,
+        generation: this.#inputGeneration,
+      },
+      AbortSignal.any([this.#inputAbort.signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
+    ).then(() => undefined);
+    void this.#inputState.catch((error) => this.#fail(toError(error)));
   }
 
   #clearInput(): void {
@@ -385,7 +408,7 @@ export class VolcRealtimeBrowserSession {
       return;
     }
     try {
-      this.#mediaStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -393,7 +416,13 @@ export class VolcRealtimeBrowserSession {
           autoGainControl: true,
         },
       });
-    } catch {
+      if (this.#closed) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this.#mediaStream = stream;
+    } catch (error) {
+      log.warn('Microphone unavailable; continuing receive-only narration', error);
       return;
     }
     try {
@@ -401,7 +430,7 @@ export class VolcRealtimeBrowserSession {
       const source = context.createMediaStreamSource(this.#mediaStream);
       const processor = context.createScriptProcessor(RECORDER_BUFFER_SIZE, 1, 1);
       processor.onaudioprocess = (event) => {
-        if (this.#closed) return;
+        if (this.#closed || this.#muted || !this.#inputEnabled) return;
         this.#appendAudio(
           downsampleToPcm16(event.inputBuffer.getChannelData(0), context.sampleRate),
         );
@@ -411,9 +440,13 @@ export class VolcRealtimeBrowserSession {
       this.#recorderContext = context;
       this.#recorderSource = source;
       this.#recorderNode = processor;
-      this.#frameTimer = window.setInterval(() => this.#sendNextAudioFrame(), VOLC_INPUT_FRAME_MS);
+      this.#frameTimer = window.setInterval(
+        () => this.#sendNextAudioFrame(),
+        INPUT_BATCH_INTERVAL_MS,
+      );
       this.#sendNextAudioFrame();
-    } catch {
+    } catch (error) {
+      log.warn('Microphone recorder unavailable; continuing receive-only narration', error);
       await this.#stopMicrophone();
     }
   }
@@ -437,13 +470,20 @@ export class VolcRealtimeBrowserSession {
 
   #appendAudio(bytes: Uint8Array): void {
     if (!bytes.length) return;
+    if (this.#bufferedBytes + bytes.length > VOLC_MAX_INPUT_BUFFER_BYTES) {
+      void this.#fail(new Error('Realtime audio input network backlog exceeded its limit'));
+      return;
+    }
     this.#audioChunks.push(bytes);
     this.#bufferedBytes += bytes.length;
   }
 
   #takeFrame(): Uint8Array {
-    const frame = new Uint8Array(VOLC_INPUT_FRAME_BYTES);
-    if (this.#bufferedBytes < VOLC_INPUT_FRAME_BYTES) return frame;
+    const size = Math.min(
+      MAX_INPUT_BATCH_BYTES,
+      Math.floor(this.#bufferedBytes / VOLC_INPUT_FRAME_BYTES) * VOLC_INPUT_FRAME_BYTES,
+    );
+    const frame = new Uint8Array(size);
     let offset = 0;
     while (offset < frame.length) {
       const chunk = this.#audioChunks[0];
@@ -460,26 +500,31 @@ export class VolcRealtimeBrowserSession {
 
   #sendNextAudioFrame(): void {
     const sessionId = this.#sessionId;
-    if (!sessionId || this.#closed) return;
+    if (
+      !sessionId ||
+      this.#closed ||
+      this.#muted ||
+      !this.#inputEnabled ||
+      this.#sendingInput ||
+      this.#bufferedBytes < VOLC_INPUT_FRAME_BYTES
+    )
+      return;
+    this.#sendingInput = true;
     const generation = this.#inputGeneration;
-    const frame = this.#nextInputFrame();
-    const sending = this.#sendChain.then(async () => {
-      if (this.#closed) return;
-      await this.#post({
-        action: 'audio',
-        sessionId,
-        audio: bytesToBase64(
-          generation === this.#inputGeneration ? frame : new Uint8Array(VOLC_INPUT_FRAME_BYTES),
-        ),
-      });
+    const frame = this.#takeFrame();
+    const sending = this.#inputState.then(async () => {
+      if (this.#closed || generation !== this.#inputGeneration) return;
+      await this.#post(
+        { action: 'audio', sessionId, generation, audio: bytesToBase64(frame) },
+        AbortSignal.any([this.#inputAbort.signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
+      );
     });
     this.#sendChain = sending;
-    void sending.catch((error) => this.#fail(toError(error)));
-  }
-
-  #nextInputFrame(): Uint8Array {
-    const frame = this.#takeFrame();
-    return this.#muted || !this.#inputEnabled ? new Uint8Array(VOLC_INPUT_FRAME_BYTES) : frame;
+    void sending
+      .catch((error) => this.#fail(toError(error)))
+      .finally(() => {
+        this.#sendingInput = false;
+      });
   }
 
   #handleRelayEvent(raw: string): void {
@@ -492,6 +537,7 @@ export class VolcRealtimeBrowserSession {
     }
 
     if (message.type === 'local.connected') {
+      if (this.#muted || !this.#inputEnabled) this.#syncInputState();
       this.#emit({ type: 'status', status: 'connected' });
       this.#resolveConnection();
       if (this.#options.captureMicrophone !== false) {
@@ -624,8 +670,10 @@ export class VolcRealtimeBrowserSession {
       return;
     }
     if (eventType === 'error') {
-      const error = new Error(volcErrorMessage(event));
-      if (this.#pendingSpeech) {
+      const fatal = isVolcSessionFailure(event);
+      const message = volcErrorMessage(event);
+      const error = new Error(fatal ? `Volc realtime session disconnected: ${message}` : message);
+      if (this.#pendingSpeech && !fatal) {
         this.#failTurn(error);
         return;
       }

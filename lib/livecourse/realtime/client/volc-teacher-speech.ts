@@ -6,6 +6,7 @@ import {
 } from '@/lib/livecourse/realtime/client/session';
 import { withRealtimeSpeechRetry } from '@/lib/livecourse/realtime/client/speech-retry';
 import { VolcRealtimeBrowserSession } from '@/lib/livecourse/realtime/volc/client';
+import { isVolcAudioInputTimeout } from '@/lib/livecourse/realtime/volc/protocol';
 import type { GenerationRetryOptions } from '@/lib/generation/generation-retry';
 import { OralQuestionSession, type OralQuestionOptions } from './oral-question';
 import type { OralQuestion } from '@/lib/livecourse/domain/schemas';
@@ -78,14 +79,20 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     const generation = ++this.#responseGeneration;
     this.#emit({ type: 'transcript', speaker: 'student', text });
     await this.#holdPlayback('ask');
-    if (!this.connected) await this.#connectOnce();
-    const session = this.#requireSession();
-    await session.cancelNarration();
     await withRealtimeSpeechRetry(
       async () => {
-        await this.#syncInstructions(session);
         if (generation !== this.#responseGeneration) throw speechAbortError();
-        await session.askQuestion(text, { requireAudio: true });
+        if (!this.connected) await this.#connectOnce();
+        const session = this.#requireSession();
+        try {
+          await session.cancelNarration();
+          await this.#syncInstructions(session);
+          if (generation !== this.#responseGeneration) throw speechAbortError();
+          await session.askQuestion(text, { requireAudio: true });
+        } catch (error) {
+          if (isSessionLostError(error)) this.connected = false;
+          throw error;
+        }
       },
       {
         label: 'volc.ask',
@@ -270,6 +277,7 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
       },
     });
     this.#session = session;
+    if (this.#muted) session.mute(true);
     if (this.#options.readOnly) session.setInputEnabled(false);
     try {
       await session.preparePlayback();
@@ -436,5 +444,8 @@ export function shouldCaptureRealtimeMicrophone(): boolean {
 
 function isSessionLostError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /not connected|disconnected|session not found|session closed/i.test(message);
+  return (
+    /not connected|disconnected|session not found|session closed/i.test(message) ||
+    isVolcAudioInputTimeout(error)
+  );
 }

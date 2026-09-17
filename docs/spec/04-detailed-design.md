@@ -37,6 +37,7 @@
 - 改角色（J3.2 便捷提问）：`RealtimeTeacherControls.tsx` 增加快捷追问填入及选文引用预览 / 移除，仍显式调用原教师 `ask`，不新建问答或判分通道。`teacher-bridge.ts` 只投影正文选区（不读取输入控件 / contenteditable 草稿）；`InteractiveIframeHost.tsx` 校验消息来源、当前页面所有权、交互权限与 500 字上限，再写 `lib/livecourse/html/question-context.ts` 的临时引用。引用按 scene 隔离并随切页 / 回放 / 卸载清除；发送成功只消费本次引用，不清掉后来选中的内容；连接后重新核对节点与可提问状态。草稿不持久化，不写课堂动作或学习证据。
 - 改角色（A2 闭环修复）：课堂壳在节点完成后自动推进，检查节点等待显式提交；不依赖旧圆桌的 `autoPlayLecture`。检查点经已注册的教师反馈端口先完成语音反馈，再完成提交迁移；重试复用已评分结果与 attempt identity，最后检查反馈前不得 finalization。答错补讲取本题解释与当前教案，不直接修改掌握投影。课中重听借用同一真实语音端口，结束显式恢复原位置，不提交讲授完成或检查证据
   - Volc 普通讲稿 / 回答同样必须有有效 PCM 且全部音源实际结束；取消音频事件不得充当回答完成，插话恢复等待冻结事务提交，失败保留原恢复点；普通连接跨节点使用最新 instructions。独立 replay 复用 receive-only 语音端口，不采集麦克风、不提供提问或课堂工具。
+  - Volc 输入传输遵循官方双工协议：无麦克风、只读重听、静音与后台停流使用 `input_audio_mute.commit`，真实输入恢复时先发送 `input_audio_unmute.commit`，不以假音频保活。浏览器有界批量上传，服务端按 20ms / 640 字节转发 PCM；输入代次隔离静音和问答门禁前的迟到帧，网络积压显式失败。输入超时 `52000033` 与上游 5xx 错误关闭失效会话，普通讲稿 / 文字问题沿用有界重试重建连接，保留静音偏好与原节点；仍须真实输出音频结束才能推进，保活不产生回答或学习证据。
 - 才新写（A2 闭环修复）：`lib/livecourse/session/teaching-flow.ts` 统一节点后继、检查反馈与提交去重。检查完成只表示已显式提交且有有效评分：客观评分 accepted 或模型评分 pending_review 均可证明完成本次检查；后者保留 model provenance 和 pending_review，不因此成为 accepted 掌握证据、不伪造人工审核。`GoalState` 仍只由原证据规则投影
 
 完成：新课上课时只有教师音频与动作日志；插话后 `resumeNode` 回到原节点；失败不推进。讲授完成、未完成离开、finalization 与 replay 均走各自唯一的类型化幂等边界，`C` 进度及时持久化，且判分 / 重试 / 重听不重复证据。

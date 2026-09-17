@@ -15,6 +15,42 @@ afterEach(() => {
 });
 
 describe('Volc realtime route', () => {
+  it('forwards input generation and mute gates to the same relay session', async () => {
+    const { volcRealtimeSessionRegistry } = await import('@/lib/livecourse/realtime/volc/server');
+    const session = { sendAudio: vi.fn(), setInputEnabled: vi.fn() };
+    const get = vi.spyOn(volcRealtimeSessionRegistry, 'get').mockReturnValue(session as never);
+    try {
+      expect(
+        (
+          await POST(
+            request({
+              action: 'input',
+              sessionId: 'input-session',
+              enabled: false,
+              generation: 2,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      expect(session.setInputEnabled).toHaveBeenCalledWith(false, 2);
+      expect(
+        (
+          await POST(
+            request({
+              action: 'audio',
+              sessionId: 'input-session',
+              audio: 'AAE=',
+              generation: 1,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      expect(session.sendAudio).toHaveBeenCalledWith('AAE=', 1);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
   it('accepts a learner-saved key when the server env key is missing', async () => {
     vi.stubEnv('VOLCENGINE_REALTIME_API_KEY', '');
     const { volcRealtimeSessionRegistry } = await import('@/lib/livecourse/realtime/volc/server');

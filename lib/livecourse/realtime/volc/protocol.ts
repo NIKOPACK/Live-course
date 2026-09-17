@@ -11,6 +11,7 @@ export const VOLC_OUTPUT_SAMPLE_RATE = 24_000;
 export const VOLC_INPUT_FRAME_MS = 20;
 export const VOLC_INPUT_FRAME_BYTES =
   (VOLC_INPUT_SAMPLE_RATE * VOLC_INPUT_FRAME_MS * Int16Array.BYTES_PER_ELEMENT) / 1_000;
+export const VOLC_MAX_INPUT_BUFFER_BYTES = VOLC_INPUT_SAMPLE_RATE * 2 * 3;
 
 const sessionIdSchema = z.string().trim().min(1).max(128);
 export const volcRealtimeVoiceSchema = z.enum([VOLC_REALTIME_VOICE, VOLC_REALTIME_STUDENT_VOICE]);
@@ -31,6 +32,15 @@ export const volcRealtimeActionSchema = z.discriminatedUnion('action', [
       action: z.literal('audio'),
       sessionId: sessionIdSchema,
       audio: z.string().min(1).max(256_000),
+      generation: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('input'),
+      sessionId: sessionIdSchema,
+      enabled: z.boolean(),
+      generation: z.number().int().nonnegative(),
     })
     .strict(),
   z
@@ -86,6 +96,31 @@ export type VolcRealtimeRelayEvent =
   | { type: 'local.closed' }
   | { type: 'local.error'; message: string }
   | { type: 'upstream.event'; event: VolcRealtimeUpstreamEvent };
+
+export function isVolcAudioInputTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /52000033|AudioServerNoAudioInputTooLongError/i.test(message);
+}
+
+export function volcErrorMessage(event: VolcRealtimeUpstreamEvent): string {
+  if (typeof event.message === 'string' && event.message.trim()) return event.message;
+  const nested = event.error;
+  if (typeof nested === 'string' && nested.trim()) return nested;
+  if (nested && typeof nested === 'object' && 'message' in nested) {
+    const message = nested.message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return 'Volc realtime failed';
+}
+
+export function isVolcSessionFailure(event: VolcRealtimeUpstreamEvent): boolean {
+  const nested = event.error;
+  const code = nested && typeof nested === 'object' && 'code' in nested ? nested.code : event.code;
+  return (
+    isVolcAudioInputTimeout(volcErrorMessage(event)) ||
+    /^5\d{2}(?:\d{5})?$/.test(String(code ?? ''))
+  );
+}
 
 export function buildVolcSessionCreate(
   instructions: string,

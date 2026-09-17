@@ -19,6 +19,10 @@ describe('isRetryableRealtimeSpeechError', () => {
       isRetryableRealtimeSpeechError(new Error('Realtime teacher transport disconnected')),
     ).toBe(true);
     expect(isRetryableRealtimeSpeechError({ status: 502 })).toBe(true);
+    expect(isRetryableRealtimeSpeechError(new Error('sami error: codes=52000033'))).toBe(true);
+    expect(isRetryableRealtimeSpeechError(new Error('AudioServerNoAudioInputTooLongError'))).toBe(
+      true,
+    );
   });
 
   it('does not retry cancellation, auth, or configuration errors', () => {

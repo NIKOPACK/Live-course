@@ -44,7 +44,8 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const session = requireSession(action.sessionId);
-    if (action.action === 'audio') session.sendAudio(action.audio);
+    if (action.action === 'audio') session.sendAudio(action.audio, action.generation);
+    if (action.action === 'input') session.setInputEnabled(action.enabled, action.generation);
     if (action.action === 'update') session.updateInstructions(action.instructions);
     if (action.action === 'text') session.sendText(action.text);
     if (action.action === 'query') session.sendQuery(action.text);

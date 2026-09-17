@@ -4,6 +4,7 @@ import { downsampleToPcm16 } from '@/lib/livecourse/realtime/volc/client';
 import {
   buildVolcSessionCreate,
   extractVolcEventText,
+  isVolcSessionFailure,
   volcRealtimeActionSchema,
   VOLC_INPUT_FRAME_BYTES,
   VOLC_REALTIME_MODEL,
@@ -12,6 +13,47 @@ import {
 } from '@/lib/livecourse/realtime/volc/protocol';
 
 describe('Volc realtime protocol', () => {
+  it('requires fresh sessions for provider 5xx failures but not parameter or unspecified turn errors', () => {
+    expect(
+      isVolcSessionFailure({ error: { code: '55000000', message: 'Internal Server Error' } }),
+    ).toBe(true);
+    expect(
+      isVolcSessionFailure({ error: { code: '40000001', message: 'Invalid parameter' } }),
+    ).toBe(false);
+    expect(isVolcSessionFailure({ message: 'Volc realtime failed' })).toBe(false);
+  });
+  it('requires a valid input generation for mute controls without breaking legacy audio uploads', () => {
+    expect(
+      volcRealtimeActionSchema.parse({
+        action: 'input',
+        sessionId: 'session-1',
+        enabled: false,
+        generation: 2,
+      }),
+    ).toMatchObject({ enabled: false, generation: 2 });
+    expect(
+      volcRealtimeActionSchema.safeParse({
+        action: 'input',
+        sessionId: 'session-1',
+        enabled: false,
+      }).success,
+    ).toBe(false);
+    expect(
+      volcRealtimeActionSchema.safeParse({
+        action: 'audio',
+        sessionId: 'session-1',
+        audio: 'AAE=',
+        generation: -1,
+      }).success,
+    ).toBe(false);
+    expect(
+      volcRealtimeActionSchema.safeParse({
+        action: 'audio',
+        sessionId: 'session-1',
+        audio: 'AAE=',
+      }).success,
+    ).toBe(true);
+  });
   it('pins the Seeduplex model and documented PCM formats in one session payload', () => {
     const payload = buildVolcSessionCreate('Teach backpropagation');
 
