@@ -65,6 +65,7 @@ import {
   generateHtmlClassroomActionOutput,
   htmlTeachingIdInventory,
   normalizeHtmlTeachingActions,
+  repairHtmlTeachingActions,
   validateHtmlTeachingActions,
   ClassroomHtmlActionsError,
 } from '@/lib/livecourse/lesson/html-presentation';
@@ -1566,12 +1567,15 @@ export async function generateSceneActions(
       elementInventory: teachingInventory,
       oralQuestion,
     });
-    const actions = normalizeHtmlTeachingActions(
-      parseActionsFromStructuredOutput(response, 'interactive', [
-        'widget_highlight',
-        'widget_annotation',
-        'widget_reveal',
-      ]),
+    const actions = repairHtmlTeachingActions(
+      normalizeHtmlTeachingActions(
+        parseActionsFromStructuredOutput(response, 'interactive', [
+          'widget_highlight',
+          'widget_annotation',
+          'widget_reveal',
+        ]),
+        elementInventory,
+      ),
       elementInventory,
     );
     validateHtmlTeachingActions(actions, elementInventory);

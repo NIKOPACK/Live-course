@@ -91,6 +91,8 @@ worked example. Divide the explanation into
 meaningful teaching regions, each with a unique stable DOM id matching [A-Za-z][A-Za-z0-9_-]*.
 Worked steps or conclusions may start hidden, but only the teacher's reveal actions should expose
 them during narration: do not advance teaching regions using timers, autoplay or learner clicks.
+Runtime-created children (trace rows, editor lines, live output) must sit inside a stable parent
+id such as #editor, #output or #trace. Teacher actions can only highlight those parent ids.
 Optional exploration can reveal deeper detail. Do not hide a teaching region inside a hidden ancestor.
 Make the page responsive to its actual iframe viewport, readable on small screens, accessible to
 keyboard users and respectful of prefers-reduced-motion. Do not add course navigation, a second
@@ -338,7 +340,8 @@ region and reveal all initially hidden teaching steps by the end.
 Do not narrate a recap that restates an on-page takeaway strip.
 Other supported visual actions: widget_annotation with target/content, widget_reveal with target.
 Use only #id targets from the supplied real element inventory; do not invent selectors, state APIs
-or slide actions. Finish with narration, not a visual action after the explanation has ended.
+or slide actions. Never highlight runtime-only classes such as .trace or .trace-line.
+Finish with narration, not a visual action after the explanation has ended.
 Keep the host in charge of lesson progress. On checkpoints the learner must explicitly submit.
 Respect the requested language and continuity: greet only on the first page, not on every page.`,
     [
@@ -420,18 +423,23 @@ function isHtmlVisualAction(
   );
 }
 
+function firstHtmlTeachingId(inventory: string): string | undefined {
+  return [...htmlTeachingIds(inventory)][0];
+}
+
 /** Map class/descendant selectors onto real #ids; drop visual actions with no target. */
 export function normalizeHtmlTeachingActions(
   actions: Action[],
   elementInventory: string,
 ): Action[] {
+  const fallback = firstHtmlTeachingId(elementInventory);
   const next: Action[] = [];
   for (const action of actions) {
     if (!isHtmlVisualAction(action)) {
       next.push(action);
       continue;
     }
-    const target = canonicalizeHtmlTeachingTarget(action.target, elementInventory);
+    const target = canonicalizeHtmlTeachingTarget(action.target, elementInventory) ?? fallback;
     if (!target) {
       if (typeof action.target === 'string' && action.target.trim()) {
         throw new ClassroomHtmlActionsError(`Unknown HTML teaching target: ${action.target}`);
@@ -441,6 +449,45 @@ export function normalizeHtmlTeachingActions(
     next.push({ ...action, target });
   }
   return next;
+}
+
+/**
+ * Recover sequences the action model often emits for interactive labs
+ * (class-only selectors, speech before highlight, extra focus, trailing visuals)
+ * so generation can finish instead of retrying forever against the same HTML.
+ */
+export function repairHtmlTeachingActions(
+  actions: Action[],
+  elementInventory: string,
+): Action[] {
+  const fallback = firstHtmlTeachingId(elementInventory);
+  if (!fallback) {
+    throw new ClassroomHtmlActionsError('HTML page has no teaching region ids');
+  }
+  const repaired: Action[] = [];
+  let hasFocus = false;
+  let pendingFocus = false;
+  for (const action of actions) {
+    if (action.type === 'speech') {
+      if (!hasFocus) {
+        repaired.push({ type: 'widget_highlight', target: fallback });
+        hasFocus = true;
+      }
+      repaired.push(action);
+      pendingFocus = false;
+      continue;
+    }
+    if (action.type === 'widget_highlight') {
+      if (pendingFocus) continue;
+      pendingFocus = true;
+      hasFocus = true;
+    }
+    repaired.push(action);
+  }
+  while (repaired.length > 0 && isHtmlVisualAction(repaired[repaired.length - 1]!)) {
+    repaired.pop();
+  }
+  return repaired;
 }
 
 export function validateHtmlTeachingActions(actions: Action[], elementInventory: string): void {
