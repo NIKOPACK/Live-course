@@ -416,10 +416,6 @@
   border-bottom: 1px solid var(--border);
 }
 .lc-home .lc-course-row {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 16px;
-  align-items: center;
-  gap: 1rem;
   padding: 1rem 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 0.5rem;
@@ -427,6 +423,19 @@
   transition:
     border-color 180ms ease,
     background-color 180ms ease;
+}
+.lc-home .lc-course-row-with-delete {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 0.5rem;
+}
+.lc-home .lc-course-row-open {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 1rem;
+  background: transparent;
 }
 .lc-home .lc-course-row:hover {
   border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
@@ -478,9 +487,11 @@
     padding-inline: 32px;
   }
   .lc-home .lc-course-row {
+    padding: 1rem 0.75rem;
+  }
+  .lc-home .lc-course-row-open {
     grid-template-columns: 144px minmax(0, 1fr) 16px;
     gap: 1.5rem;
-    padding: 1rem 0.75rem;
   }
 }
 @media (min-width: 1024px) {

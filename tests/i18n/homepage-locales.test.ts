@@ -11,6 +11,13 @@ const homeKeys = [
   'exampleLabel1',
   'exampleLabel2',
   'exampleLabel3',
+  'deleteCourse',
+  'deleteCourseAria',
+  'deleteCourseTitle',
+  'deleteCourseDescription',
+  'deleteCourseConfirm',
+  'deleteCourseDeleting',
+  'deleteCourseFailed',
 ] as const;
 
 describe('homepage locale coverage', () => {

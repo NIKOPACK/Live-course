@@ -4,8 +4,10 @@ import { coursePlanSchema } from '@/lib/livecourse/domain/course-plan';
 import { lessonPlanSchema } from '@/lib/livecourse/domain/schemas';
 import type { Scene, Stage } from '@/lib/types/stage';
 import { apiSuccess, apiError, API_ERROR_CODES } from '@/lib/server/api-response';
+import { sweepClassroomGenerationJobsForClassroom } from '@/lib/server/classroom-job-store';
 import {
   buildRequestOrigin,
+  deleteClassroom,
   isValidClassroomId,
   persistClassroom,
   readClassroom,
@@ -173,6 +175,47 @@ export async function GET(request: NextRequest) {
       API_ERROR_CODES.INTERNAL_ERROR,
       500,
       'Failed to retrieve classroom',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const id = request.nextUrl.searchParams.get('id');
+  try {
+    if (!id) {
+      return apiError(
+        API_ERROR_CODES.MISSING_REQUIRED_FIELD,
+        400,
+        'Missing required parameter: id',
+      );
+    }
+
+    if (!isValidClassroomId(id)) {
+      return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Invalid classroom id');
+    }
+
+    if (id === 'fourier-intro') {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        400,
+        'Showcase classroom cannot be deleted',
+      );
+    }
+
+    await deleteClassroom(id);
+    try {
+      await sweepClassroomGenerationJobsForClassroom(id);
+    } catch (error) {
+      log.warn(`Failed to sweep generation jobs for classroom ${id}:`, error);
+    }
+    return apiSuccess({ id });
+  } catch (error) {
+    log.error(`Classroom delete failed [id=${id ?? 'unknown'}]:`, error);
+    return apiError(
+      API_ERROR_CODES.INTERNAL_ERROR,
+      500,
+      'Failed to delete classroom',
       error instanceof Error ? error.message : String(error),
     );
   }

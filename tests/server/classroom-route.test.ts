@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   buildRequestOrigin: vi.fn(),
   persistClassroom: vi.fn(),
   readClassroom: vi.fn(),
+  deleteClassroom: vi.fn(),
+  sweepJobs: vi.fn(),
 }));
 
 vi.mock('@/lib/server/classroom-storage', async (importOriginal) => ({
@@ -12,6 +14,12 @@ vi.mock('@/lib/server/classroom-storage', async (importOriginal) => ({
   buildRequestOrigin: mocks.buildRequestOrigin,
   persistClassroom: mocks.persistClassroom,
   readClassroom: mocks.readClassroom,
+  deleteClassroom: mocks.deleteClassroom,
+}));
+
+vi.mock('@/lib/server/classroom-job-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/classroom-job-store')>()),
+  sweepClassroomGenerationJobsForClassroom: mocks.sweepJobs,
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -99,6 +107,8 @@ describe('/api/classroom boundary', () => {
       createdAt: '2026-08-30T00:00:00.000Z',
     });
     mocks.readClassroom.mockReset();
+    mocks.deleteClassroom.mockReset().mockResolvedValue(undefined);
+    mocks.sweepJobs.mockReset().mockResolvedValue(undefined);
   });
 
   it('passes a validated course plan through to opaque storage and returns it on GET', async () => {
@@ -232,5 +242,96 @@ describe('/api/classroom boundary', () => {
     const response = await POST(request);
     expect(response.status).toBe(400);
     expect(mocks.persistClassroom).not.toHaveBeenCalled();
+  });
+
+  it('deletes an existing classroom and returns a flat success body', async () => {
+    const { DELETE } = await loadRoute();
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=stage-1', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, id: 'stage-1' });
+    expect(mocks.deleteClassroom).toHaveBeenCalledExactlyOnceWith('stage-1');
+    expect(mocks.sweepJobs).toHaveBeenCalledExactlyOnceWith('stage-1');
+  });
+
+  it('treats a missing classroom as a successful DELETE and GET then 404s', async () => {
+    const { DELETE, GET } = await loadRoute();
+    const deleted = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=stage-gone', { method: 'DELETE' }),
+    );
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toMatchObject({ success: true, id: 'stage-gone' });
+
+    mocks.readClassroom.mockResolvedValueOnce(null);
+    const get = await GET(new NextRequest('http://localhost/api/classroom?id=stage-gone'));
+    expect(get.status).toBe(404);
+    expect(mocks.readClassroom).toHaveBeenCalledWith('stage-gone');
+  });
+
+  it('is idempotent: a second DELETE is still 200', async () => {
+    const { DELETE } = await loadRoute();
+    const first = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=stage-1', { method: 'DELETE' }),
+    );
+    const second = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=stage-1', { method: 'DELETE' }),
+    );
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(mocks.deleteClassroom).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects DELETE of the showcase classroom without touching storage', async () => {
+    const { DELETE } = await loadRoute();
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=fourier-intro', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      errorCode: 'INVALID_REQUEST',
+      error: 'Showcase classroom cannot be deleted',
+    });
+    expect(mocks.deleteClassroom).not.toHaveBeenCalled();
+    expect(mocks.sweepJobs).not.toHaveBeenCalled();
+  });
+
+  it('still returns 200 when job sweep fails', async () => {
+    mocks.sweepJobs.mockRejectedValueOnce(new Error('sweep failed'));
+    const { DELETE } = await loadRoute();
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/classroom?id=stage-1', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, id: 'stage-1' });
+    expect(mocks.deleteClassroom).toHaveBeenCalledExactlyOnceWith('stage-1');
+  });
+
+  it.each(['../escape', 'stage/escape', '.', '..'])(
+    'rejects unsafe DELETE classroom id %s',
+    async (id) => {
+      const { DELETE } = await loadRoute();
+      const response = await DELETE(
+        new NextRequest(`http://localhost/api/classroom?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mocks.deleteClassroom).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns 400 when DELETE is missing id', async () => {
+    const { DELETE } = await loadRoute();
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/classroom', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      errorCode: 'MISSING_REQUIRED_FIELD',
+    });
+    expect(mocks.deleteClassroom).not.toHaveBeenCalled();
   });
 });

@@ -12,13 +12,24 @@ import {
   Sun,
   Moon,
   Monitor,
+  Trash2,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { supportedLocales } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { SettingsDialog } from '@/components/settings';
+import { deleteUserClassroom } from '@/lib/classroom/delete-user-classroom';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -47,6 +58,8 @@ import {
   listStages,
   getFirstSlideByStages,
   loadStageData,
+  resolveCourseCoverUrls,
+  revokeCourseCoverUrls,
   revokeThumbnailSlideMediaUrls,
 } from '@/lib/utils/stage-storage';
 import { SlideThumbnail } from '@/components/slide-renderer/SlideThumbnail';
@@ -159,12 +172,19 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [liveGeneration, setLiveGeneration] = useState<GenerationSessionState | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
+  const [covers, setCovers] = useState<Record<string, string>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const thumbnailsRef = useRef<Record<string, Slide>>({});
+  const coversRef = useRef<Record<string, string>>({});
   const mountedRef = useRef(false);
   const courseEntryRef = useRef<HomeCourseEntry | null>(null);
   const courseEntryRequestEpochRef = useRef(0);
   const courseEntryActionRef = useRef<'continue' | 'replay' | null>(null);
+  const deletingIdsRef = useRef(new Set<string>());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set());
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteFailed, setDeleteFailed] = useState(false);
   const generationAttemptEpochRef = useRef(0);
   const generationSubmittingRef = useRef(false);
   const generationSessionIdRef = useRef<string | null>(null);
@@ -201,6 +221,13 @@ function HomePage() {
     window.setTimeout(() => revokeThumbnailSlideMediaUrls(previous), 0);
   }, []);
 
+  const replaceCovers = useCallback((next: Record<string, string>) => {
+    const previous = coversRef.current;
+    coversRef.current = next;
+    setCovers(next);
+    window.setTimeout(() => revokeCourseCoverUrls(previous), 0);
+  }, []);
+
   const loadClassrooms = useCallback(async () => {
     setClassroomsLoading(true);
     setClassroomsError(false);
@@ -208,19 +235,24 @@ function HomePage() {
       const list = await listStages();
       if (!mountedRef.current) return;
       setClassrooms(list);
-      const slides = list.length > 0 ? await getFirstSlideByStages(list.map((c) => c.id)) : {};
+      const [slides, coverUrls] = await Promise.all([
+        list.length > 0 ? getFirstSlideByStages(list.map((c) => c.id)) : Promise.resolve({}),
+        list.length > 0 ? resolveCourseCoverUrls(list) : Promise.resolve({}),
+      ]);
       if (!mountedRef.current) {
         revokeThumbnailSlideMediaUrls(slides);
+        revokeCourseCoverUrls(coverUrls);
         return;
       }
       replaceThumbnails(slides);
+      replaceCovers(coverUrls);
     } catch (err) {
       log.error('Failed to load classrooms:', err);
       if (mountedRef.current) setClassroomsError(true);
     } finally {
       if (mountedRef.current) setClassroomsLoading(false);
     }
-  }, [replaceThumbnails]);
+  }, [replaceThumbnails, replaceCovers]);
 
   useEffect(() => {
     // Clear stale media store to prevent cross-course thumbnail contamination.
@@ -235,6 +267,8 @@ function HomePage() {
     return () => {
       revokeThumbnailSlideMediaUrls(thumbnailsRef.current);
       thumbnailsRef.current = {};
+      revokeCourseCoverUrls(coversRef.current);
+      coversRef.current = {};
     };
   }, [loadClassrooms]);
 
@@ -375,6 +409,77 @@ function HomePage() {
 
   // 「再听」结束 / 失败后按入口返回首页同课选择态（?course=<id>）。
   const courseParamHandledRef = useRef(false);
+
+  const dropClassroomFromHomeList = (stageId: string) => {
+    setClassrooms((prev) => prev.filter((item) => item.id !== stageId));
+    const coverUrl = coversRef.current[stageId];
+    if (coverUrl) {
+      const nextCovers = { ...coversRef.current };
+      delete nextCovers[stageId];
+      coversRef.current = nextCovers;
+      setCovers(nextCovers);
+      revokeCourseCoverUrls({ [stageId]: coverUrl });
+    }
+    const thumb = thumbnailsRef.current[stageId];
+    if (thumb) {
+      const nextThumbs = { ...thumbnailsRef.current };
+      delete nextThumbs[stageId];
+      thumbnailsRef.current = nextThumbs;
+      setThumbnails(nextThumbs);
+      revokeThumbnailSlideMediaUrls({ [stageId]: thumb });
+    }
+  };
+
+  const clearMatchingGenerationSession = (stageId: string) => {
+    try {
+      const parsed = parseGenerationSession(sessionStorage.getItem('generationSession'));
+      if (parsed?.stageId === stageId) {
+        sessionStorage.removeItem('generationSession');
+      }
+    } catch (error) {
+      log.warn(`Failed to clear generation session for ${stageId}:`, error);
+    }
+    setLiveGeneration((live) => (live?.stageId === stageId ? null : live));
+  };
+
+  const requestDeleteClassroom = (classroom: Pick<StageListItem, 'id' | 'name'>) => {
+    if (classroom.id === SHOWCASE_CLASSROOM_ID) return;
+    setPendingDelete({ id: classroom.id, name: classroom.name });
+    setDeleteFailed(false);
+  };
+
+  const confirmDeleteClassroom = async () => {
+    if (!pendingDelete || deleteBusy) return;
+    const stageId = pendingDelete.id;
+    if (courseEntryRef.current?.classroomId === stageId) {
+      courseEntryRef.current = null;
+      setCourseEntry(null);
+    }
+    courseEntryRequestEpochRef.current += 1;
+    courseParamHandledRef.current = true;
+    if (typeof window !== 'undefined') {
+      const courseId = new URLSearchParams(window.location.search).get('course');
+      if (courseId === stageId) router.replace('/');
+    }
+    deletingIdsRef.current.add(stageId);
+    setDeletingIds(new Set(deletingIdsRef.current));
+    setDeleteBusy(true);
+    setDeleteFailed(false);
+    try {
+      await deleteUserClassroom(stageId);
+      dropClassroomFromHomeList(stageId);
+      clearMatchingGenerationSession(stageId);
+      setPendingDelete(null);
+    } catch (error) {
+      log.error(`Failed to delete classroom ${stageId}:`, error);
+      setDeleteFailed(true);
+    } finally {
+      deletingIdsRef.current.delete(stageId);
+      setDeletingIds(new Set(deletingIdsRef.current));
+      setDeleteBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (courseParamHandledRef.current || classrooms.length === 0) return;
     const courseId = new URLSearchParams(window.location.search).get('course');
@@ -658,7 +763,9 @@ function HomePage() {
             courseEntryActionRef.current ||
             !current ||
             current.state.status !== 'ready' ||
-            !current.state.entry.canContinue
+            !current.state.entry.canContinue ||
+            deletingIdsRef.current.has(current.classroomId) ||
+            pendingDelete?.id === current.classroomId
           ) {
             return;
           }
@@ -675,7 +782,9 @@ function HomePage() {
             courseEntryActionRef.current ||
             !current ||
             current.state.status !== 'ready' ||
-            !current.state.entry.canReplay
+            !current.state.entry.canReplay ||
+            deletingIdsRef.current.has(current.classroomId) ||
+            pendingDelete?.id === current.classroomId
           ) {
             return;
           }
@@ -934,16 +1043,63 @@ function HomePage() {
               >
                 <ClassroomCard
                   classroom={classroom}
+                  coverUrl={covers[classroom.id]}
                   slide={thumbnails[classroom.id]}
                   formatDate={formatDate}
                   generating={generatingStageId === classroom.id}
-                  onClick={() => void openCourseEntry(classroom)}
+                  canDelete={classroom.id !== SHOWCASE_CLASSROOM_ID}
+                  deleting={deletingIds.has(classroom.id)}
+                  onClick={() => {
+                    if (deletingIdsRef.current.has(classroom.id)) return;
+                    void openCourseEntry(classroom);
+                  }}
+                  onDelete={() => requestDeleteClassroom(classroom)}
                 />
               </motion.div>
             ))}
           </div>
         </section>
       </main>
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (deleteBusy) return;
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteFailed(false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('home.deleteCourseTitle')}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div>
+                <p>{t('home.deleteCourseDescription')}</p>
+                {deleteFailed ? (
+                  <p role="alert" className="mt-3 text-destructive">
+                    {t('home.deleteCourseFailed')}
+                  </p>
+                ) : null}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteBusy} data-testid="delete-course-cancel">
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <Button
+              variant="destructive"
+              disabled={deleteBusy}
+              data-testid="delete-course-confirm"
+              onClick={() => void confirmDeleteClassroom()}
+            >
+              {deleteBusy ? t('home.deleteCourseDeleting') : t('home.deleteCourseConfirm')}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <footer className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-wrap items-center justify-between gap-2 px-5 pb-6 pt-8 text-xs text-muted-foreground sm:px-8">
         <span>LiveCourse</span>
@@ -955,22 +1111,31 @@ function HomePage() {
 
 function ClassroomCard({
   classroom,
+  coverUrl,
   slide,
   formatDate,
   generating = false,
+  canDelete = false,
+  deleting = false,
   onClick,
+  onDelete,
 }: {
   classroom: StageListItem;
+  coverUrl?: string;
   slide?: Slide;
   formatDate: (ts: number) => string;
   generating?: boolean;
+  canDelete?: boolean;
+  deleting?: boolean;
   onClick: () => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
   const thumbRef = useRef<HTMLDivElement>(null);
   const [thumbWidth, setThumbWidth] = useState(0);
 
   useEffect(() => {
+    if (coverUrl) return;
     const el = thumbRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
@@ -978,51 +1143,78 @@ function ClassroomCard({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [coverUrl]);
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={generating ? `${classroom.name}. ${t('home.generatingCourse')}` : classroom.name}
-      className="lc-course-row group w-full cursor-pointer text-start focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
-    >
-      <div
-        ref={thumbRef}
-        className="lc-course-thumb relative aspect-[16/9] w-full overflow-hidden rounded-lg bg-muted"
+    <div className={cn('lc-course-row', canDelete && 'lc-course-row-with-delete')}>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={deleting}
+        aria-label={generating ? `${classroom.name}. ${t('home.generatingCourse')}` : classroom.name}
+        className="lc-course-row-open group w-full cursor-pointer text-start focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {slide && thumbWidth > 0 ? (
-          <SlideThumbnail
-            slide={slide}
-            size={thumbWidth}
-            viewportSize={slide.viewportSize ?? 1000}
-            viewportRatio={slide.viewportRatio ?? 0.5625}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
-              <BookOpen className="size-5 opacity-70" aria-hidden="true" />
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="min-w-0">
-        <p className="line-clamp-2 break-words text-[15px] font-medium text-foreground">
-          {classroom.name}
-        </p>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          {generating ? (
-            <span data-testid="generating-course">{t('home.generatingCourse')}</span>
+        <div
+          ref={thumbRef}
+          className="lc-course-thumb relative aspect-[16/9] w-full overflow-hidden rounded-lg bg-muted"
+        >
+          {coverUrl ? (
+            <img
+              src={coverUrl}
+              alt=""
+              data-testid="course-cover"
+              className="absolute inset-0 size-full object-cover"
+            />
+          ) : slide && thumbWidth > 0 ? (
+            <SlideThumbnail
+              slide={slide}
+              size={thumbWidth}
+              viewportSize={slide.viewportSize ?? 1000}
+              viewportRatio={slide.viewportRatio ?? 0.5625}
+            />
           ) : (
-            `${classroom.sceneCount} ${t('classroom.slides')} · ${formatDate(classroom.updatedAt)}`
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
+                <BookOpen className="size-5 opacity-70" aria-hidden="true" />
+              </div>
+            </div>
           )}
-        </p>
-      </div>
-      <ArrowRight
-        className="size-4 text-muted-foreground transition-transform motion-safe:group-hover:translate-x-1 rtl:rotate-180"
-        aria-hidden="true"
-      />
-    </button>
+        </div>
+        <div className="min-w-0">
+          <p className="line-clamp-2 break-words text-[15px] font-medium text-foreground">
+            {classroom.name}
+          </p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            {generating ? (
+              <span data-testid="generating-course">{t('home.generatingCourse')}</span>
+            ) : (
+              `${classroom.sceneCount} ${t('classroom.slides')} · ${formatDate(classroom.updatedAt)}`
+            )}
+          </p>
+        </div>
+        <ArrowRight
+          className="size-4 text-muted-foreground transition-transform motion-safe:group-hover:translate-x-1 rtl:rotate-180"
+          aria-hidden="true"
+        />
+      </button>
+      {canDelete ? (
+        <button
+          type="button"
+          data-testid="delete-course"
+          disabled={deleting}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDelete();
+          }}
+          aria-label={t('home.deleteCourseAria', { name: classroom.name })}
+          className="lc-course-row-delete inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Trash2 className="size-4" aria-hidden="true" />
+          <span className="sr-only">{t('home.deleteCourse')}</span>
+        </button>
+      ) : null}
+    </div>
   );
 }
 

@@ -78,14 +78,23 @@
 接口：一个需求字符串 + 可选资料 + 一次提交。
 
 - 改角色：`app/page.tsx` 去掉 `interactiveMode`、`vocationalTestMode` 主开关及对应 localStorage
+- 改角色（A5.2）：首页最近课堂卡片左侧优先渲染 `coverAssetId` 对应封面（16:9 裁进 88px 槽）；没有封面时保留书本占位。不把第一页 HTML 截图当封面
 - 沿用：单一 `requirement` 字段、资料上传、`/generation-preview` 流水线
 - 改角色：目标和文件先停留在 UI 草稿 / 上传缓存；空目标禁用唯一主按钮「开始上课」。行内必填提示由目标框 touched / blur 或键盘提交尝试触发，不依赖 disabled click。文件选择与拖放共用逐文件状态，每个失败项可重试 / 移除，不清空目标或成功项
 - 改角色：首次「开始上课」是课前草稿的唯一提交命令，提交中锁定防重复；提交后直接进入 `generation-preview`，课前确认在预览页内进行（见 §7 改角色 A3）。问题用逐题选项卡和「继续」；范围用推荐默认复选树和「按所选范围备课 / 使用推荐范围」
 - 改角色：问题失败必须保留已答并提供重试或跳过。范围失败区分两类：首次知识树加载失败且没有推荐范围时，只能重试或明确「跳过范围确认，按需求与合理默认备课」；知识树已成功加载后的确认 / 提交失败，必须保留已选项和缓存推荐项，可重试或使用缓存推荐范围。全程只有一个「开始上课」，预览页内不再发第二次 start 命令
 - 待撤产品面：首页「联网」开关。检索保留在设置，默认关；设置使用遮罩字段与显式保存，只写配置存储，不接 W / C / L
-- 改角色（A5.2）：首页最近课堂卡片左侧优先渲染 `coverAssetId` 对应封面（16:9 裁进 88px 槽）；没有封面时保留书本占位。不把第一页 HTML 截图当封面
+- 改角色（A7）：`app/page.tsx` 最近课堂行拆成可打开的主区域 + 独立删除控件，删除不嵌在打开用的 button 里。确认使用现有 `components/ui/alert-dialog.tsx`。文案走 `lib/i18n/locales/zh-CN.json` 与 `en-US.json`。`SHOWCASE_CLASSROOM_ID` 卡片不渲染删除控件
+- 改角色（A7）：外层 `.lc-course-row` 为 `display:grid; grid-template-columns: minmax(0,1fr) 44px`。内层打开按钮 **保持** 现有 `88px | minmax(0,1fr) | 16px`（`min-width: 640px` 时封面 `144px`）+ 标题 + `ArrowRight`。删除列 **不替换** 打开控件内部任何一列。打开 button 不得 `display:contents`
+- 改角色（A7）：开始删除该 `stageId` 时：若 `CourseEntryDialog` 的 `classroomId` 相同则关闭；`courseEntryRequestEpochRef` 加一；继续 / 再听对 deleting / deleted id 为 no-op；成功后 `?course=` 不得对该 id 再调 `openCourseEntry`
+- 才新写（A7）：`lib/classroom/delete-user-classroom.ts` —— 只编排 `DELETE /api/classroom?id=`（`res.status === 404 || res.ok`）再 `deleteStageData`，并以 `listStages()` 是否仍含该 id 作为返回成功的依据。**不** 读 `sessionStorage`、**不** import `app/`。对字面量 `'fourier-intro'` 在发请求前 throw。`generationSession` / `liveGeneration` 的清除、以及从 React `classrooms` 去掉该 id，留在 `app/page.tsx`，且只在成功谓词成立时执行
+- 才新写（A7）：`deleteClassroom(id)`，落在现有 `lib/server/classroom-storage.ts`。`id === 'fourier-intro'` 时在任何 `fs` 之前抛错，不得 unlink
+- 改角色（A7）：`app/page.tsx` 在编排器 resolve 后 **必须** 从 React `classrooms` 去掉该 id（`setClassrooms` filter）。不要为了刷新一张卡而把 `classroomsLoading` 打成真、闪空白架；封面 / 缩略图对该 id `revoke`。`loadClassrooms()` 可作后台校对，但不得用现有「整架 loading」路径
+- 沿用：`deleteStageData` / `DocumentStore.deleteDocument` / `beginStageRuntimeDeletionSafely`。禁止新 DocumentStore 方法，禁止第二套级联，禁止 `deleteStageWithRelatedData`
+- 改角色（A7）：`app/api/classroom/route.ts` 增加 `DELETE`，与 GET 共用 `isValidClassroomId` 与 ACCESS_CODE middleware。`id === 'fourier-intro'` 返回 `INVALID_REQUEST` 400，不调用 `deleteClassroom`
+- 改角色（A7）：用户删除成功后，在无 in-flight one-shot runner 时，`GET /api/classroom` 对该 id 为 404，`runClassroomLoad` 不得 `unmarkStageDeleted` 或重建本地文档。不修改 settled-deletion 时 `loadFromStorage` 为 Back-during-delete 保留的 fallthrough
 
-完成：首页主路径上看不到三种模式；提交只产生一堂可上的课；上传、追问与范围失败均可原地恢复，且全程只有一个「开始上课」。
+完成：首页主路径上看不到三种模式；提交只产生一堂可上的课；上传、追问与范围失败均可原地恢复，且全程只有一个「开始上课」。最近课堂可确认硬删除自己生成的课；展示课不可删。
 
 ## 4. 编辑器与改课 — 待撤产品面
 
@@ -158,6 +167,9 @@
 | replay 自然结束 /「结束重听」 | 销毁 replay W；按入口回首页同课选择态或课后选择态 | 不写；不调用 `finalizeSession` | 不写；不重判 `GoalState` |
 | finalization 后「离开」 | 不读写 | 不读写 | 不读写；只导航首页 |
 | 设置保存 | 不读写 | 不读写 | 不读写；只改配置存储 |
+| 首页确认删除课程 | 该 stage 上 teaching / replay W 经产品路径不可再读（runtime cascade，fail-soft）；不新建 | 该 stage 分区上的课程快照、evidence 与 course memory 经产品路径不可再读；不读其他 `courseId` | 不读写 |
+
+删除不是学习事件：不产 `EvidenceRecord`、不改 `GoalState`、不调用 `finalizeSession`。不要求 `livecourse-runtime` 在 timeout 后物理清空。存储继续沿用 IndexedDB / HTTP / PG 与课堂文件存储；有文件副本时删除必须打到两个平面。J1 IndexedDB-only 课没有文件副本，DELETE ENOENT 即为该平面成功。
 
 所有表中事件都必须经类型化接口进入；模型可以提出 learner-only candidate，但不能选择 namespace、伪造 UI 成功事件或直接写 W / C / L。普通页面草稿、上传缓存、媒体加载和设置不是学习事件。
 

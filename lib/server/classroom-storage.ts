@@ -137,3 +137,24 @@ export async function persistClassroom(
     url: `${baseUrl}/classroom/${data.id}`,
   };
 }
+
+/**
+ * Remove the classroom JSON file and its media directory. Idempotent: a missing
+ * file or directory is success. Showcase `fourier-intro` is refused before any
+ * filesystem work. Path segments come only from `CLASSROOMS_DIR` + a charset-
+ * validated id; v1 does not extra-lstat against symlink escape.
+ */
+export async function deleteClassroom(id: string): Promise<void> {
+  assertValidClassroomId(id);
+  if (id === 'fourier-intro') {
+    throw new Error('Showcase classroom cannot be deleted');
+  }
+  const filePath = classroomFilePath(id);
+  const dirPath = path.join(CLASSROOMS_DIR, id);
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await fs.rm(dirPath, { recursive: true, force: true });
+}

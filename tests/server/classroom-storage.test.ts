@@ -2,14 +2,18 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { sweepClassroomGenerationJobsForClassroom } from '@/lib/server/classroom-job-store';
 import {
+  CLASSROOM_JOBS_DIR,
   CLASSROOMS_DIR,
+  deleteClassroom,
   isValidClassroomId,
   persistClassroom,
   readClassroom,
 } from '@/lib/server/classroom-storage';
 
 const createdFiles: string[] = [];
+const createdDirs: string[] = [];
 
 function fixtureClassroom(id: string) {
   return {
@@ -21,6 +25,9 @@ function fixtureClassroom(id: string) {
 
 afterEach(async () => {
   await Promise.all(createdFiles.splice(0).map((filePath) => fs.rm(filePath, { force: true })));
+  await Promise.all(
+    createdDirs.splice(0).map((dirPath) => fs.rm(dirPath, { recursive: true, force: true })),
+  );
 });
 
 describe('classroom file storage', () => {
@@ -104,5 +111,95 @@ describe('classroom file storage', () => {
     );
 
     await expect(readClassroom(id)).rejects.toThrow(/course plan/i);
+  });
+
+  it('deleteClassroom removes the json file and media directory and is idempotent', async () => {
+    const id = `storage-delete-${Date.now()}`;
+    const filePath = path.join(CLASSROOMS_DIR, `${id}.json`);
+    const mediaDir = path.join(CLASSROOMS_DIR, id);
+    createdFiles.push(filePath);
+    createdDirs.push(mediaDir);
+
+    await persistClassroom(fixtureClassroom(id), 'http://localhost');
+    await fs.mkdir(path.join(mediaDir, 'media'), { recursive: true });
+    await fs.writeFile(path.join(mediaDir, 'media', 'cover.png'), 'png');
+
+    await deleteClassroom(id);
+    await expect(readClassroom(id)).resolves.toBeNull();
+    await expect(fs.access(mediaDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(deleteClassroom(id)).resolves.toBeUndefined();
+  });
+
+  it('deleteClassroom treats a missing file as success', async () => {
+    const id = `storage-delete-missing-${Date.now()}`;
+    await expect(deleteClassroom(id)).resolves.toBeUndefined();
+  });
+
+  it('rejects path traversal on delete before touching the filesystem', async () => {
+    await expect(deleteClassroom('../outside')).rejects.toThrow(/invalid classroom id/i);
+  });
+
+  it('refuses to delete the showcase classroom before any unlink', async () => {
+    const filePath = path.join(CLASSROOMS_DIR, 'fourier-intro.json');
+    createdFiles.push(filePath);
+    await persistClassroom(fixtureClassroom('fourier-intro'), 'http://localhost');
+
+    await expect(deleteClassroom('fourier-intro')).rejects.toThrow(
+      /showcase classroom cannot be deleted/i,
+    );
+    await expect(readClassroom('fourier-intro')).resolves.toMatchObject({ id: 'fourier-intro' });
+  });
+});
+
+describe('classroom generation job sweep', () => {
+  it('unlinks matching job files by directory basename, not JSON id', async () => {
+    const classroomId = `stage-target-${Date.now()}`;
+    const resultJobId = `result-${Date.now()}`;
+    const identityJobId = `ident-${Date.now()}`;
+    const identityClassroomId = `stage-${identityJobId}`;
+    const otherJobId = `other-${Date.now()}`;
+    const forgedJobId = `forged-${Date.now()}`;
+
+    await fs.mkdir(CLASSROOM_JOBS_DIR, { recursive: true });
+    const resultPath = path.join(CLASSROOM_JOBS_DIR, `${resultJobId}.json`);
+    const identityPath = path.join(CLASSROOM_JOBS_DIR, `${identityJobId}.json`);
+    const otherPath = path.join(CLASSROOM_JOBS_DIR, `${otherJobId}.json`);
+    const forgedPath = path.join(CLASSROOM_JOBS_DIR, `${forgedJobId}.json`);
+    createdFiles.push(resultPath, identityPath, otherPath, forgedPath);
+
+    await fs.writeFile(
+      resultPath,
+      JSON.stringify({
+        id: resultJobId,
+        result: { classroomId, url: '/x', scenesCount: 1 },
+      }),
+    );
+    await fs.writeFile(identityPath, JSON.stringify({ id: identityJobId, status: 'running' }));
+    await fs.writeFile(
+      otherPath,
+      JSON.stringify({
+        id: otherJobId,
+        result: { classroomId: 'stage-someone-else', url: '/y', scenesCount: 1 },
+      }),
+    );
+    await fs.writeFile(
+      forgedPath,
+      JSON.stringify({
+        id: '../outside',
+        result: { classroomId, url: '/z', scenesCount: 1 },
+      }),
+    );
+
+    await sweepClassroomGenerationJobsForClassroom(classroomId);
+
+    await expect(fs.access(resultPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.access(forgedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.access(otherPath)).resolves.toBeUndefined();
+    await expect(fs.access(identityPath)).resolves.toBeUndefined();
+    const outside = path.join(CLASSROOM_JOBS_DIR, '..', 'outside');
+    await expect(fs.access(outside)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await sweepClassroomGenerationJobsForClassroom(identityClassroomId);
+    await expect(fs.access(identityPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

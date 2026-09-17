@@ -20,6 +20,7 @@ import {
   LEARNER_MEMORY_PARTITION_STAGE_ID,
   learnerMemorySessionId,
   loadCourseLearningMemory,
+  loadNewCourseMemoryContext,
   MAX_TOTAL_CONTEXT_CHARS,
   MemoryPartitionError,
   MemorySessionNotActiveError,
@@ -382,6 +383,59 @@ describe('memory repositories over RuntimeStore', () => {
     expect(context.text).not.toContain('课程 A 的秘密需求');
     expect(context.text).not.toContain('课程 A 的原始问题');
     expect(context.text).not.toContain('只属于课程 A 的知识点');
+  });
+
+  it('after deleting a stage, new-course context keeps L and drops that course C', async () => {
+    const s = store(`memory-delete-stage-${crypto.randomUUID()}`);
+    const learner = createLearnerMemoryRepository({
+      store: s,
+      scope: { stageId: 'stage-course-a', learnerId: LEARNER_A },
+      now: () => NOW,
+    });
+    const courseA = createCourseMemoryRepository({
+      store: s,
+      scope: { stageId: 'stage-course-a', learnerId: LEARNER_A, courseId: COURSE_A },
+      now: () => NOW,
+    });
+    await courseA.update((record) => ({
+      ...record,
+      intake: {
+        requirement: '傅里叶变换入门',
+        preClassAnswers: [],
+        finalScope: ['只属于已删课的知识点'],
+        skipped: false,
+        submittedAt: NOW,
+      },
+    }));
+    await learner.update((memory) => ({
+      ...memory,
+      entries: [
+        {
+          schemaVersion: 1,
+          id: 'learner-entry:after-delete',
+          dimension: 'pace',
+          value: '慢一点',
+          sourceType: 'explicit_longterm',
+          supportingCourseCount: 1,
+          confidence: 0.9,
+          observedAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    }));
+
+    await s.deleteStageRuntime('stage-course-a');
+    expect(await courseA.load()).toBeUndefined();
+
+    const newCourse = await loadNewCourseMemoryContext({
+      store: s,
+      stageId: 'stage-course-b',
+      learnerId: LEARNER_A,
+    });
+    expect(newCourse.teacherContext.text).toContain('慢一点');
+    expect(newCourse.teacherContext.text).not.toContain('傅里叶变换入门');
+    expect(newCourse.teacherContext.text).not.toContain('只属于已删课的知识点');
+    expect(JSON.stringify(newCourse.learnerMemory)).not.toContain('傅里叶变换入门');
   });
 
   it('destroys W idempotently and never resurrects archived temp state', async () => {

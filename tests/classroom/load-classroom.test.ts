@@ -694,6 +694,23 @@ describe('runClassroomLoad', () => {
     expect(deps.setLoading).not.toHaveBeenCalled();
   });
 
+  it('does not restore a deleted classroom when GET returns nothing', async () => {
+    const unmark = vi.spyOn(
+      await import('@/lib/utils/deleted-stages'),
+      'unmarkStageDeleted',
+    );
+    const { deps } = makeDeps({
+      fetchClassroom: vi.fn().mockResolvedValue(null),
+    });
+
+    await runClassroomLoad(deps);
+
+    expect(deps.fetchClassroom).toHaveBeenCalledWith('stage-a');
+    expect(deps.applyFallbackScenes).not.toHaveBeenCalled();
+    expect(unmark).not.toHaveBeenCalled();
+    unmark.mockRestore();
+  });
+
   it('stops after fetch when the load is superseded', async () => {
     const fetched = deferred<{ stage: Stage; scenes: Scene[] } | null>();
     const { deps, setCurrent } = makeDeps({

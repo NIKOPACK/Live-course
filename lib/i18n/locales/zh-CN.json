@@ -49,7 +49,14 @@
     "generatingCourse": "备课中，点开查看进度",
     "recentEmptyAction": "去写学习目标",
     "configureModelHint": "上课模型请在设置中配置。",
-    "openModelSettings": "打开设置"
+    "openModelSettings": "打开设置",
+    "deleteCourse": "删除",
+    "deleteCourseAria": "删除课程 {{name}}",
+    "deleteCourseTitle": "删除这门课？",
+    "deleteCourseDescription": "本课材料、学习进度和作答会永久删除，无法恢复。你的跨课学习偏好会保留。",
+    "deleteCourseConfirm": "删除课程",
+    "deleteCourseDeleting": "正在删除…",
+    "deleteCourseFailed": "删除失败，请重试。课程仍在。"
   },
   "toolbar": {
     "pdfParser": "解析器",

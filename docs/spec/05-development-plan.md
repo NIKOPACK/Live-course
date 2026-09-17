@@ -206,9 +206,34 @@ worker Agent 支持派生并行 subagent（`04` §7）：
 - **重试幂等**：检查判分重试、分段生成重试、节点加载重试、`lesson.complete_node`、`saveAndLeaveSession` 与 `finalizeSession` 重试各自复用稳定 idempotency key；只有检查可产 evidence，且同一提交最多一个
 - **存储一致**：Browser IndexedDB 与 HTTP / PostgreSQL adapter 的相同 contract tests 覆盖 schema、namespace、幂等 / CAS 与删除边界；本期未配置的后端不阻塞本地课堂
 
-## A7 及以后
+## A7 课程删除
 
-A7 尚未定义。多课时课程规划、BKT / FSRS、摄像头仅是未来候选；任何功能必须先按 `docs/spec` 权威顺序写入旅程、手册、设计和可测验收后才能开发。在此之前继续禁止，作品简介不能授权开发。
+依据：`01` J4.5、`02` 首页、`04` §3 / §6。
+
+加：
+
+- 首页最近课堂独立删除控件 + 确认框硬删除一门自己生成的课（含备课中）
+- `deleteClassroom` 与 `DELETE /api/classroom`；客户端沿用 `deleteStageData`，成功谓词为服务端 200/404 且 `listStages()` 不再含该 id
+- 展示课 `fourier-intro` 不可删
+
+约束：不碰 L；不改 §7「返回首页保留可恢复的 generation session」原句；不反转 `loadFromStorage` 的 server-restore fallthrough；不新增 DocumentStore API。in-flight `/api/generate-classroom` 在 DELETE 后 `persistClassroom` **不是** 本期验收。
+
+验收：
+
+- 首页卡片可确认删除；取消不改数据。展示课无删除入口。`DELETE /api/classroom?id=fourier-intro` 为 400，文件仍在
+- **主成功路径：** 无服务端文件的 J1 课，确认后卡片消失
+- 成功：卡片消失（含无 `preparingClassroom` 鬼魂）；空架文案现有；该课 C / W / evidence **经产品路径不可读**（新课上下文、再打开）；L 仍在；新课不出现已删课内容。不要求 runtime DB 物理清空
+- 备课中的课可删且 generation session 仅在成功谓词后被清。从预览返回首页仍保留可恢复 session（§7 原句）
+- 失败：确认框保持打开，卡片仍在，可重试
+- 一点确认即关掉该课 `CourseEntryDialog`；继续 / 再听不能在删除后导航
+- runner **未在跑** 时，`GET /api/classroom?id=` 对已删 id 为 404；打开该课堂 URL 不恢复
+- 封面资源计入回收（现有 collect-stage-asset-refs + cascade）
+- 不出现回收站、课堂内删除、对 L 的写入
+- **非验收：** in-flight `generateClassroom` 在 DELETE 后写回文件
+
+## A8 及以后
+
+A8 尚未定义。多课时课程规划、BKT / FSRS、摄像头仅是未来候选；任何功能必须先按 `docs/spec` 权威顺序写入旅程、手册、设计和可测验收后才能开发。在此之前继续禁止，作品简介不能授权开发。
 
 ## 完成标准
 

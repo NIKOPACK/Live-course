@@ -19,7 +19,9 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mocks.push, replace: vi.fn() }),
+}));
 vi.mock('next/dynamic', () => ({ default: () => () => null }));
 vi.mock('@/lib/hooks/use-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/hooks/use-theme', () => ({
@@ -38,6 +40,10 @@ vi.mock('@/lib/utils/image-storage', () => ({
 }));
 vi.mock('@/lib/utils/stage-storage', () => ({
   listStages: async () => [],
+  getFirstSlideByStages: async () => ({}),
+  loadStageData: async () => null,
+  resolveCourseCoverUrls: async () => ({}),
+  revokeCourseCoverUrls: vi.fn(),
   revokeThumbnailSlideMediaUrls: vi.fn(),
 }));
 vi.mock('@/lib/store/media-generation', () => ({

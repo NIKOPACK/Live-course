@@ -6,11 +6,15 @@ import type {
   GenerateClassroomInput,
   GenerateClassroomResult,
 } from '@/lib/server/classroom-generation';
+import { createLogger } from '@/lib/logger';
 import {
   CLASSROOM_JOBS_DIR,
   ensureClassroomJobsDir,
+  isValidClassroomId,
   writeJsonFileAtomic,
 } from '@/lib/server/classroom-storage';
+
+const log = createLogger('ClassroomJobStore');
 
 export type ClassroomGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -221,4 +225,57 @@ export async function markClassroomGenerationJobFailed(
     completedAt: new Date().toISOString(),
     error,
   });
+}
+
+/**
+ * Best-effort: unlink job files whose directory entry is a valid job id and
+ * that belong to `classroomId`. Paths are taken only from `readdir` basenames,
+ * never from JSON `job.id`.
+ */
+export async function sweepClassroomGenerationJobsForClassroom(
+  classroomId: string,
+): Promise<void> {
+  if (!isValidClassroomId(classroomId)) {
+    throw new Error(
+      `Invalid classroom id ${JSON.stringify(classroomId)}; ids may contain only letters, digits, dash or underscore`,
+    );
+  }
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(CLASSROOM_JOBS_DIR);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue;
+    const jobId = entry.slice(0, -'.json'.length);
+    if (!isValidClassroomJobId(jobId)) continue;
+    const filePath = path.join(CLASSROOM_JOBS_DIR, entry);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await fs.readFile(filePath, 'utf8')) as unknown;
+    } catch (error) {
+      log.warn(`Skipping unreadable classroom job ${JSON.stringify(entry)}:`, error);
+      continue;
+    }
+    const resultClassroomId =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'result' in parsed &&
+      typeof (parsed as { result?: unknown }).result === 'object' &&
+      (parsed as { result?: unknown }).result !== null
+        ? (parsed as { result: { classroomId?: unknown } }).result.classroomId
+        : undefined;
+    const matchesResult = resultClassroomId === classroomId;
+    const matchesIdentity = `stage-${jobId}` === classroomId;
+    if (!matchesResult && !matchesIdentity) continue;
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
 }
