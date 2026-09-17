@@ -51,8 +51,9 @@ Produce a **`courseTitle`** (required): a concise, human-readable name for the *
 
 - **Length**: ≤ 30 characters (roughly one short phrase). Hard cap; if the concept is long, compress it.
 - **Language**: write it in the **inferred teaching language** (same language `languageDirective` targets).
-- **Style**: a noun phrase summarizing the topic — e.g. "抛体运动入门", "Intro to Recursion", "光合作用原理". Not a sentence, not a question.
+- **Style**: a noun phrase of the **subject and level only** — e.g. "抛体运动入门", "Intro to Recursion", "光合作用原理", "傅里叶变换入门". Not a sentence, not a question.
 - **Do NOT** include: quotes, numbering, leading emojis, the teacher's name/role, or words like "Course"/"课程"/"A course about".
+- **Do NOT** include delivery medium, visual style, or format: 板书, PPT, HTML, 视频, 公开课, 微课, chalkboard, slides, blackboard. Visual direction is decided later and must not appear in the course name.
 - If the requirement is already a crisp title, you may reuse it (trimmed to the limit). If it is a long prompt, distill it to its essence.
 
 ---

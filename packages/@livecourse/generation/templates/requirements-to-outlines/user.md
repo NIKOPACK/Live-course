@@ -49,7 +49,8 @@ Please automatically infer the following from user requirements:
 - Target audience and difficulty level
 - Course duration (default 15-30 minutes if not specified)
 - Teaching style (formal/casual/interactive/academic)
-- Visual style (minimal/colorful/professional/playful)
+
+`courseTitle` names the subject and level only (e.g. "傅里叶变换入门"). Do not put visual style or medium words such as 板书 / PPT / HTML / chalkboard into the title.
 
 Then output your response as a single JSON object.
 
