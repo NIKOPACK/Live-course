@@ -95,6 +95,7 @@ export type VolcRealtimeRelayEvent =
   | { type: 'local.connected'; sessionId: string; logId?: string }
   | { type: 'local.closed' }
   | { type: 'local.error'; message: string }
+  | { type: 'local.teacher_text'; text: string }
   | { type: 'upstream.event'; event: VolcRealtimeUpstreamEvent };
 
 export function isVolcAudioInputTimeout(error: unknown): boolean {

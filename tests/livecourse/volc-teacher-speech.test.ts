@@ -11,7 +11,7 @@ const sessionMocks = vi.hoisted(() => ({
   ),
   cancelNarration: vi.fn(async () => undefined),
   mute: vi.fn(),
-  close: vi.fn(async () => undefined),
+  close: vi.fn(async (): Promise<void> => undefined),
   updateInstructions: vi.fn(async (_instructions: string): Promise<void> => undefined),
   setInputEnabled: vi.fn(),
   onEvent: undefined as ((event: unknown) => void) | undefined,
@@ -53,7 +53,7 @@ describe('VolcTeacherSpeechSession', () => {
     sessionMocks.askQuestion.mockReset().mockResolvedValue(undefined);
     sessionMocks.cancelNarration.mockReset().mockResolvedValue(undefined);
     sessionMocks.mute.mockClear();
-    sessionMocks.close.mockClear();
+    sessionMocks.close.mockReset().mockResolvedValue(undefined);
     sessionMocks.updateInstructions.mockReset().mockResolvedValue(undefined);
     sessionMocks.setInputEnabled.mockClear();
     sessionMocks.onEvent = undefined;
@@ -63,6 +63,227 @@ describe('VolcTeacherSpeechSession', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it.each(['connect', 'ask', 'speak'] as const)(
+    'shares a pending transport with a concurrent %s caller',
+    async (operation) => {
+      let release!: () => void;
+      sessionMocks.connect.mockImplementationOnce(
+        () =>
+          new Promise<undefined>((resolve) => {
+            release = () => resolve(undefined);
+          }),
+      );
+      const session = new VolcTeacherSpeechSession({ getInstructions: () => 'Current checkpoint' });
+      const connecting = session.connect();
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      const concurrent =
+        operation === 'connect' ? session.connect() : session[operation]('Question or narration');
+      const completed = Promise.allSettled([connecting, concurrent]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      release();
+      const results = await completed;
+      expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(sessionMocks.connect).toHaveBeenCalledOnce();
+      expect(session.connected).toBe(true);
+      await session.close();
+    },
+  );
+
+  it('releases a held interruption before disconnecting, without completing an answer', async () => {
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi.fn(async () => undefined);
+    const events: Array<{ type: string }> = [];
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Checkpoint.',
+      getLocation: () => ({ nodeId: 'node:check', sceneId: 'check' }),
+      interruptNode,
+      resumeNode,
+      onEvent: (event) => events.push(event),
+    });
+    await session.connect();
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    await vi.waitFor(() => expect(interruptNode).toHaveBeenCalledOnce());
+    await session.close();
+    expect(resumeNode).toHaveBeenCalledExactlyOnceWith('node:check');
+    expect(resumeNode.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionMocks.close.mock.invocationCallOrder[0],
+    );
+    expect(events.filter((event) => event.type === 'node_resumed')).toHaveLength(1);
+    expect(sessionMocks.askQuestion).not.toHaveBeenCalled();
+    expect(session.connected).toBe(false);
+  });
+
+  it('waits for the pending interruption commit and coalesces concurrent closes', async () => {
+    let commit!: () => void;
+    const interruptNode = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          commit = resolve;
+        }),
+    );
+    const resumeNode = vi.fn(async () => undefined);
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Checkpoint.',
+      getLocation: () => ({ nodeId: 'node:check', sceneId: 'check' }),
+      interruptNode,
+      resumeNode,
+    });
+    await session.connect();
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    await vi.waitFor(() => expect(commit).toBeTypeOf('function'));
+    const first = session.close();
+    const second = session.close();
+    expect(second).toBe(first);
+    await Promise.resolve();
+    expect(resumeNode).not.toHaveBeenCalled();
+    expect(sessionMocks.close).not.toHaveBeenCalled();
+    await expect(session.connect()).rejects.toThrow(/clos/i);
+    await expect(session.ask('Another question')).rejects.toThrow(/clos/i);
+    await expect(session.speak('Late narration')).rejects.toThrow(/clos/i);
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    sessionMocks.onEvent?.({ type: 'audio_completed', hasAudio: true });
+    commit();
+    await Promise.all([first, second]);
+    expect(resumeNode).toHaveBeenCalledOnce();
+    expect(interruptNode).toHaveBeenCalledOnce();
+    expect(sessionMocks.close).toHaveBeenCalledOnce();
+  });
+
+  it('retains the connection and held node when close-time recovery fails', async () => {
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi
+      .fn(async () => undefined)
+      .mockRejectedValueOnce(new Error('Resume persistence failed'));
+    const events: Array<{ type: string }> = [];
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Checkpoint.',
+      getLocation: () => ({ nodeId: 'node:check', sceneId: 'check' }),
+      interruptNode,
+      resumeNode,
+      onEvent: (event) => events.push(event),
+    });
+    await session.connect();
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    await vi.waitFor(() => expect(interruptNode).toHaveBeenCalledOnce());
+    await expect(session.close()).rejects.toThrow('Resume persistence failed');
+    expect(session.connected).toBe(true);
+    expect(sessionMocks.close).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type === 'node_resumed')).toHaveLength(0);
+    await session.close();
+    expect(resumeNode).toHaveBeenCalledTimes(2);
+    expect(interruptNode).toHaveBeenCalledOnce();
+    expect(sessionMocks.close).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-freeze or repeat a resume that was pending when close began', async () => {
+    let release!: () => void;
+    const events: Array<{ type: string }> = [];
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Checkpoint.',
+      getLocation: () => ({ nodeId: 'node:check', sceneId: 'check' }),
+      interruptNode,
+      resumeNode,
+      onEvent: (event) => events.push(event),
+    });
+    await session.connect();
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    await vi.waitFor(() => expect(interruptNode).toHaveBeenCalledOnce());
+    sessionMocks.onEvent?.({ type: 'audio_completed', hasAudio: true });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const closing = session.close();
+    release();
+    await closing;
+    expect(interruptNode).toHaveBeenCalledOnce();
+    expect(resumeNode).toHaveBeenCalledOnce();
+    expect(sessionMocks.close).toHaveBeenCalledOnce();
+    expect(events.filter((event) => event.type === 'node_resumed')).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    'closes an idle session without recovery writes (readOnly=%s)',
+    async (readOnly) => {
+      const interruptNode = vi.fn(async () => undefined);
+      const resumeNode = vi.fn(async () => undefined);
+      const session = new VolcTeacherSpeechSession({
+        getInstructions: () => 'Checkpoint.',
+        getLocation: () => ({ nodeId: 'node:check', sceneId: 'check' }),
+        readOnly,
+        interruptNode,
+        resumeNode,
+      });
+      await session.connect();
+      await session.close();
+      expect(interruptNode).not.toHaveBeenCalled();
+      expect(resumeNode).not.toHaveBeenCalled();
+      await session.connect();
+      expect(session.connected).toBe(true);
+      await session.close();
+    },
+  );
+
+  it('retains the transport for a retry when transport close rejects', async () => {
+    const session = new VolcTeacherSpeechSession({ getInstructions: () => 'Checkpoint.' });
+    await session.connect();
+    sessionMocks.close.mockRejectedValueOnce(new Error('Transport close failed'));
+    await expect(session.close()).rejects.toThrow('Transport close failed');
+    expect(session.connected).toBe(true);
+    await session.close();
+    expect(sessionMocks.close).toHaveBeenCalledTimes(2);
+    expect(session.connected).toBe(false);
+  });
+
+  it('does not attach a reconnect that was waiting on the previous transport when closed', async () => {
+    const session = new VolcTeacherSpeechSession({ getInstructions: () => 'Checkpoint.' });
+    await session.connect();
+    sessionMocks.onEvent?.({ type: 'status', status: 'error' });
+    let release!: () => void;
+    sessionMocks.close.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const reconnect = session.connect();
+    const rejected = expect(reconnect).rejects.toThrow(/clos/i);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await session.close();
+    release();
+    await rejected;
+    expect(session.connected).toBe(false);
+    expect(sessionMocks.connect).toHaveBeenCalledOnce();
+  });
+
+  it.each(['connect', 'speak'])('cancels a delayed %s retry when closed', async (operation) => {
+    let release!: () => void;
+    sessionMocks.connect.mockRejectedValueOnce(new Error('HTTP 503 Service Unavailable'));
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Checkpoint.',
+      speechRetry: {
+        ...instantRetry,
+        sleep: () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      },
+    });
+    const pending = operation === 'connect' ? session.connect() : session.speak('A sentence.');
+    const rejected = expect(pending).rejects.toThrow(/clos/i);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await session.close();
+    release();
+    await rejected;
+    expect(session.connected).toBe(false);
+    expect(sessionMocks.connect).toHaveBeenCalledOnce();
+    expect(sessionMocks.speakText).not.toHaveBeenCalled();
   });
 
   it('reconnects and preserves mute when an input timeout interrupts authored narration', async () => {

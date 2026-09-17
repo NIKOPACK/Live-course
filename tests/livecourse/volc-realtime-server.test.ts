@@ -5,6 +5,8 @@ import WebSocket, { type ClientOptions } from 'ws';
 
 import {
   VolcRealtimeSessionRegistry,
+  VolcRealtimeQueryCancelledError,
+  type VolcTextReplyContext,
   type VolcRealtimeServerSession,
 } from '@/lib/livecourse/realtime/volc/server';
 import {
@@ -250,18 +252,97 @@ describe('Volc realtime server relay', () => {
       type: 'speech_text_buffer.commit',
       text: '误差会沿计算图逐段乘上局部导数。',
     });
-    session.sendQuery('为什么要乘局部导数？');
+    const generateReply = vi.fn(
+      async (_context: VolcTextReplyContext) => '因为复合函数遵循链式法则。',
+    );
+    await session.sendQuery('为什么要乘局部导数？', generateReply);
+    expect(generateReply).toHaveBeenCalledWith({
+      instructions: 'Teach the next step',
+      question: '为什么要乘局部导数？',
+      signal: expect.any(AbortSignal),
+    });
     expect(JSON.parse(socket.sent[6])).toMatchObject({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: '为什么要乘局部导数？' }],
-      },
+      type: 'speech_text_buffer.commit',
+      text: '因为复合函数遵循链式法则。',
+    });
+    expect(events).toContainEqual({
+      type: 'local.teacher_text',
+      text: '因为复合函数遵循链式法则。',
     });
 
     session.close();
     expect(registry.get(session.id)).toBeUndefined();
+  });
+
+  it.each(['cancel', 'close', 'context', 'request', 'replacement', 'barge'])(
+    'discards late generated replies after %s, even if generation ignores cancellation',
+    async (operation) => {
+      vi.useFakeTimers();
+      const socket = new FakeWebSocket();
+      const registry = new VolcRealtimeSessionRegistry(() => socket as never);
+      const connecting = registry.create('test-key', 'Current checkpoint');
+      socket.open();
+      const session = await connecting;
+      const requestAbort = new AbortController();
+      let release!: (text: string) => void;
+      const generateReply = vi.fn(
+        (_context: VolcTextReplyContext) =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      );
+      try {
+        const pending = session.sendQuery('Question', generateReply, requestAbort.signal);
+        const rejected = expect(pending).rejects.toBeInstanceOf(VolcRealtimeQueryCancelledError);
+        if (operation === 'cancel') session.cancelResponse();
+        if (operation === 'close') session.close();
+        if (operation === 'context') session.updateInstructions('A different node');
+        if (operation === 'request') requestAbort.abort();
+        if (operation === 'barge') {
+          socket.receive({ type: 'conversation.item.input_audio_transcription.started' });
+        }
+        if (operation === 'replacement')
+          await session.sendQuery('New question', async () => 'New reply');
+        expect(generateReply.mock.calls[0][0].signal.aborted).toBe(true);
+        release('Late reply that must not be spoken');
+        await rejected;
+        const narration = socket.sent
+          .map((value) => JSON.parse(value))
+          .filter((event) => event.type === 'speech_text_buffer.commit');
+        expect(narration.map((event) => event.text)).toEqual(
+          operation === 'replacement' ? ['New reply'] : [],
+        );
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  it('does not read a question aloud or report completion when text generation fails', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeWebSocket();
+    const registry = new VolcRealtimeSessionRegistry(() => socket as never);
+    const connecting = registry.create('test-key', 'Current checkpoint');
+    socket.open();
+    const session = await connecting;
+    const events: unknown[] = [];
+    session.subscribe((event) => events.push(event));
+    try {
+      await expect(session.sendQuery('Question', async () => '   ')).rejects.toThrow('empty');
+      await expect(
+        session.sendQuery('Question', async () => {
+          throw new Error('LLM failed');
+        }),
+      ).rejects.toThrow('LLM failed');
+      expect(socket.sent.map((value) => JSON.parse(value).type)).toEqual(['session.create']);
+      expect(events).not.toContainEqual(expect.objectContaining({ type: 'local.teacher_text' }));
+      session.close();
+      const generateReply = vi.fn(async () => 'Must not run');
+      await expect(session.sendQuery('Question', generateReply)).rejects.toThrow('not connected');
+      expect(generateReply).not.toHaveBeenCalled();
+    } finally {
+      session.close();
+    }
   });
 
   it('preserves the upstream handshake error and log ID', async () => {

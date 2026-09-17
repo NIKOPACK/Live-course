@@ -29,6 +29,16 @@ export class VolcRealtimeConfigurationError extends Error {
   override readonly name = 'VolcRealtimeConfigurationError';
 }
 
+export class VolcRealtimeQueryCancelledError extends Error {
+  override readonly name = 'VolcRealtimeQueryCancelledError';
+}
+
+export interface VolcTextReplyContext {
+  instructions: string;
+  question: string;
+  signal: AbortSignal;
+}
+
 export class VolcRealtimeUpstreamError extends Error {
   override readonly name = 'VolcRealtimeUpstreamError';
 
@@ -66,9 +76,12 @@ export class VolcRealtimeServerSession {
   #lastInputAt: number | null = null;
   #nextInputAt = 0;
   #inputCommitPending = false;
+  #instructions: string;
+  #queryAbort: AbortController | null = null;
 
   constructor(options: VolcRealtimeServerSessionOptions) {
     this.#options = options;
+    this.#instructions = options.instructions;
     this.#lifetimeTimer = setTimeout(() => this.close(), SESSION_LIFETIME_MS);
     this.#lifetimeTimer.unref?.();
   }
@@ -244,31 +257,58 @@ export class VolcRealtimeServerSession {
   }
 
   updateInstructions(instructions: string): void {
+    if (instructions !== this.#instructions) this.#cancelQuery();
     this.#send({
       type: 'session.update',
       event_id: randomUUID(),
       session: { instructions },
     });
+    this.#instructions = instructions;
   }
 
   sendText(text: string): void {
     this.#send({ type: 'speech_text_buffer.commit', event_id: randomUUID(), text });
   }
 
-  /** Learner text becomes a user turn so the model answers, instead of TTS of a script. */
-  sendQuery(text: string): void {
-    this.#send({
-      type: 'conversation.item.create',
-      event_id: randomUUID(),
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text }],
-      },
-    });
+  async sendQuery(
+    text: string,
+    generateReply: (context: VolcTextReplyContext) => Promise<string>,
+    requestSignal?: AbortSignal,
+  ): Promise<void> {
+    if (this.#closed) throw new VolcRealtimeUpstreamError('Volc realtime session is not connected');
+    this.#cancelQuery();
+    const controller = new AbortController();
+    this.#queryAbort = controller;
+    const signal = AbortSignal.any(
+      requestSignal ? [controller.signal, requestSignal] : [controller.signal],
+    );
+    try {
+      signal.throwIfAborted();
+      const reply = await generateReply({
+        instructions: this.#instructions,
+        question: text,
+        signal,
+      });
+      signal.throwIfAborted();
+      if (!reply.trim()) throw new VolcRealtimeUpstreamError('Teacher response was empty');
+      this.sendText(reply.trim());
+      this.#emit({ type: 'local.teacher_text', text: reply.trim() });
+    } catch (error) {
+      if (signal.aborted) {
+        throw new VolcRealtimeQueryCancelledError('Volc model question was interrupted');
+      }
+      throw error;
+    } finally {
+      if (this.#queryAbort === controller) this.#queryAbort = null;
+    }
+  }
+
+  #cancelQuery(): void {
+    this.#queryAbort?.abort();
   }
 
   cancelResponse(): void {
+    this.#cancelQuery();
     this.#send({ type: 'response.cancel', event_id: randomUUID() });
   }
 
@@ -308,6 +348,12 @@ export class VolcRealtimeServerSession {
       this.#nextInputAt = Date.now();
       this.#pumpInput();
     }
+    if (
+      event.type === 'conversation.item.input_audio_transcription.started' &&
+      this.#inputEnabled
+    ) {
+      this.#cancelQuery();
+    }
     this.#emit({ type: 'upstream.event', event });
     if (
       event.type === 'session.closed' ||
@@ -329,6 +375,7 @@ export class VolcRealtimeServerSession {
   #finishClose(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#cancelQuery();
     clearTimeout(this.#lifetimeTimer);
     clearTimeout(this.#inputTimer);
     this.#inputTimer = undefined;

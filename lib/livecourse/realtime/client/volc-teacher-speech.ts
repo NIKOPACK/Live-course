@@ -1,6 +1,7 @@
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
 import {
   RealtimeInterruptionUncertaintyError,
+  RealtimeSessionClosingError,
   type RealtimeClassroomLocation,
   type RealtimeTeacherEvent,
 } from '@/lib/livecourse/realtime/client/session';
@@ -47,32 +48,54 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   #instructions: string | null = null;
   #oralQuestion: OralQuestionSession | null = null;
   #oralReleased: Promise<void> = Promise.resolve();
+  #closing = false;
+  #closePromise: Promise<void> | null = null;
+  #connectionGeneration = 0;
+  #connectPromise: Promise<void> | null = null;
 
   constructor(options: VolcTeacherSpeechSessionOptions) {
     this.#options = options;
   }
 
   async connect(): Promise<void> {
+    const generation = this.#connectionGeneration;
+    this.#assertConnectionCurrent(generation);
     if (this.connected) return;
-    await withRealtimeSpeechRetry(() => this.#connectOnce(), {
-      label: 'volc.connect',
-      ...this.#options.speechRetry,
-    });
+    await withRealtimeSpeechRetry(
+      () => {
+        this.#assertConnectionCurrent(generation);
+        return this.#connectOnce();
+      },
+      {
+        label: 'volc.connect',
+        ...this.#options.speechRetry,
+      },
+    );
   }
 
   async speak(text: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+    const generation = this.#connectionGeneration;
+    this.#assertConnectionCurrent(generation);
     if (this.#oralQuestion?.closed) await this.#oralReleased;
+    this.#assertConnectionCurrent(generation);
     if (!text.trim()) throw new Error('Realtime speech text cannot be empty');
     if (options.signal?.aborted) throw speechAbortError();
     this.#emit({ type: 'transcript', speaker: 'teacher', text });
-    await withRealtimeSpeechRetry(() => this.#speakOnce(text, options.signal), {
-      label: 'volc.speak',
-      signal: options.signal,
-      ...this.#options.speechRetry,
-    });
+    await withRealtimeSpeechRetry(
+      () => {
+        this.#assertConnectionCurrent(generation);
+        return this.#speakOnce(text, options.signal);
+      },
+      {
+        label: 'volc.speak',
+        signal: options.signal,
+        ...this.#options.speechRetry,
+      },
+    );
   }
 
   async ask(text: string): Promise<void> {
+    if (this.#closing) throw new RealtimeSessionClosingError();
     if (this.#options.readOnly) throw new Error('Replay does not accept learner questions');
     if (this.#oralQuestion) return this.#oralQuestion.answer(text);
     if (!text.trim()) throw new Error('A classroom question cannot be empty');
@@ -144,13 +167,15 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
       await oral.run();
     } finally {
       try {
-        if (this.connected) {
+        if (this.connected && this.#session === session && !this.#closing) {
           await session.cancelNarration();
           await session.updateInstructions(this.#options.getInstructions());
         }
       } finally {
         this.#oralQuestion = null;
-        session.setInputEnabled(true);
+        if (this.connected && this.#session === session && !this.#closing) {
+          session.setInputEnabled(true);
+        }
         this.#emit({ type: 'oral_question', state: null });
         release();
       }
@@ -186,27 +211,67 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     });
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    const operation = this.#close();
+    this.#closePromise = operation;
+    const finish = () => {
+      if (this.#closePromise === operation) {
+        this.#closePromise = null;
+        this.#closing = false;
+      }
+    };
+    void operation.then(finish, finish);
+    return operation;
+  }
+
+  async #close(): Promise<void> {
+    this.#closing = true;
+    this.#connectionGeneration += 1;
+    this.#connectPromise = null;
     this.#responseGeneration += 1;
     this.#oralQuestion?.cancel(new Error('Realtime teacher connection was closed'));
+    // Let a pending resume settle before releasing any remaining frozen node.
+    await this.#resumeQueue;
+    await this.#queueReleasePlayback(this.#responseGeneration);
     const session = this.#session;
+    if (session) await session.close();
     this.#session = null;
     this.#instructions = null;
     this.connected = false;
     this.#muted = false;
-    if (session) await session.close();
     this.#emit({ type: 'status', status: 'closed' });
   }
 
   async #connectOnce(): Promise<void> {
+    if (this.#closing) throw new RealtimeSessionClosingError();
     if (this.connected) return;
+    if (this.#connectPromise) return this.#connectPromise;
+    const generation = this.#connectionGeneration;
+    const operation = Promise.resolve().then(() => {
+      this.#assertConnectionCurrent(generation);
+      return this.#openConnection();
+    });
+    this.#connectPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.#connectPromise === operation) this.#connectPromise = null;
+    }
+  }
+
+  async #openConnection(): Promise<void> {
+    if (this.#closing) throw new RealtimeSessionClosingError();
+    if (this.connected) return;
+    const generation = this.#connectionGeneration;
     this.#emit({ type: 'status', status: 'connecting' });
-    await this.#session?.close().catch(() => {});
+    await this.#session?.close();
+    this.#assertConnectionCurrent(generation);
     const session = new VolcRealtimeBrowserSession({
       // HTTPS can barge in. HTTP / missing getUserMedia must still start lecture.
       captureMicrophone: !this.#options.readOnly && shouldCaptureRealtimeMicrophone(),
       onEvent: (event) => {
-        if (this.#session !== session) return;
+        if (this.#session !== session || this.#closing) return;
         if (event.type === 'status') {
           if (event.status === 'error' || event.status === 'closed') {
             this.connected = false;
@@ -281,16 +346,17 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     if (this.#options.readOnly) session.setInputEnabled(false);
     try {
       await session.preparePlayback();
+      if (this.#session !== session || this.#closing) throw speechAbortError();
       const instructions = this.#currentInstructions();
       await session.connect(instructions);
-      if (this.#session !== session) {
+      if (this.#session !== session || this.#closing) {
         await session.close();
         throw speechAbortError();
       }
       this.#instructions = instructions;
       this.connected = true;
     } catch (error) {
-      if (this.#session === session) {
+      if (this.#session === session && !this.#closing) {
         this.connected = false;
         this.#session = null;
         this.#emit({ type: 'status', status: 'error' });
@@ -395,7 +461,7 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     if (!this.#options.resumeNode) throw new Error('Classroom resume is not configured');
     await this.#options.resumeNode(nodeId);
     if (this.#heldNodeId !== nodeId) return;
-    if (generation !== this.#responseGeneration) {
+    if (generation !== this.#responseGeneration && !this.#closing) {
       await this.#startHold(nodeId);
       return;
     }
@@ -422,8 +488,15 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   #requireSession(): VolcRealtimeBrowserSession {
+    if (this.#closing) throw new RealtimeSessionClosingError();
     if (!this.#session || !this.connected) throw new Error('Realtime teacher is not connected');
     return this.#session;
+  }
+
+  #assertConnectionCurrent(generation: number): void {
+    if (this.#closing || generation !== this.#connectionGeneration) {
+      throw new RealtimeSessionClosingError();
+    }
   }
 
   #emit(event: RealtimeTeacherEvent): void {

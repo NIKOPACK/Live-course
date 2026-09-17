@@ -1,8 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getActiveLipSyncAudioNode } from '@/lib/livecourse/realtime/client/audio-bridge';
-import { VolcRealtimeBrowserSession } from '@/lib/livecourse/realtime/volc/client';
-import { VOLC_REALTIME_STUDENT_VOICE } from '@/lib/livecourse/realtime/volc/protocol';
+import {
+  VolcRealtimeBrowserSession,
+  type VolcRealtimeBrowserEvent,
+} from '@/lib/livecourse/realtime/volc/client';
+import {
+  VOLC_REALTIME_STUDENT_VOICE,
+  type VolcRealtimeAction,
+} from '@/lib/livecourse/realtime/volc/protocol';
+
+vi.mock('@/lib/utils/model-config', () => ({
+  getCurrentModelConfig: () => ({
+    modelString: 'test-provider:test-model',
+    apiKey: 'test-learner-llm-key',
+    baseUrl: 'https://example.com/v1',
+    providerType: 'openai',
+  }),
+}));
 
 class FakeEventSource {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
@@ -12,7 +27,7 @@ class FakeEventSource {
     this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent<string>);
   }
 
-  close(): void {}
+  close = vi.fn();
 }
 
 let playbackContext: { state: string };
@@ -63,6 +78,558 @@ function emitAudio(source: FakeEventSource): void {
   });
   source.emit({ type: 'upstream.event', event: { type: 'response.output_audio.done' } });
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('Volc browser connection and close lifecycle', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval });
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function transport(
+    respond: (
+      action: VolcRealtimeAction,
+      signal: AbortSignal | null | undefined,
+    ) => Promise<Response>,
+    observe?: (event: VolcRealtimeBrowserEvent) => void,
+  ) {
+    const sources: FakeEventSource[] = [];
+    const events: VolcRealtimeBrowserEvent[] = [];
+    const requests: Array<{ action: VolcRealtimeAction; signal: RequestInit['signal'] }> = [];
+    const session = new VolcRealtimeBrowserSession({
+      captureMicrophone: false,
+      fetchImpl: async (_url, init) => {
+        const action = JSON.parse(String(init?.body)) as VolcRealtimeAction;
+        requests.push({ action, signal: init?.signal });
+        return respond(action, init?.signal);
+      },
+      eventSourceFactory: () => {
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+      onEvent: (event) => {
+        events.push(event);
+        observe?.(event);
+      },
+    });
+    return { session, sources, requests, events };
+  }
+
+  function success(action: VolcRealtimeAction): Promise<Response> {
+    return Promise.resolve(
+      Response.json(
+        action.action === 'connect' ? { sessionId: 'lifecycle-session' } : { success: true },
+      ),
+    );
+  }
+
+  async function connect(session: VolcRealtimeBrowserSession, sources: FakeEventSource[]) {
+    const connecting = session.connect('Teach rates.');
+    await vi.advanceTimersByTimeAsync(0);
+    sources.at(-1)!.emit({ type: 'local.connected', sessionId: 'lifecycle-session' });
+    await connecting;
+  }
+
+  it.each(['abort-aware HTTP', 'abort-ignoring HTTP', 'response body'])(
+    'bounds a hanging connect %s at 20 seconds',
+    async (phase) => {
+      const pending = deferred<Response>();
+      const body = deferred<{ sessionId: string }>();
+      const response = Response.json({});
+      vi.spyOn(response, 'json').mockReturnValue(body.promise);
+      const { session, sources, requests, events } = transport(async (action, signal) => {
+        if (action.action !== 'connect') return success(action);
+        if (phase === 'response body') return response;
+        if (phase === 'abort-aware HTTP') {
+          signal?.addEventListener('abort', () => pending.reject(signal.reason), { once: true });
+        }
+        return pending.promise;
+      });
+      const connecting = session.connect('Teach rates.');
+      const rejected = expect(connecting).rejects.toThrow('connection timed out');
+      const settled = vi.fn();
+      void connecting.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(requests[0].signal?.aborted).toBe(true);
+      expect(sources).toHaveLength(0);
+      expect(events).toContainEqual({ type: 'status', status: 'error' });
+      await session.close();
+
+      if (phase === 'response body') body.resolve({ sessionId: 'late-timeout' });
+      else if (phase === 'abort-ignoring HTTP') {
+        pending.resolve(Response.json({ sessionId: 'late-timeout' }));
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      if (phase !== 'abort-aware HTTP') {
+        expect(requests.at(-1)?.action).toEqual({ action: 'close', sessionId: 'late-timeout' });
+      }
+      expect(sources).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('uses one total HTTP and SSE deadline rather than restarting the budget after POST', async () => {
+    const response = deferred<Response>();
+    const { session, sources, requests } = transport((action) =>
+      action.action === 'connect' ? response.promise : success(action),
+    );
+    const connecting = session.connect('Teach rates.');
+    const rejected = expect(connecting).rejects.toThrow('connection timed out');
+    await vi.advanceTimersByTimeAsync(12_000);
+    response.resolve(Response.json({ sessionId: 'missing-handshake' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sources).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(sources[0].close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(sources[0].close).toHaveBeenCalledOnce();
+    expect(requests.at(-1)?.action).toEqual({ action: 'close', sessionId: 'missing-handshake' });
+    await session.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects the handshake at 20 seconds even when its automatic cleanup also hangs', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const blocked = deferred<Response>();
+    let closeRequests = 0;
+    const { session, sources, events } = transport((action) => {
+      if (action.action === 'close' && ++closeRequests === 1) return blocked.promise;
+      return success(action);
+    });
+    const connecting = session.connect('No SSE handshake');
+    const rejected = expect(connecting).rejects.toThrow('connection timed out');
+    await vi.advanceTimersByTimeAsync(20_000);
+    await rejected;
+    expect(sources[0].close).toHaveBeenCalledOnce();
+    expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+    const closing = session.close();
+    const closeRejected = expect(closing).rejects.toThrow('close timed out');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await closeRejected;
+    await session.close();
+    expect(closeRequests).toBe(2);
+  });
+
+  it('coalesces callers during both POST and SSE, including synchronous status observers', async () => {
+    const response = deferred<Response>();
+    let reentrant: Promise<void> | undefined;
+    const { session, sources, requests, events } = transport(
+      (action) => (action.action === 'connect' ? response.promise : success(action)),
+      (event) => {
+        if (event.type === 'status' && event.status === 'connecting') {
+          reentrant = session.connect('Reentrant caller');
+        }
+      },
+    );
+    const first = session.connect('Teach rates.');
+    expect(session.connect('Second caller')).toBe(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reentrant).toBe(first);
+    expect(requests).toHaveLength(1);
+    response.resolve(Response.json({ sessionId: 'lifecycle-session' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.connect('Waiting for SSE')).toBe(first);
+    const settled = vi.fn();
+    void first.then(settled);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).not.toHaveBeenCalled();
+    sources[0].emit({ type: 'local.connected', sessionId: 'lifecycle-session' });
+    await first;
+    sources[0].emit({ type: 'local.connected', sessionId: 'lifecycle-session' });
+    expect(
+      events.filter((event) => event.type === 'status' && event.status === 'connected'),
+    ).toHaveLength(1);
+    await session.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not start POST when a connecting observer closes synchronously', async () => {
+    let closing: Promise<void> | undefined;
+    const { session, sources, requests } = transport(success, (event) => {
+      if (event.type === 'status' && event.status === 'connecting') closing = session.close();
+    });
+    const connecting = session.connect('Teach rates.');
+    await expect(connecting).rejects.toThrow('session closed');
+    await closing;
+    expect(requests).toHaveLength(0);
+    expect(sources).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['HTTP', 'response body'])(
+    'closes a late %s session without attaching it or replacing a newer connection',
+    async (phase) => {
+      const response = deferred<Response>();
+      const body = deferred<{ sessionId: string }>();
+      const oldResponse = Response.json({});
+      vi.spyOn(oldResponse, 'json').mockReturnValue(body.promise);
+      let connections = 0;
+      const { session, sources, requests, events } = transport((action) => {
+        if (action.action === 'connect' && ++connections === 1) {
+          return phase === 'HTTP' ? response.promise : Promise.resolve(oldResponse);
+        }
+        return success(action);
+      });
+      const oldConnection = session.connect('Old instructions');
+      const rejected = expect(oldConnection).rejects.toThrow('session closed');
+      await vi.advanceTimersByTimeAsync(0);
+      await session.close();
+      await rejected;
+      expect(requests[0].signal?.aborted).toBe(true);
+      await connect(session, sources);
+      const eventCount = events.length;
+      if (phase === 'HTTP') response.resolve(Response.json({ sessionId: 'old-session' }));
+      else body.resolve({ sessionId: 'old-session' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sources).toHaveLength(1);
+      expect(sources[0].close).not.toHaveBeenCalled();
+      expect(events).toHaveLength(eventCount);
+      expect(requests.at(-1)?.action).toEqual({ action: 'close', sessionId: 'old-session' });
+      const speaking = session.speakText('Still connected to the new session.');
+      emitAudio(sources[0]);
+      await speaking;
+      expect(requests.at(-1)?.action).toMatchObject({
+        action: 'text',
+        sessionId: 'lifecycle-session',
+      });
+      await session.close();
+      expect(requests.filter(({ action }) => action.action === 'close')).toHaveLength(2);
+    },
+  );
+
+  it('ignores queued events and errors from a closed EventSource after reconnecting', async () => {
+    const { session, sources, events } = transport(success);
+    await connect(session, sources);
+    const oldMessage = sources[0].onmessage!;
+    const oldError = sources[0].onerror!;
+    await session.close();
+    await connect(session, sources);
+    const count = events.length;
+    for (const event of [
+      { type: 'local.connected', sessionId: 'lifecycle-session' },
+      { type: 'local.closed' },
+      { type: 'local.teacher_text', text: 'Old caption' },
+      { type: 'upstream.event', event: { type: 'response.output_audio.done' } },
+    ]) {
+      oldMessage({ data: JSON.stringify(event) } as MessageEvent<string>);
+    }
+    oldError();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toHaveLength(count);
+    expect(sources[1].close).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it('releases old microphone permission grants even after the same instance reconnects', async () => {
+    type Stream = { getTracks: () => Array<{ stop: () => void }> };
+    const oldGrant = deferred<Stream>();
+    const newGrant = deferred<Stream>();
+    const oldStop = vi.fn();
+    const newStop = vi.fn();
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: vi
+          .fn()
+          .mockReturnValueOnce(oldGrant.promise)
+          .mockReturnValueOnce(newGrant.promise),
+      },
+    });
+    const createRecorder = vi.fn(function () {
+      throw new Error('Stale microphone grants must not initialize a recorder');
+    });
+    vi.stubGlobal('AudioContext', createRecorder);
+    const sources: FakeEventSource[] = [];
+    const session = new VolcRealtimeBrowserSession({
+      eventSourceFactory: () => {
+        const source = new FakeEventSource();
+        sources.push(source);
+        return source as unknown as EventSource;
+      },
+      fetchImpl: async (_url, init) => success(JSON.parse(String(init?.body))),
+    });
+    await connect(session, sources);
+    await session.close();
+    await connect(session, sources);
+    oldGrant.resolve({ getTracks: () => [{ stop: oldStop }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(oldStop).toHaveBeenCalledOnce();
+    expect(createRecorder).not.toHaveBeenCalled();
+    await session.close();
+    newGrant.resolve({ getTracks: () => [{ stop: newStop }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(newStop).toHaveBeenCalledOnce();
+    expect(createRecorder).not.toHaveBeenCalled();
+  });
+
+  it.each(['HTTP', 'error response body'])(
+    'coalesces close, bounds hanging %s at 10 seconds, and retries the same remote ID',
+    async (phase) => {
+      const blocked = deferred<Response>();
+      const body = deferred<unknown>();
+      const response = new Response(null, { status: 503 });
+      vi.spyOn(response, 'json').mockReturnValue(body.promise);
+      let closes = 0;
+      const { session, sources, requests, events } = transport((action) => {
+        if (action.action !== 'close') return success(action);
+        closes += 1;
+        if (closes > 1) return Promise.resolve(new Response(null, { status: 404 }));
+        return phase === 'HTTP' ? blocked.promise : Promise.resolve(response);
+      });
+      await connect(session, sources);
+      const first = session.close();
+      expect(session.close()).toBe(first);
+      const rejected = expect(first).rejects.toThrow('close timed out');
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(closes).toBe(1);
+      expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(requests.find(({ action }) => action.action === 'close')?.signal?.aborted).toBe(true);
+      await expect(session.connect('Must finish cleanup first')).rejects.toThrow('retry close');
+      await expect(session.speakText('Must not use a closing session')).rejects.toThrow(
+        'not connected',
+      );
+      expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+      await session.close();
+      await session.close();
+      expect(
+        requests.filter(({ action }) => action.action === 'close').map(({ action }) => action),
+      ).toEqual([
+        { action: 'close', sessionId: 'lifecycle-session' },
+        { action: 'close', sessionId: 'lifecycle-session' },
+      ]);
+      expect(sources[0].close).toHaveBeenCalledOnce();
+      expect(
+        events.filter((event) => event.type === 'status' && event.status === 'closed'),
+      ).toHaveLength(1);
+      if (phase === 'HTTP') blocked.reject(new Error('Late network rejection'));
+      else body.resolve({ error: { message: 'Late HTTP failure' } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(['network', 'HTTP 500'])(
+    'rejects arbitrary %s close failures rather than reporting closed',
+    async (failure) => {
+      let failClose = true;
+      const { session, sources, requests, events } = transport((action) => {
+        if (action.action !== 'close' || !failClose) return success(action);
+        if (failure === 'network') return Promise.reject(new Error('Network unavailable'));
+        return Promise.resolve(
+          Response.json({ error: { message: 'Cleanup rejected' } }, { status: 500 }),
+        );
+      });
+      await connect(session, sources);
+      await expect(session.close()).rejects.toThrow(
+        failure === 'network' ? 'Network unavailable' : 'Cleanup rejected',
+      );
+      expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+      failClose = false;
+      await session.close();
+      expect(requests.filter(({ action }) => action.action === 'close')).toHaveLength(2);
+      expect(events).toContainEqual({ type: 'status', status: 'closed' });
+    },
+  );
+
+  it('can retry immediately from a close-timeout rejection without reusing the expired request', async () => {
+    const blocked = deferred<Response>();
+    let closes = 0;
+    const { session, sources } = transport((action) => {
+      if (action.action === 'close' && ++closes === 1) return blocked.promise;
+      return success(action);
+    });
+    await connect(session, sources);
+    const first = session.close();
+    const rejected = expect(first).rejects.toThrow('close timed out');
+    const retry = first.catch(() => session.close());
+    const recovered = expect(retry).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    await recovered;
+    expect(closes).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds local recorder teardown and does not repeat successful remote cleanup on retry', async () => {
+    const stopped = deferred<void>();
+    const recorder = {
+      state: 'running',
+      sampleRate: 16_000,
+      destination: {},
+      createMediaStreamSource: () => ({ connect: vi.fn(), disconnect: vi.fn() }),
+      createScriptProcessor: () => ({ connect: vi.fn(), disconnect: vi.fn() }),
+      close: vi.fn(() => stopped.promise),
+    };
+    vi.stubGlobal('navigator', {
+      mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop: vi.fn() }] }) },
+    });
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor() {
+          return recorder;
+        }
+      },
+    );
+    const source = new FakeEventSource();
+    const events: VolcRealtimeBrowserEvent[] = [];
+    const requests: VolcRealtimeAction[] = [];
+    const session = new VolcRealtimeBrowserSession({
+      eventSourceFactory: () => source as unknown as EventSource,
+      fetchImpl: async (_url, init) => {
+        const action = JSON.parse(String(init?.body)) as VolcRealtimeAction;
+        requests.push(action);
+        return success(action);
+      },
+      onEvent: (event) => events.push(event),
+    });
+    await connect(session, [source]);
+    const closing = session.close();
+    const rejected = expect(closing).rejects.toThrow('close timed out');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+    recorder.close.mockImplementationOnce(async () => {
+      recorder.state = 'closed';
+    });
+    await session.close();
+    expect(requests.filter((action) => action.action === 'close')).toHaveLength(1);
+    const count = events.length;
+    stopped.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toHaveLength(count);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['local.error', 'local.closed', 'native error'])(
+    'reports cleanup failures from %s without an unhandled rejection and permits close retry',
+    async (eventType) => {
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let failClose = true;
+      const { session, sources, events } = transport((action) => {
+        if (action.action === 'close' && failClose)
+          return Promise.reject(new Error('Cleanup offline'));
+        return success(action);
+      });
+      await connect(session, sources);
+      sources[0].emit(
+        eventType === 'native error'
+          ? {
+              type: 'upstream.event',
+              event: { type: 'error', error: { code: '55000000', message: 'Upstream lost' } },
+            }
+          : { type: eventType, message: 'Relay lost' },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events).toContainEqual({ type: 'error', error: new Error('Cleanup offline') });
+      expect(events).not.toContainEqual({ type: 'status', status: 'closed' });
+      expect(warning).toHaveBeenCalled();
+      failClose = false;
+      await session.close();
+      expect(events).toContainEqual({ type: 'status', status: 'closed' });
+    },
+  );
+
+  it('does not wait for aborted input HTTP or let its late failure close a new session', async () => {
+    const input = deferred<Response>();
+    let inputs = 0;
+    const { session, sources, requests, events } = transport((action) => {
+      if (action.action === 'input' && ++inputs === 1) return input.promise;
+      return success(action);
+    });
+    await connect(session, sources);
+    session.mute(true);
+    await session.close();
+    expect(requests.find(({ action }) => action.action === 'input')?.signal?.aborted).toBe(true);
+    await connect(session, sources);
+    const count = events.length;
+    input.reject(new Error('Old input request failed'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toHaveLength(count);
+    expect(sources[1].close).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it.each(['updateInstructions', 'cancelNarration'] as const)(
+    'does not let a late %s failure close a newer connection',
+    async (method) => {
+      const pending = deferred<Response>();
+      const { session, sources, events } = transport((action) =>
+        action.action === 'update' || action.action === 'cancel'
+          ? pending.promise
+          : success(action),
+      );
+      await connect(session, sources);
+      const control = session[method]('Old context');
+      const rejected = expect(control).rejects.toThrow('Old control failed');
+      await vi.advanceTimersByTimeAsync(0);
+      await session.close();
+      await connect(session, sources);
+      const count = events.length;
+      pending.reject(new Error('Old control failed'));
+      await rejected;
+      expect(events).toHaveLength(count);
+      expect(sources[1].close).not.toHaveBeenCalled();
+      await session.close();
+    },
+  );
+
+  it('retains a failed late-session cleanup for retry without failing the newer connection', async () => {
+    const late = deferred<Response>();
+    let connections = 0;
+    let failOldClose = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { session, sources, requests, events } = transport((action) => {
+      if (action.action === 'connect' && ++connections === 1) return late.promise;
+      if (action.action === 'close' && action.sessionId === 'old-session' && failOldClose) {
+        return Promise.reject(new Error('Old cleanup offline'));
+      }
+      return success(action);
+    });
+    const old = session.connect('Old connection');
+    const rejected = expect(old).rejects.toThrow('session closed');
+    await vi.advanceTimersByTimeAsync(0);
+    await session.close();
+    await rejected;
+    await connect(session, sources);
+    const count = events.length;
+    late.resolve(Response.json({ sessionId: 'old-session' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toHaveLength(count);
+    expect(sources[0].close).not.toHaveBeenCalled();
+    await expect(session.connect('Keep using the new session')).resolves.toBeUndefined();
+    failOldClose = false;
+    await session.close();
+    expect(
+      requests.filter(({ action }) => action.action === 'close').map(({ action }) => action),
+    ).toEqual([
+      { action: 'close', sessionId: 'old-session' },
+      { action: 'close', sessionId: 'old-session' },
+      { action: 'close', sessionId: 'lifecycle-session' },
+    ]);
+  });
+});
 
 describe('Volc realtime browser narration', () => {
   it.each([
@@ -339,16 +906,30 @@ describe('Volc realtime browser narration', () => {
       if (body.action === 'connect') return Response.json({ sessionId: 'query-session' });
       return Response.json({ success: true });
     });
+    const events: Array<{ type: string }> = [];
     const session = new VolcRealtimeBrowserSession({
       captureMicrophone: false,
       fetchImpl,
       eventSourceFactory: () => source as unknown as EventSource,
+      onEvent: (event) => events.push(event),
     });
     const connecting = session.connect('Teach Fourier analysis');
     await vi.waitFor(() => expect(source.onmessage).toBeTypeOf('function'));
     source.emit({ type: 'local.connected', sessionId: 'query-session' });
     await connecting;
     const answering = session.askQuestion('傅里叶变换和拉普拉斯变换有什么区别？');
+    let completed = false;
+    void answering.then(() => {
+      completed = true;
+    });
+    source.emit({ type: 'local.teacher_text', text: '它们使用不同的变换核。' });
+    await Promise.resolve();
+    expect(events).toContainEqual({
+      type: 'transcript',
+      speaker: 'teacher',
+      text: '它们使用不同的变换核。',
+    });
+    expect(completed).toBe(false);
     emitAudio(source);
     await answering;
     expect(requests).toContainEqual({
@@ -356,6 +937,16 @@ describe('Volc realtime browser narration', () => {
       sessionId: 'query-session',
       text: '傅里叶变换和拉普拉斯变换有什么区别？',
     });
+    const queryRequest = fetchImpl.mock.calls.find(
+      ([, init]) => JSON.parse(String(init?.body)).action === 'query',
+    );
+    expect(queryRequest?.[1]?.headers).toMatchObject({
+      'x-model': 'test-provider:test-model',
+      'x-api-key': 'test-learner-llm-key',
+      'x-base-url': 'https://example.com/v1',
+      'x-provider-type': 'openai',
+    });
+    expect(fetchImpl.mock.calls[0][1]?.headers).not.toHaveProperty('x-api-key');
     await session.close();
   });
 
@@ -396,6 +987,45 @@ describe('Volc realtime browser narration', () => {
         text: 'second sentence',
       }),
     );
+    await session.close();
+  });
+
+  it('does not cancel new playback when an older text-generation request fails late', async () => {
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    const source = new FakeEventSource();
+    let rejectQuery!: (error: Error) => void;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.action === 'connect') return Response.json({ sessionId: 'query-race' });
+      if (body.action === 'query') {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectQuery = reject;
+        });
+      }
+      return Response.json({ success: true });
+    });
+    const session = new VolcRealtimeBrowserSession({
+      captureMicrophone: false,
+      fetchImpl,
+      eventSourceFactory: () => source as unknown as EventSource,
+    });
+    const connecting = session.connect('Current node');
+    await vi.waitFor(() => expect(source.onmessage).toBeTypeOf('function'));
+    source.emit({ type: 'local.connected', sessionId: 'query-race' });
+    await connecting;
+    const oldQuestion = session.askQuestion('Old question');
+    const rejected = expect(oldQuestion).rejects.toThrow('Old question interrupted');
+    const narration = session.speakText('New narration');
+    const completed = expect(narration).resolves.toBeUndefined();
+    await vi.waitFor(() =>
+      expect(
+        fetchImpl.mock.calls.some(([, init]) => JSON.parse(String(init?.body)).action === 'text'),
+      ).toBe(true),
+    );
+    rejectQuery(new Error('Old question interrupted'));
+    await rejected;
+    emitAudio(source);
+    await completed;
     await session.close();
   });
 

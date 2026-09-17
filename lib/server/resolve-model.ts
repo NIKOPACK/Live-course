@@ -158,7 +158,7 @@ function getThinkingConfigFromBody(body: unknown): ThinkingConfig | undefined {
  * never from client headers, to prevent auth bypass.
  */
 export async function resolveModelFromHeaders(
-  req: NextRequest,
+  req: Pick<Request, 'headers'>,
   stage?: LlmStage,
   thinkingConfig?: ThinkingConfig,
 ): Promise<ResolvedModel> {

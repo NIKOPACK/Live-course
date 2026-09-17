@@ -1,8 +1,11 @@
 import { ZodError } from 'zod';
+import { callLLM } from '@/lib/ai/llm';
+import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
 
 import { volcRealtimeActionSchema } from '@/lib/livecourse/realtime/volc/protocol';
 import {
   VolcRealtimeConfigurationError,
+  VolcRealtimeQueryCancelledError,
   VolcRealtimeUpstreamError,
   volcRealtimeSessionRegistry,
 } from '@/lib/livecourse/realtime/volc/server';
@@ -48,7 +51,32 @@ export async function POST(request: Request): Promise<Response> {
     if (action.action === 'input') session.setInputEnabled(action.enabled, action.generation);
     if (action.action === 'update') session.updateInstructions(action.instructions);
     if (action.action === 'text') session.sendText(action.text);
-    if (action.action === 'query') session.sendQuery(action.text);
+    if (action.action === 'query') {
+      await session.sendQuery(
+        action.text,
+        async ({ instructions, question, signal }) => {
+          const { model, thinkingConfig } = await resolveModelFromHeaders(request, 'chat-adapter');
+          signal.throwIfAborted();
+          const result = await callLLM(
+            {
+              model,
+              system: `${instructions}\n\nAnswer the learner's question in their language, using a few concise spoken sentences. Return only the teacher's reply, without Markdown, stage directions, tool calls, or invented learner answers. Do not declare a checkpoint passed or the lesson complete.`,
+              prompt: question,
+              abortSignal: signal,
+              maxOutputTokens: 1024,
+            },
+            'chat-adapter',
+            undefined,
+            thinkingConfig,
+          );
+          if (result.finishReason === 'length') {
+            throw new VolcRealtimeUpstreamError('Teacher response was truncated');
+          }
+          return result.text;
+        },
+        request.signal,
+      );
+    }
     if (action.action === 'commit') session.commitAudio();
     if (action.action === 'cancel') session.cancelResponse();
     if (action.action === 'close') session.close();
@@ -59,6 +87,9 @@ export async function POST(request: Request): Promise<Response> {
     }
     if (error instanceof VolcRealtimeConfigurationError) {
       return jsonError(503, 'REALTIME_NOT_CONFIGURED', 'Volc realtime is not configured');
+    }
+    if (error instanceof VolcRealtimeQueryCancelledError) {
+      return jsonError(409, 'REALTIME_QUERY_CANCELLED', error.message);
     }
     if (error instanceof VolcRealtimeUpstreamError) {
       const missing = error.message === 'Realtime session not found';

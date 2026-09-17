@@ -15,9 +15,12 @@ import {
 } from './protocol';
 import { registerLipSyncAudioNode } from '@/lib/livecourse/realtime/client/audio-bridge';
 import { createLogger } from '@/lib/logger';
+import { getCurrentModelConfig } from '@/lib/utils/model-config';
 
 const REALTIME_API_URL = '/api/livecourse/realtime/volc';
 const RECORDER_BUFFER_SIZE = 4_096;
+const CONNECTION_TIMEOUT_MS = 20_000;
+const CLOSE_TIMEOUT_MS = 10_000;
 const MODEL_SPEECH_TIMEOUT_MS = 60_000;
 const INPUT_BATCH_INTERVAL_MS = 100;
 const MAX_INPUT_BATCH_BYTES = VOLC_INPUT_FRAME_BYTES * 25;
@@ -56,6 +59,24 @@ interface PendingSpeech {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+async function withCloseTimeout(close: (signal: AbortSignal) => Promise<void>): Promise<void> {
+  const controller = new AbortController();
+  const closing = close(controller.signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error('Volc realtime session close timed out; retry close');
+      controller.abort(error);
+      reject(error);
+    }, CLOSE_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([closing, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -198,7 +219,6 @@ export class VolcRealtimeBrowserSession {
   #recorderNode: ScriptProcessorNode | null = null;
   #frameTimer: number | null = null;
   #bufferedBytes = 0;
-  #sendChain = Promise.resolve();
   #inputState = Promise.resolve();
   #inputAbort = new AbortController();
   #sendingInput = false;
@@ -206,6 +226,11 @@ export class VolcRealtimeBrowserSession {
   #assistantText = '';
   #connectResolve: (() => void) | null = null;
   #connectReject: ((error: Error) => void) | null = null;
+  #connectPromise: Promise<void> | null = null;
+  #connectAbort: AbortController | null = null;
+  #closePromise: Promise<void> | null = null;
+  #closeCompleted = false;
+  readonly #remoteClosures = new Map<string, Promise<void> | null>();
   #pendingSpeech: PendingSpeech | null = null;
   #closed = false;
   #failing = false;
@@ -223,45 +248,108 @@ export class VolcRealtimeBrowserSession {
     this.#options = options;
   }
 
-  async connect(instructions: string): Promise<void> {
-    if (this.#sessionId) return;
+  connect(instructions: string): Promise<void> {
+    if (!this.#closed && this.#connectPromise) return this.#connectPromise;
+    if (!this.#closed && this.#sessionId) return Promise.resolve();
+    if (
+      this.#closePromise ||
+      (this.#closed && !this.#closeCompleted) ||
+      this.#remoteClosures.size
+    ) {
+      return Promise.reject(new Error('Volc realtime session cleanup pending; retry close'));
+    }
     this.#closed = false;
+    this.#closeCompleted = false;
     this.#failing = false;
     this.#inputAbort = new AbortController();
+    this.#inputState = Promise.resolve();
+    this.#sendingInput = false;
     this.#audioQueue = Promise.resolve();
-    this.#emit({ type: 'status', status: 'connecting' });
+    const controller = new AbortController();
+    this.#connectAbort = controller;
+    // Publish the singleflight before any observer or transport callback can reenter.
+    const operation = Promise.resolve().then(() => this.#connect(instructions, controller));
+    this.#connectPromise = operation;
+    const finish = () => {
+      if (this.#connectPromise === operation) this.#connectPromise = null;
+    };
+    void operation.then(finish, finish);
+    return operation;
+  }
+
+  async #connect(instructions: string, controller: AbortController): Promise<void> {
+    controller.signal.throwIfAborted();
     const connected = new Promise<void>((resolve, reject) => {
       this.#connectResolve = resolve;
       this.#connectReject = reject;
     });
-    void connected.catch(() => {});
+    const abort = () => this.#rejectConnection(toError(controller.signal.reason));
+    controller.signal.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(
+      () => controller.abort(new Error('Volc realtime connection timed out')),
+      CONNECTION_TIMEOUT_MS,
+    );
     try {
-      const clientApiKey = this.#options.apiKey?.trim();
-      const response = await this.#post({
+      this.#emit({ type: 'status', status: 'connecting' });
+      void this.#openConnection(instructions, controller).catch((error) => {
+        if (this.#connectAbort === controller && !controller.signal.aborted) {
+          this.#rejectConnection(toError(error));
+        }
+      });
+      await connected;
+      controller.signal.throwIfAborted();
+    } catch (error) {
+      if (this.#connectAbort === controller) void this.#fail(toError(error));
+      throw toError(error);
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener('abort', abort);
+    }
+  }
+
+  async #openConnection(instructions: string, controller: AbortController): Promise<void> {
+    controller.signal.throwIfAborted();
+    const clientApiKey = this.#options.apiKey?.trim();
+    const response = await this.#post(
+      {
         action: 'connect',
         instructions,
         ...(this.#options.voice ? { voice: this.#options.voice } : {}),
         ...(clientApiKey ? { apiKey: clientApiKey } : {}),
-      });
-      const payload = (await response.json()) as { sessionId?: unknown };
-      if (typeof payload.sessionId !== 'string' || !payload.sessionId) {
-        throw new Error('Volc realtime session response is invalid');
-      }
-      this.#sessionId = payload.sessionId;
-      const sourceFactory = this.#options.eventSourceFactory ?? ((url) => new EventSource(url));
-      const source = sourceFactory(
-        `${REALTIME_API_URL}?sessionId=${encodeURIComponent(payload.sessionId)}`,
-      );
-      source.onmessage = (message) => this.#handleRelayEvent(message.data);
-      source.onerror = () => {
-        if (!this.#closed) void this.#fail(new Error('Volc realtime event stream disconnected'));
-      };
-      this.#eventSource = source;
-      await connected;
-    } catch (error) {
-      await this.#fail(toError(error));
-      throw toError(error);
+      },
+      controller.signal,
+    );
+    const payload = (await response.json()) as { sessionId?: unknown };
+    if (typeof payload.sessionId !== 'string' || !payload.sessionId) {
+      throw new Error('Volc realtime session response is invalid');
     }
+    const isCurrent = () =>
+      this.#connectAbort === controller && !controller.signal.aborted && !this.#closed;
+    if (!isCurrent()) {
+      // A transport may deliver a created session even after its request was aborted.
+      await this.#closeRemoteSession(payload.sessionId).catch((error) =>
+        this.#reportCleanupFailure(toError(error), controller),
+      );
+      return;
+    }
+    this.#sessionId = payload.sessionId;
+    const sourceFactory = this.#options.eventSourceFactory ?? ((url) => new EventSource(url));
+    const source = sourceFactory(
+      `${REALTIME_API_URL}?sessionId=${encodeURIComponent(payload.sessionId)}`,
+    );
+    if (!isCurrent()) {
+      source.close();
+      return;
+    }
+    this.#eventSource = source;
+    source.onmessage = (message) => {
+      if (isCurrent() && this.#eventSource === source) this.#handleRelayEvent(message.data);
+    };
+    source.onerror = () => {
+      if (isCurrent() && this.#eventSource === source) {
+        void this.#fail(new Error('Volc realtime event stream disconnected'));
+      }
+    };
   }
 
   async preparePlayback(): Promise<void> {
@@ -269,38 +357,90 @@ export class VolcRealtimeBrowserSession {
     await this.#player.prepare();
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    if (this.#closed && this.#closeCompleted && !this.#remoteClosures.size) {
+      return Promise.resolve();
+    }
     this.#closed = true;
+    this.#closeCompleted = false;
+    this.#connectAbort?.abort(new Error('Volc realtime session closed'));
+    this.#connectPromise = null;
     this.#inputAbort.abort();
+    this.#clearInput();
+    this.#audioGeneration += 1;
+    const operation = Promise.resolve().then(() => this.#close());
+    this.#closePromise = operation;
+    const finish = () => {
+      if (this.#closePromise === operation) this.#closePromise = null;
+    };
+    void operation.then(finish, finish);
+    return operation;
+  }
+
+  async #close(): Promise<void> {
     const sessionId = this.#sessionId;
     this.#sessionId = null;
+    if (sessionId) this.#remoteClosures.set(sessionId, null);
     this.#eventSource?.close();
     this.#eventSource = null;
     this.#rejectConnection(new Error('Volc realtime session closed'));
     this.#rejectPendingSpeech(new Error('Volc model narration was interrupted'));
-    await this.#stopMicrophone();
-    await this.#player?.stop();
-    this.#player?.dispose();
-    this.#player = null;
+    await withCloseTimeout(async (signal) => {
+      const player = this.#player;
+      const stopPlayback = async () => {
+        await player?.stop();
+        player?.dispose();
+        if (this.#player === player) this.#player = null;
+      };
+      await Promise.all([
+        this.#stopMicrophone(),
+        stopPlayback(),
+        ...Array.from(this.#remoteClosures.keys(), (id) => this.#closeRemoteSession(id)),
+      ]);
+      signal.throwIfAborted();
+      while (this.#remoteClosures.size) {
+        await Promise.all(
+          Array.from(this.#remoteClosures.keys(), (id) => this.#closeRemoteSession(id)),
+        );
+        signal.throwIfAborted();
+      }
+    });
+    this.#closeCompleted = true;
     this.#emit({ type: 'speaking', speaking: false });
-    if (sessionId) {
-      await Promise.allSettled([this.#sendChain, this.#inputState]);
-      await this.#post(
-        { action: 'close', sessionId },
-        AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS),
-      ).catch((error) => log.warn('Realtime session close request failed', error));
-    }
     this.#emit({ type: 'status', status: 'closed' });
+  }
+
+  #closeRemoteSession(sessionId: string): Promise<void> {
+    const pending = this.#remoteClosures.get(sessionId);
+    if (pending) return pending;
+    const operation = withCloseTimeout(async (signal) => {
+      await this.#post({ action: 'close', sessionId }, signal);
+    });
+    this.#remoteClosures.set(sessionId, operation);
+    void operation.then(
+      () => {
+        if (this.#remoteClosures.get(sessionId) === operation) {
+          this.#remoteClosures.delete(sessionId);
+        }
+      },
+      () => {
+        if (this.#remoteClosures.get(sessionId) === operation) {
+          this.#remoteClosures.set(sessionId, null);
+        }
+      },
+    );
+    return operation;
   }
 
   async updateInstructions(instructions: string): Promise<void> {
     const sessionId = this.#sessionId;
     if (!sessionId || this.#closed) throw new Error('Volc realtime session is not connected');
+    const connection = this.#connectAbort;
     try {
       await this.#post({ action: 'update', sessionId, instructions }, AbortSignal.timeout(15_000));
     } catch (error) {
-      await this.#fail(toError(error));
+      if (this.#connectAbort === connection) await this.#fail(toError(error));
       throw toError(error);
     }
   }
@@ -308,18 +448,21 @@ export class VolcRealtimeBrowserSession {
   async cancelNarration(): Promise<void> {
     const sessionId = this.#sessionId;
     if (!sessionId || this.#closed) return;
+    const connection = this.#connectAbort;
     this.#audioGeneration += 1;
     this.#audioQueue = Promise.resolve();
     this.#ignoreResponse = true;
     this.#rejectPendingSpeech(new Error('Volc model narration was interrupted'));
-    await this.#player?.stop();
-    this.#player?.dispose();
-    this.#player = null;
+    const player = this.#player;
+    await player?.stop();
+    player?.dispose();
+    if (this.#connectAbort !== connection || this.#closed) return;
+    if (this.#player === player) this.#player = null;
     this.#emit({ type: 'speaking', speaking: false });
     try {
       await this.#post({ action: 'cancel', sessionId }, AbortSignal.timeout(15_000));
     } catch (error) {
-      await this.#fail(toError(error));
+      if (this.#connectAbort === connection) await this.#fail(toError(error));
       throw toError(error);
     }
   }
@@ -341,6 +484,7 @@ export class VolcRealtimeBrowserSession {
   #syncInputState(): void {
     const sessionId = this.#sessionId;
     if (!sessionId || this.#closed) return;
+    const signal = this.#inputAbort.signal;
     this.#inputState = this.#post(
       {
         action: 'input',
@@ -348,9 +492,11 @@ export class VolcRealtimeBrowserSession {
         enabled: this.#inputEnabled && !this.#muted,
         generation: this.#inputGeneration,
       },
-      AbortSignal.any([this.#inputAbort.signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
+      AbortSignal.any([signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
     ).then(() => undefined);
-    void this.#inputState.catch((error) => this.#fail(toError(error)));
+    void this.#inputState.catch((error) => {
+      if (!signal.aborted) return this.#fail(toError(error));
+    });
   }
 
   #clearInput(): void {
@@ -379,7 +525,10 @@ export class VolcRealtimeBrowserSession {
     if (this.#pendingSpeech) {
       await this.cancelNarration();
     }
-    this.#audioGeneration += 1;
+    if (this.#closed || this.#sessionId !== sessionId) {
+      throw new Error('Volc realtime session is not connected');
+    }
+    const generation = ++this.#audioGeneration;
     this.#hasResponseAudio = false;
     this.#audioCompleted = false;
     this.#ignoreResponse = false;
@@ -387,7 +536,9 @@ export class VolcRealtimeBrowserSession {
 
     const completion = new Promise<void>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
-        this.#failTurn(new Error('Volc model narration timed out'));
+        if (generation === this.#audioGeneration) {
+          this.#failTurn(new Error('Volc model narration timed out'));
+        }
       }, MODEL_SPEECH_TIMEOUT_MS);
       this.#pendingSpeech = { resolve, reject, timeout, requireAudio, hasAudio: false };
     });
@@ -397,13 +548,14 @@ export class VolcRealtimeBrowserSession {
       await this.#post({ ...action, sessionId }, AbortSignal.timeout(MODEL_SPEECH_TIMEOUT_MS));
     } catch (error) {
       const failure = toError(error);
-      this.#failTurn(failure);
+      if (generation === this.#audioGeneration) this.#failTurn(failure);
       throw failure;
     }
     return completion;
   }
 
-  async #startMicrophone(): Promise<void> {
+  async #startMicrophone(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       return;
     }
@@ -416,7 +568,7 @@ export class VolcRealtimeBrowserSession {
           autoGainControl: true,
         },
       });
-      if (this.#closed) {
+      if (this.#closed || signal.aborted) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -457,9 +609,11 @@ export class VolcRealtimeBrowserSession {
     this.#recorderNode?.disconnect();
     this.#recorderSource?.disconnect();
     this.#mediaStream?.getTracks().forEach((track) => track.stop());
-    if (this.#recorderContext && this.#recorderContext.state !== 'closed') {
-      await this.#recorderContext.close();
+    const context = this.#recorderContext;
+    if (context && context.state !== 'closed') {
+      await context.close();
     }
+    if (this.#recorderContext !== context) return;
     this.#recorderNode = null;
     this.#recorderSource = null;
     this.#mediaStream = null;
@@ -510,20 +664,22 @@ export class VolcRealtimeBrowserSession {
     )
       return;
     this.#sendingInput = true;
+    const signal = this.#inputAbort.signal;
     const generation = this.#inputGeneration;
     const frame = this.#takeFrame();
     const sending = this.#inputState.then(async () => {
-      if (this.#closed || generation !== this.#inputGeneration) return;
+      if (this.#closed || signal.aborted || generation !== this.#inputGeneration) return;
       await this.#post(
         { action: 'audio', sessionId, generation, audio: bytesToBase64(frame) },
-        AbortSignal.any([this.#inputAbort.signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
+        AbortSignal.any([signal, AbortSignal.timeout(INPUT_REQUEST_TIMEOUT_MS)]),
       );
     });
-    this.#sendChain = sending;
     void sending
-      .catch((error) => this.#fail(toError(error)))
+      .catch((error) => {
+        if (!signal.aborted) return this.#fail(toError(error));
+      })
       .finally(() => {
-        this.#sendingInput = false;
+        if (!signal.aborted) this.#sendingInput = false;
       });
   }
 
@@ -537,11 +693,17 @@ export class VolcRealtimeBrowserSession {
     }
 
     if (message.type === 'local.connected') {
+      if (!this.#connectResolve) return;
+      if (message.sessionId !== this.#sessionId) {
+        void this.#fail(new Error('Volc realtime event stream session does not match'));
+        return;
+      }
+      const signal = this.#connectAbort?.signal;
       if (this.#muted || !this.#inputEnabled) this.#syncInputState();
       this.#emit({ type: 'status', status: 'connected' });
       this.#resolveConnection();
-      if (this.#options.captureMicrophone !== false) {
-        void this.#startMicrophone();
+      if (signal && this.#options.captureMicrophone !== false) {
+        void this.#startMicrophone(signal);
       }
       return;
     }
@@ -550,7 +712,13 @@ export class VolcRealtimeBrowserSession {
       return;
     }
     if (message.type === 'local.closed') {
-      void this.close();
+      void this.close().catch((error) => this.#reportCleanupFailure(toError(error)));
+      return;
+    }
+    if (message.type === 'local.teacher_text') {
+      if (!this.#closed && !this.#ignoreResponse) {
+        this.#emit({ type: 'transcript', speaker: 'teacher', text: message.text });
+      }
       return;
     }
     this.#handleUpstreamEvent(message.event);
@@ -630,7 +798,9 @@ export class VolcRealtimeBrowserSession {
           this.#hasResponseAudio = true;
           if (this.#pendingSpeech) this.#pendingSpeech.hasAudio = true;
         });
-        void this.#audioQueue.catch((error) => this.#fail(toError(error)));
+        void this.#audioQueue.catch((error) => {
+          if (generation === this.#audioGeneration) return this.#fail(toError(error));
+        });
       }
       return;
     }
@@ -648,7 +818,9 @@ export class VolcRealtimeBrowserSession {
           this.#emit({ type: 'audio_completed', hasAudio: this.#hasResponseAudio });
           this.#resolvePendingSpeech();
         })
-        .catch((error) => this.#fail(toError(error)));
+        .catch((error) => {
+          if (generation === this.#audioGeneration) return this.#fail(toError(error));
+        });
       return;
     }
     if (eventType === 'response.done') {
@@ -666,7 +838,9 @@ export class VolcRealtimeBrowserSession {
           this.#emit({ type: 'audio_completed', hasAudio: false });
           this.#resolvePendingSpeech();
         })
-        .catch((error) => this.#fail(toError(error)));
+        .catch((error) => {
+          if (generation === this.#audioGeneration) return this.#fail(toError(error));
+        });
       return;
     }
     if (eventType === 'error') {
@@ -682,14 +856,22 @@ export class VolcRealtimeBrowserSession {
   }
 
   async #post(action: VolcRealtimeAction, signal?: AbortSignal): Promise<Response> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (action.action === 'query') {
+      const config = getCurrentModelConfig();
+      headers['x-model'] = config.modelString;
+      headers['x-api-key'] = config.apiKey;
+      headers['x-base-url'] = config.baseUrl;
+      if (config.providerType) headers['x-provider-type'] = config.providerType;
+    }
     const response = await (this.#options.fetchImpl ?? fetch)(REALTIME_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(action),
       cache: 'no-store',
       ...(signal ? { signal } : {}),
     });
-    if (response.ok) return response;
+    if (response.ok || (action.action === 'close' && response.status === 404)) return response;
 
     let message = `Volc realtime request failed with status ${response.status}`;
     try {
@@ -708,7 +890,14 @@ export class VolcRealtimeBrowserSession {
     this.#rejectPendingSpeech(error);
     this.#emit({ type: 'error', error });
     this.#emit({ type: 'status', status: 'error' });
-    await this.close();
+    await this.close().catch((cause) => this.#reportCleanupFailure(toError(cause)));
+  }
+
+  #reportCleanupFailure(error: Error, connection = this.#connectAbort): void {
+    log.warn('Realtime session cleanup failed; retry close', error);
+    if (connection !== this.#connectAbort && !this.#closed) return;
+    this.#emit({ type: 'error', error });
+    this.#emit({ type: 'status', status: 'error' });
   }
 
   #emit(event: VolcRealtimeBrowserEvent): void {
