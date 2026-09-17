@@ -104,7 +104,9 @@ it('marks the active model row and selects another model by clicking its row', a
   const initiallyChecked = container.querySelector('[role="radio"][aria-checked="true"]');
   expect(initiallyChecked?.querySelector('.font-mono')?.textContent).toBe('GPT-5.6 Sol');
 
-  const target = rows.find((row) => row.querySelector('.font-mono')?.textContent === 'GPT-5.4 Mini')!;
+  const target = rows.find(
+    (row) => row.querySelector('.font-mono')?.textContent === 'GPT-5.4 Mini',
+  )!;
   await act(async () => target.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
   expect(useSettingsStore.getState().providerId).toBe('openai');
@@ -115,7 +117,9 @@ it('marks the active model row and selects another model by clicking its row', a
 
 it('row action buttons do not change the active model', async () => {
   const rows = [...container.querySelectorAll<HTMLElement>('[role="radiogroup"] [role="radio"]')];
-  const target = rows.find((row) => row.querySelector('.font-mono')?.textContent === 'GPT-5.4 Mini')!;
+  const target = rows.find(
+    (row) => row.querySelector('.font-mono')?.textContent === 'GPT-5.4 Mini',
+  )!;
   const editButton = target.querySelector<HTMLButtonElement>('button[title="settings.editModel"]')!;
   await act(async () => editButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   expect(useSettingsStore.getState().modelId).toBe('gpt-5.6');
@@ -183,9 +187,7 @@ it('picker only offers models from visible providers', async () => {
       }),
     ),
   );
-  const trigger = container.querySelector<HTMLButtonElement>(
-    '[data-slot="input-group-button"]',
-  )!;
+  const trigger = container.querySelector<HTMLButtonElement>('[data-slot="input-group-button"]')!;
   await act(async () => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const groupLabels = [...document.querySelectorAll('[data-slot="combobox-label"]')].map((el) =>
     el.textContent?.replace(/\d+$/, ''),

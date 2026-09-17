@@ -90,9 +90,7 @@ describe('patchHtmlForIframe', () => {
 
     expect(typeof cryptoObj.randomUUID).toBe('function');
     const id = (cryptoObj.randomUUID as () => string)();
-    expect(id).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   it('the error shim posts runtime errors (onerror / resource / rejection / console.error) to the parent', () => {

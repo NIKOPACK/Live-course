@@ -59,6 +59,7 @@ function persistedPlan(): LessonPlan {
         anticipatedQuestions: [{ question: 'Why?', response: 'Because…' }],
       },
     })),
+    presentation: { mode: 'html', visualStyle: 'Ink diagrams on warm paper.' },
   });
 }
 
@@ -81,19 +82,28 @@ describe('resolveLessonPlan (A1 read side)', () => {
   });
 
   it.each([undefined, null])(
-    'derives from stage + scenes when the snapshot plan is %s',
+    'refuses to derive a legacy plan when the snapshot plan is %s',
     (absent) => {
-      const resolved = resolveLessonPlan({
-        stage: STAGE,
-        scenes: SCENES,
-        persistedLessonPlan: absent,
-      });
-
-      expect(resolved.id).toBe(`lesson-plan:${STAGE.id}`);
-      expect(resolved.nodes.map((node) => node.sceneId)).toEqual(['slide-1', 'quiz-1']);
-      expect(resolved.nodes.every((node) => node.design === undefined)).toBe(true);
+      expect(() =>
+        resolveLessonPlan({
+          stage: STAGE,
+          scenes: SCENES,
+          persistedLessonPlan: absent,
+        }),
+      ).toThrow(/no HTML lesson plan/i);
     },
   );
+
+  it('refuses a persisted plan that is not an HTML classroom', () => {
+    const { presentation: _presentation, ...rest } = persistedPlan();
+    expect(() =>
+      resolveLessonPlan({
+        stage: STAGE,
+        scenes: SCENES,
+        persistedLessonPlan: rest,
+      }),
+    ).toThrow(/not an HTML classroom/i);
+  });
 
   it('fails loudly when an explicitly persisted snapshot plan is corrupt', () => {
     const corrupt = {
@@ -144,6 +154,7 @@ function outlineKeyedPlan(): LessonPlan {
     version: 1,
     status: 'approved',
     createdAt: '2026-08-10T08:00:00.000Z',
+    presentation: { mode: 'html', visualStyle: 'Ink diagrams on warm paper.' },
     goals: [
       {
         id: 'goal:outline-check',

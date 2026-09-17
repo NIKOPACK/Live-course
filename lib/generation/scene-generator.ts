@@ -54,12 +54,19 @@ import type {
   AICallFn,
 } from './pipeline-types';
 import type { ThinkingConfig } from '@/lib/types/provider';
-import type { LessonNodeDesign, LessonPresentation } from '@/lib/livecourse/domain/schemas';
+import {
+  oralQuestionSchema,
+  type LessonNodeDesign,
+  type LessonPresentation,
+} from '@/lib/livecourse/domain/schemas';
 import { formatLessonNodeDesignForPrompt } from '@/lib/livecourse/lesson/designer';
 import {
   generateHtmlClassroomPage,
   generateHtmlClassroomActionOutput,
+  validateHtmlTeachingActions,
+  ClassroomHtmlActionsError,
 } from '@/lib/livecourse/lesson/html-presentation';
+import { ClassroomHtmlRequiredError } from '@/lib/livecourse/lesson/html-classroom';
 import { createLogger } from '@/lib/logger';
 const log = createLogger('Generation');
 
@@ -216,103 +223,37 @@ export async function generateSceneContent(
   | GeneratedPBLContent
   | null
 > {
-  const {
+  const { assignedImages, imageMapping, visionEnabled, languageDirective, lessonNodeDesign } =
+    options;
+
+  if (options.presentation?.mode !== 'html') {
+    throw new ClassroomHtmlRequiredError();
+  }
+
+  const pageOptions = {
+    presentation: options.presentation,
+    lessonNodeDesign,
+    languageDirective,
     assignedImages,
     imageMapping,
-    languageModel,
     visionEnabled,
-    generatedMediaMapping,
-    agents,
-    languageDirective,
-    thinkingConfig,
-    targetLanguage,
-    userRequirements,
-    allowProceduralSkill = false,
-    editDirective,
-    baselineContent,
-    lessonNodeDesign,
-  } = options;
-
-  if (options.presentation) {
-    const pageOptions = {
-      presentation: options.presentation,
-      lessonNodeDesign,
-      languageDirective,
-      assignedImages,
-      imageMapping,
-      visionEnabled,
-    };
-    if (outline.type === 'quiz') {
-      const quiz = await generateQuizContent(outline, aiCall, languageDirective, lessonNodeDesign);
-      if (!quiz?.questions.length)
-        throw new Error(`No checkpoint questions for "${outline.title}"`);
-      return {
-        ...quiz,
-        html: await generateHtmlClassroomPage(outline, aiCall, {
-          ...pageOptions,
-          questions: quiz.questions,
-        }),
-      };
-    }
+  };
+  if (outline.type === 'quiz') {
+    const quiz = await generateQuizContent(outline, aiCall, languageDirective, lessonNodeDesign);
+    if (!quiz?.questions.length) throw new Error(`No checkpoint questions for "${outline.title}"`);
     return {
-      html: await generateHtmlClassroomPage(outline, aiCall, pageOptions),
-      htmlPresentation: true,
+      ...quiz,
+      html: await generateHtmlClassroomPage(outline, aiCall, {
+        ...pageOptions,
+        questions: quiz.questions,
+      }),
     };
   }
-
-  // Unified path for interactive scenes (both normal and ultra mode)
-  if (outline.type === 'interactive') {
-    // Backward compatibility: convert legacy interactiveConfig
-    if (!outline.widgetType && outline.interactiveConfig) {
-      log.info(`Converting legacy interactiveConfig for: ${outline.title}`);
-      outline = convertInteractiveConfigToWidget(outline);
-    }
-
-    // If still no widgetType after conversion, fallback to simulation
-    if (!outline.widgetType) {
-      log.warn(
-        `Interactive outline "${outline.title}" has no widgetType, falling back to simulation`,
-      );
-      outline = {
-        ...outline,
-        widgetType: 'simulation' as WidgetType,
-        widgetOutline: { concept: outline.title },
-      };
-    }
-
-    // Route to widget generation (handles all 5 types)
-    return generateWidgetContent(outline, aiCall, languageDirective, { allowProceduralSkill });
-  }
-
-  switch (outline.type) {
-    case 'slide':
-      return generateSlideContent(
-        outline,
-        aiCall,
-        assignedImages,
-        imageMapping,
-        visionEnabled,
-        generatedMediaMapping,
-        agents,
-        languageDirective,
-        editDirective,
-        baselineContent,
-        lessonNodeDesign,
-      );
-    case 'quiz':
-      return generateQuizContent(outline, aiCall, languageDirective);
-    case 'pbl':
-      return generatePBLSceneContent(
-        outline,
-        languageModel,
-        languageDirective,
-        thinkingConfig,
-        targetLanguage,
-        userRequirements,
-      );
-    default:
-      return null;
-  }
+  return {
+    html: await generateHtmlClassroomPage(outline, aiCall, pageOptions),
+    htmlPresentation: true,
+    ...(lessonNodeDesign?.oralQuestion ? { oralQuestion: lessonNodeDesign.oralQuestion } : {}),
+  };
 }
 
 /**
@@ -1600,19 +1541,35 @@ export async function generateSceneActions(
 ): Promise<Action[]> {
   const { ctx, agents, userProfile, languageDirective } = options;
   if ('htmlPresentation' in content && content.htmlPresentation) {
-    const response = await generateHtmlClassroomActionOutput(
-      outline,
-      content.html,
-      aiCall,
-      options,
-    );
+    const oralQuestion =
+      content.oralQuestion === undefined
+        ? undefined
+        : oralQuestionSchema.parse(content.oralQuestion);
+    if (oralQuestion && (outline.type === 'quiz' || 'questions' in content)) {
+      throw new ClassroomHtmlActionsError(
+        'Formal checkpoints cannot contain oral question triggers',
+      );
+    }
+    const elementInventory = extractInteractiveElements(content.html);
+    const response = await generateHtmlClassroomActionOutput(outline, content.html, aiCall, {
+      ...options,
+      elementInventory,
+      oralQuestion,
+    });
     const actions = parseActionsFromStructuredOutput(response, 'interactive', [
       'widget_highlight',
       'widget_annotation',
       'widget_reveal',
     ]);
-    if (!actions.some((action) => action.type === 'speech')) {
-      throw new Error(`No teacher narration generated for HTML page "${outline.title}"`);
+    validateHtmlTeachingActions(actions, elementInventory);
+    if (oralQuestion) {
+      const speeches = actions.filter((action) => action.type === 'speech');
+      if (speeches.length < 2) {
+        throw new ClassroomHtmlActionsError(
+          'An oral question requires narration before and after the dialogue',
+        );
+      }
+      speeches[Math.floor((speeches.length - 1) / 2)].oralQuestion = oralQuestion;
     }
     return processActions(actions, [], agents);
   }

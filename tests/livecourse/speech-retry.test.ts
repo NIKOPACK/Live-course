@@ -9,12 +9,12 @@ describe('isRetryableRealtimeSpeechError', () => {
   it('retries transient voice-model failures', () => {
     expect(isRetryableRealtimeSpeechError(new Error('Volc realtime failed'))).toBe(true);
     expect(isRetryableRealtimeSpeechError(new Error('Volc model narration timed out'))).toBe(true);
-    expect(isRetryableRealtimeSpeechError(new Error('Volc realtime event stream disconnected'))).toBe(
-      true,
-    );
-    expect(isRetryableRealtimeSpeechError(new Error('Volc realtime session is not connected'))).toBe(
-      true,
-    );
+    expect(
+      isRetryableRealtimeSpeechError(new Error('Volc realtime event stream disconnected')),
+    ).toBe(true);
+    expect(
+      isRetryableRealtimeSpeechError(new Error('Volc realtime session is not connected')),
+    ).toBe(true);
     expect(
       isRetryableRealtimeSpeechError(new Error('Realtime teacher transport disconnected')),
     ).toBe(true);
@@ -27,9 +27,9 @@ describe('isRetryableRealtimeSpeechError', () => {
       false,
     );
     expect(isRetryableRealtimeSpeechError(new Error('Realtime speech was cancelled'))).toBe(false);
-    expect(isRetryableRealtimeSpeechError(new Error('VOLCENGINE_REALTIME_API_KEY is not configured'))).toBe(
-      false,
-    );
+    expect(
+      isRetryableRealtimeSpeechError(new Error('VOLCENGINE_REALTIME_API_KEY is not configured')),
+    ).toBe(false);
     expect(isRetryableRealtimeSpeechError({ statusCode: 401 })).toBe(false);
   });
 });

@@ -83,7 +83,11 @@ export function HeaderControls({
   const mediaTasks = useMediaGenerationStore((s) => s.tasks);
   const { exporting: isExporting, exportPPTX, exportResourcePack } = useExportPPTX();
   const { exporting: isExportingZip, exportClassroomZip } = useExportClassroom();
-  const videoExportEnabled = isVideoExportEnabled();
+  const editorEnabled = isLiveCourseEditorEnabled();
+  // Learner classroom chrome must not expose PPTX / MP4 / ZIP export
+  // (docs/spec/04-detailed-design.md §4). Editor chrome may still use it.
+  const showExportMenu = editorEnabled && mode === 'edit';
+  const videoExportEnabled = showExportMenu && isVideoExportEnabled();
   // Video render lives in a global store so its progress ring stays on the
   // export button even after the menu closes / scenes switch mid-render.
   const videoRendering = useVideoRenderStore(
@@ -202,7 +206,7 @@ export function HeaderControls({
           host bar on the mode swap (no cross-bar layoutId morph: the
           playback Header and edit CommandBar have different left-side
           widths, so morphing made the pill visibly drift). */}
-      {onToggleEditMode && isLiveCourseEditorEnabled() && (
+      {onToggleEditMode && editorEnabled && (
         <label
           className={cn(
             'inline-flex h-9 shrink-0 items-center gap-2 rounded-md border bg-white/70 px-2.5 shadow-sm backdrop-blur-md transition-colors duration-200 dark:bg-gray-900/70',
@@ -245,106 +249,106 @@ export function HeaderControls({
         </label>
       )}
 
-      {/* Export / Download — lives to the right of the Pro Switch.
-          Not a settings function so it does not belong inside the
-          settings pill; kept as a separate sibling sitting between the
-          Pro Switch and the right edge of the chrome. */}
-      <div className="relative" ref={exportRef}>
-        <button
-          onClick={() => {
-            if (canExport && !isExporting && !isExportingZip) {
-              setExportMenuOpen(!exportMenuOpen);
+      {/* Export / Download — editor chrome only. The classroom header
+          must not expose PPTX / MP4 / ZIP (docs/spec/04 §4). */}
+      {showExportMenu ? (
+        <div className="relative" ref={exportRef}>
+          <button
+            onClick={() => {
+              if (canExport && !isExporting && !isExportingZip) {
+                setExportMenuOpen(!exportMenuOpen);
+              }
+            }}
+            disabled={!canExport || isExporting || isExportingZip}
+            title={
+              canExport
+                ? isExporting || isExportingZip
+                  ? t('export.exporting')
+                  : t('export.pptx')
+                : t('share.notReady')
             }
-          }}
-          disabled={!canExport || isExporting || isExportingZip}
-          title={
-            canExport
-              ? isExporting || isExportingZip
-                ? t('export.exporting')
-                : t('export.pptx')
-              : t('share.notReady')
-          }
-          className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
-            canExport && !isExporting && !isExportingZip
-              ? 'text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm'
-              : 'text-gray-300 dark:text-gray-600 cursor-not-allowed opacity-50',
-          )}
-          aria-label={t('export.pptx')}
-        >
-          {isExporting || isExportingZip ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : videoRendering ? (
-            // Persistent ring: video render runs in the background; keep it
-            // visible on the button whether or not the menu is open.
-            <CircularProgress value={videoRenderPercent} size={20} className="text-primary" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-        </button>
-        {exportMenuOpen && (
-          <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]">
-            <button
-              onClick={() => {
-                setExportMenuOpen(false);
-                exportPPTX();
-              }}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
-            >
-              <FileDown className="w-4 h-4 text-gray-400 shrink-0" />
-              <span>{t('export.pptx')}</span>
-            </button>
-            <button
-              onClick={() => {
-                setExportMenuOpen(false);
-                exportResourcePack();
-              }}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
-            >
-              <Package className="w-4 h-4 text-gray-400 shrink-0" />
-              <div>
-                <div>{t('export.resourcePack')}</div>
-                <div className="text-[11px] text-gray-400 dark:text-gray-500">
-                  {t('export.resourcePackDesc')}
-                </div>
-              </div>
-            </button>
-            <button
-              onClick={() => {
-                setExportMenuOpen(false);
-                exportClassroomZip();
-              }}
-              disabled={isExportingZip}
-              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
-            >
-              <Archive className="w-4 h-4 text-gray-400 shrink-0" />
-              <div>
-                <div>{t('export.classroomZip')}</div>
-                <div className="text-[11px] text-gray-400 dark:text-gray-500">
-                  {t('export.classroomZipDesc')}
-                </div>
-              </div>
-            </button>
-            {videoExportEnabled && (
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
+              canExport && !isExporting && !isExportingZip
+                ? 'text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm'
+                : 'text-gray-300 dark:text-gray-600 cursor-not-allowed opacity-50',
+            )}
+            aria-label={t('export.pptx')}
+          >
+            {isExporting || isExportingZip ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : videoRendering ? (
+              // Persistent ring: video render runs in the background; keep it
+              // visible on the button whether or not the menu is open.
+              <CircularProgress value={videoRenderPercent} size={20} className="text-primary" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+          </button>
+          {exportMenuOpen && (
+            <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]">
               <button
                 onClick={() => {
                   setExportMenuOpen(false);
-                  setVideoDialogOpen(true);
+                  exportPPTX();
                 }}
-                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5 border-t border-gray-200 dark:border-gray-700"
+                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
               >
-                <Film className="w-4 h-4 text-gray-400 shrink-0" />
+                <FileDown className="w-4 h-4 text-gray-400 shrink-0" />
+                <span>{t('export.pptx')}</span>
+              </button>
+              <button
+                onClick={() => {
+                  setExportMenuOpen(false);
+                  exportResourcePack();
+                }}
+                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+              >
+                <Package className="w-4 h-4 text-gray-400 shrink-0" />
                 <div>
-                  <div>{t('export.video')}</div>
+                  <div>{t('export.resourcePack')}</div>
                   <div className="text-[11px] text-gray-400 dark:text-gray-500">
-                    {t('export.videoDesc')}
+                    {t('export.resourcePackDesc')}
                   </div>
                 </div>
               </button>
-            )}
-          </div>
-        )}
-      </div>
+              <button
+                onClick={() => {
+                  setExportMenuOpen(false);
+                  exportClassroomZip();
+                }}
+                disabled={isExportingZip}
+                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+              >
+                <Archive className="w-4 h-4 text-gray-400 shrink-0" />
+                <div>
+                  <div>{t('export.classroomZip')}</div>
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('export.classroomZipDesc')}
+                  </div>
+                </div>
+              </button>
+              {videoExportEnabled && (
+                <button
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    setVideoDialogOpen(true);
+                  }}
+                  className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5 border-t border-gray-200 dark:border-gray-700"
+                >
+                  <Film className="w-4 h-4 text-gray-400 shrink-0" />
+                  <div>
+                    <div>{t('export.video')}</div>
+                    <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                      {t('export.videoDesc')}
+                    </div>
+                  </div>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       {videoExportEnabled && (

@@ -50,6 +50,14 @@ import {
 } from '@/lib/livecourse/session/course-state-snapshot';
 
 import { resolveResumeNodeId } from '@/lib/livecourse/session/context';
+import { needsFinalizationRecovery } from '@/lib/livecourse/session/finalization-recovery';
+import {
+  createWorkingMemoryRepository,
+  createCourseMemoryRepository,
+  createLearnerMemoryRepository,
+} from '@/lib/livecourse/memory/repository';
+import { finalizeSessionLearnerMemory } from '@/lib/livecourse/memory/lifecycle';
+import { workingMemorySessionId, learnerMemorySessionId } from '@/lib/livecourse/memory/namespaces';
 
 import {
   COURSE_ID,
@@ -166,7 +174,11 @@ interface Harness {
     completion?: ClassroomCompletionDeps;
     failSaveOnce?: boolean;
     failDestroy?: { current: boolean };
-    finalizeLearnerMemory?: () => Promise<void>;
+    finalizeLearnerMemory?: (finalization?: {
+      idempotencyKey: string;
+      occurredAt: string;
+    }) => Promise<void>;
+    destroyWorkSession?: () => Promise<void>;
   }) => ReturnType<typeof createClassroomController>;
 }
 
@@ -212,6 +224,7 @@ function harness(): Harness {
         classroomSessionId: CLASSROOM_SESSION_ID,
         courseState: lifecycleCourseState,
         destroyWorkSession: async () => {
+          if (options.destroyWorkSession) return options.destroyWorkSession();
           if (options.failDestroy?.current) {
             options.failDestroy.current = false;
             throw new Error('injected W destroy failure');
@@ -221,9 +234,9 @@ function harness(): Harness {
         },
         ...(options.finalizeLearnerMemory
           ? {
-              finalizeLearnerMemory: async () => {
+              finalizeLearnerMemory: async (finalization) => {
                 order.push('writeL');
-                await options.finalizeLearnerMemory!();
+                await options.finalizeLearnerMemory!(finalization);
               },
             }
           : {}),
@@ -520,7 +533,8 @@ describe('finalizeSession（J3.8 完成归档，A2）', () => {
     failing = false;
     const result = await controller.finalizeSession();
     expect(result.duplicate).toBe(true);
-    expect(await cRecordCount(h.store)).toBe(before + 1);
+    // One archive plus its memory-finalized checkpoint, not a second archive.
+    expect(await cRecordCount(h.store)).toBe(before + 2);
     expect(await wExists(h.store)).toBe(false);
   });
 
@@ -537,6 +551,190 @@ describe('finalizeSession（J3.8 完成归档，A2）', () => {
     expect(result.snapshot.id).toBe(done.snapshot.id);
     expect(result.snapshot.lifecycle?.status).toBe('archived');
     expect(await cRecordCount(h.store)).toBe(records);
+  });
+
+  it('reloads an archived C after L failure directly into finalizing', async () => {
+    const h = harness();
+    const first = await driveToFinalizing(h, {
+      finalizeLearnerMemory: async () => {
+        throw new Error('L unavailable');
+      },
+    });
+    await expect(first.finalizeSession()).rejects.toThrow('L unavailable');
+    const archived = await h.courseState.loadVersioned();
+    const writeL = vi.fn(async () => {});
+    const second = h.makeController({ finalizeLearnerMemory: writeL });
+    await second.load();
+    expect(second.getState()).toBe('finalizing');
+    expect(second.getTransitions().some((entry) => entry.to === 'teaching')).toBe(false);
+    const result = await second.finalizeSession();
+    expect(result.duplicate).toBe(true);
+    expect(result.snapshot.lifecycle?.finalization?.phase).toBe('memory-finalized');
+    expect((await h.courseState.loadVersioned())!.revision).toBe(archived!.revision + 1);
+    expect(writeL).toHaveBeenCalledOnce();
+    expect(await wExists(h.store)).toBe(false);
+  });
+
+  it('rejects replay of a pending archive before creating replay W or finalizing it', async () => {
+    const h = harness();
+    const first = await driveToFinalizing(h, {
+      finalizeLearnerMemory: async () => {
+        throw new Error('pending L');
+      },
+    });
+    await expect(first.finalizeSession()).rejects.toThrow('pending L');
+    const before = await h.courseState.loadVersioned();
+    const replayId = 'pending-archive-replay';
+    const scope = {
+      stageId: STAGE_ID,
+      learnerId: LEARNER_ID,
+      courseId: COURSE_ID,
+      lessonId: LESSON_ONE,
+      replayId,
+    };
+    const replay = createReplaySessionController({
+      repository: createTeachingActionRepository({ store: h.store, ...scope }),
+      loadCourseState: () => h.courseState.load(),
+      applyPresentation: () => ({ success: true }),
+      courseId: COURSE_ID,
+      lessonId: LESSON_ONE,
+    });
+    await expect(replay.start()).rejects.toThrow('finalization');
+    expect(await h.store.getSession(livecourseReplaySessionId(scope))).toBeUndefined();
+    expect(await h.courseState.loadVersioned()).toEqual(before);
+    expect(await wExists(h.store)).toBe(true);
+  });
+
+  it('keeps W when the memory-finalized checkpoint fails and resumes after reload', async () => {
+    const h = harness();
+    const learnerMemory = createLearnerMemoryRepository({
+      store: h.store,
+      scope: { learnerId: LEARNER_ID },
+    });
+    const courseMemory = createCourseMemoryRepository({
+      store: h.store,
+      scope: { stageId: STAGE_ID, learnerId: LEARNER_ID, courseId: COURSE_ID },
+    });
+    const writeL = vi.fn(async (finalization?: { occurredAt: string }) => {
+      await finalizeSessionLearnerMemory({
+        learnerMemory,
+        courseMemory,
+        intake: {
+          requirement: '我通常喜欢图示讲解',
+          preClassAnswers: [],
+          finalScope: ['Algebra'],
+          skipped: false,
+          submittedAt: NOW,
+        },
+        now: () => finalization!.occurredAt,
+      });
+    });
+    const first = await driveToFinalizing(h, { finalizeLearnerMemory: writeL });
+    const save = h.courseState.save.bind(h.courseState);
+    let failCheckpoint = true;
+    vi.spyOn(h.courseState, 'save').mockImplementation((input, options) => {
+      if (input.lifecycle?.finalization?.phase === 'memory-finalized' && failCheckpoint) {
+        failCheckpoint = false;
+        throw new Error('finalization checkpoint unavailable');
+      }
+      return save(input, options);
+    });
+    await expect(first.finalizeSession()).rejects.toThrow('finalization checkpoint unavailable');
+    expect(await wExists(h.store)).toBe(true);
+    expect((await h.courseState.load())!.lifecycle?.finalization?.phase).toBe('pending');
+    const learnerBeforeRetry = await learnerMemory.load();
+    expect(learnerBeforeRetry?.entries).toHaveLength(1);
+    const learnerRecordsBefore = await h.store.listRecords(
+      learnerMemorySessionId({ learnerId: LEARNER_ID }),
+    );
+    const second = h.makeController({ finalizeLearnerMemory: writeL });
+    await second.load();
+    expect(second.getState()).toBe('finalizing');
+    await second.finalizeSession();
+    expect(await wExists(h.store)).toBe(false);
+    expect(await learnerMemory.load()).toEqual(learnerBeforeRetry);
+    expect(await h.store.listRecords(learnerMemorySessionId({ learnerId: LEARNER_ID }))).toEqual(
+      learnerRecordsBefore,
+    );
+  });
+
+  it('does not reapply learner policy after memory-finalized even when W cleanup failed', async () => {
+    const h = harness();
+    const writeL = vi.fn(async () => {});
+    const first = await driveToFinalizing(h, {
+      finalizeLearnerMemory: writeL,
+      failDestroy: { current: true },
+    });
+    await expect(first.finalizeSession()).rejects.toThrow('injected W destroy failure');
+    const persisted = await h.courseState.loadVersioned();
+    const second = h.makeController({ finalizeLearnerMemory: writeL });
+    await second.load();
+    expect(second.getState()).toBe('finalizing');
+    await second.finalizeSession();
+    expect(writeL).toHaveBeenCalledOnce();
+    expect(await h.courseState.loadVersioned()).toEqual(persisted);
+  });
+
+  it('recovers after W1 deletion succeeds and W2 deletion fails without repeating policy', async () => {
+    const h = harness();
+    const scope = {
+      stageId: STAGE_ID,
+      learnerId: LEARNER_ID,
+      courseId: COURSE_ID,
+      lessonId: LESSON_ONE,
+      classroomSessionId: CLASSROOM_SESSION_ID,
+    };
+    const memory = createWorkingMemoryRepository({ store: h.store, scope });
+    await memory.update((current) => ({ ...current, shortSummary: 'Retained working memory' }));
+    const remove = h.store.deleteSession.bind(h.store);
+    let failW2 = true;
+    vi.spyOn(h.store, 'deleteSession').mockImplementation(async (id) => {
+      if (id === workingMemorySessionId(scope) && failW2) {
+        failW2 = false;
+        throw new Error('W2 deletion unavailable');
+      }
+      return remove(id);
+    });
+    const writeL = vi.fn(async () => {});
+    const destroyWorkSession = async () => {
+      await h.actions.destroy();
+      await memory.destroy();
+    };
+    const first = await driveToFinalizing(h, { finalizeLearnerMemory: writeL, destroyWorkSession });
+    await expect(first.finalizeSession()).rejects.toThrow('W2 deletion unavailable');
+    const archived = (await h.courseState.load())!;
+    expect(await wExists(h.store)).toBe(false);
+    expect(await memory.load()).toBeDefined();
+    expect(await needsFinalizationRecovery(archived, h.store)).toBe(true);
+    const second = h.makeController({ finalizeLearnerMemory: writeL, destroyWorkSession });
+    await second.load();
+    expect(second.getState()).toBe('finalizing');
+    await second.finalizeSession();
+    expect(writeL).toHaveBeenCalledOnce();
+    expect(await needsFinalizationRecovery(archived, h.store)).toBe(false);
+    expect(await h.courseState.load()).toEqual(archived);
+  });
+
+  it('recovers a legacy archived snapshot with remaining teaching W', async () => {
+    const h = harness();
+    await driveToFinalizing(h);
+    const latest = (await h.courseState.loadVersioned())!;
+    const oldArchive = await h.courseState.save(
+      {
+        ...latest.snapshot,
+        id: undefined,
+        createdAt: undefined,
+        idempotencyKey: `finalize:${CLASSROOM_SESSION_ID}`,
+        lifecycle: { status: 'archived', updatedAt: NOW },
+      },
+      { expectedRevision: latest.revision },
+    );
+    expect(await needsFinalizationRecovery(oldArchive, h.store)).toBe(true);
+    const second = h.makeController();
+    await second.load();
+    expect(second.getState()).toBe('finalizing');
+    await second.finalizeSession();
+    expect(await needsFinalizationRecovery((await h.courseState.load())!, h.store)).toBe(false);
   });
 
   it('keeps W and stays finalizing when the archive write itself fails; retry succeeds', async () => {
@@ -1344,6 +1542,30 @@ describe('resolveResumeNodeId（J4.4「继续」恢复目标，A2）', () => {
 });
 
 describe('resolveCourseEntry（首页同课选择态 / 课后选择态投影，J4.4）', () => {
+  it.each(['in_progress', 'archived'] as const)(
+    'maps the persisted %s replay range to generated scene ids without writing C',
+    (status) => {
+      const snapshot = snapshotWith({
+        lifecycle: { status, updatedAt: NOW },
+        completedNodeIds: [NODE_A],
+      });
+      const before = JSON.stringify(snapshot);
+      const nodes = snapshot.coursePlan.lessons.find(
+        (lesson) => lesson.id === snapshot.lessonId,
+      )!.nodes;
+      const scenes = nodes.map((node, order) => ({
+        id: `generated-${order}`,
+        outlineId: node.sceneId,
+        order,
+      })) as import('@/lib/types/stage').Scene[];
+      const entry = resolveCourseEntry(snapshot, scenes);
+      expect(entry.taughtNodeIds).toEqual(
+        status === 'archived' ? ['node:generated-0', 'node:generated-1'] : ['node:generated-0'],
+      );
+      expect(JSON.stringify(snapshot)).toBe(before);
+    },
+  );
+
   function snapshotWith(overrides: {
     lifecycle?: { status: 'in_progress' | 'archived'; updatedAt: string };
     completedNodeIds?: string[];

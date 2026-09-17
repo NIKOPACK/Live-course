@@ -148,7 +148,11 @@ beforeEach(async () => {
     title: node.title,
     order: node.order,
     type: 'quiz',
-    content: { type: 'quiz', questions: [] },
+    content: {
+      type: 'quiz',
+      questions: [],
+      html: '<html><head></head><body>Checkpoint</body></html>',
+    },
   }));
   useStageStore.setState({
     stage: { id: STAGE_ID, name: 'Hydration lesson', createdAt: 0, updatedAt: 0 },
@@ -165,6 +169,7 @@ beforeEach(async () => {
       createdAt: input.coursePlan.createdAt,
       goals: input.coursePlan.goals,
       nodes,
+      presentation: { mode: 'html', visualStyle: 'Ink diagrams on warm paper.' },
     }),
   });
   await createCourseStateRepository({ store, ...scope }).save(input);

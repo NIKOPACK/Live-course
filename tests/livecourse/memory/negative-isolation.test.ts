@@ -408,7 +408,6 @@ describe('A6 two-course fixture: reopen, new-course L-only, negative leak', () =
       store,
       stageId: STAGE_FIXTURE,
       learnerId: LEARNER_ONE,
-      requirements: { requirement: '我想学中国近代史' },
     });
     const generationInput = {
       requirement: '我想学中国近代史',

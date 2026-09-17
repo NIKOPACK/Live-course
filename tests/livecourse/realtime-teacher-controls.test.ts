@@ -4,18 +4,25 @@ import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
+import { useHtmlQuestionContext } from '@/lib/livecourse/html/question-context';
 
 let currentTeacher: TeacherSpeechPort | null = null;
 
 const mocks = vi.hoisted(() => ({
   bridgeAudioElements: [] as HTMLAudioElement[],
   currentNodeType: 'instruction' as 'instruction' | 'checkpoint',
+  currentSceneId: 'scene-1',
   classroomState: 'teaching' as 'teaching' | 'checking' | 'paused' | 'interrupted',
   desktop: true,
   emitAction: vi.fn(async (_input: unknown): Promise<void> => undefined),
   registryCleanupCount: 0,
   ask: vi.fn<(_text: string) => Promise<void>>(async () => undefined),
+  connect: vi.fn<() => Promise<void>>(async () => undefined),
   speak: vi.fn(async (_text: string) => undefined),
+  question: vi.fn(async (_question: unknown, _options: unknown) => undefined),
+  hintOralQuestion: vi.fn(async () => undefined),
+  retryOralQuestion: vi.fn(async () => undefined),
+  endOralQuestion: vi.fn(async () => undefined),
   sessions: [] as Array<{
     closeCount: number;
     canInterrupt(): boolean;
@@ -82,6 +89,7 @@ vi.mock('@/lib/livecourse/realtime/client/session', () => ({
     }
 
     async connect(): Promise<void> {
+      await mocks.connect();
       this.connected = true;
       this.#onEvent?.({ type: 'status', status: 'connected' });
     }
@@ -104,6 +112,10 @@ vi.mock('@/lib/livecourse/realtime/client/session', () => ({
     speak(text: string): Promise<void> {
       return mocks.speak(text);
     }
+    question = mocks.question;
+    hintOralQuestion = mocks.hintOralQuestion;
+    retryOralQuestion = mocks.retryOralQuestion;
+    endOralQuestion = mocks.endOralQuestion;
     emit(event: { type: string; [key: string]: unknown }): void {
       this.#onEvent?.(event);
     }
@@ -175,21 +187,39 @@ vi.mock('@/lib/livecourse/session/context', () => ({
 vi.mock('@/lib/store', () => ({
   useStageStore: (
     selector: (state: {
-      getCurrentScene: () => { id: string; title: string; actions: [] };
+      getCurrentScene: () => {
+        id: string;
+        title: string;
+        actions: [];
+        content: { type: string; html: string };
+      };
     }) => unknown,
-  ) => selector({ getCurrentScene: () => ({ id: 'scene-1', title: 'Scene 1', actions: [] }) }),
+  ) =>
+    selector({
+      getCurrentScene: () => ({
+        id: mocks.currentSceneId,
+        title: 'Scene 1',
+        actions: [],
+        content: {
+          type: 'interactive',
+          html: '<html><head><script data-livecourse-teacher-bridge></script></head></html>',
+        },
+      }),
+    }),
 }));
 
 vi.mock('@/lib/hooks/use-i18n', () => ({
   useI18n: () => ({
     locale: 'zh-CN',
     setLocale: vi.fn(),
-    t: (key: string) =>
-      key === 'livecourse.realtimeRecognitionFailed'
-        ? '没听清，请再说一次（恢复点已保留）'
-        : key === 'livecourse.realtimeInterruptionPending'
-          ? '插话状态待确认，播放已暂停；请重试或断开以恢复主线'
-          : key,
+    t: (key: string, values?: Record<string, string>) =>
+      key === 'livecourse.quotedQuestion'
+        ? `Quote: ${values?.quote}\nQuestion: ${values?.question}`
+        : key === 'livecourse.realtimeRecognitionFailed'
+          ? '没听清，请再说一次（恢复点已保留）'
+          : key === 'livecourse.realtimeInterruptionPending'
+            ? '插话状态待确认，播放已暂停；请重试或断开以恢复主线'
+            : key,
   }),
 }));
 
@@ -273,15 +303,18 @@ async function render(component: ReactNode): Promise<MountedComponent> {
 }
 
 beforeEach(() => {
+  useHtmlQuestionContext.getState().clearQuote();
   currentTeacher = null;
   mocks.bridgeAudioElements.length = 0;
   mocks.currentNodeType = 'instruction';
+  mocks.currentSceneId = 'scene-1';
   mocks.classroomState = 'teaching';
   mocks.desktop = true;
   mocks.emitAction.mockClear();
   mocks.registryCleanupCount = 0;
   mocks.sessions.length = 0;
   mocks.ask.mockReset().mockResolvedValue(undefined);
+  mocks.connect.mockReset().mockResolvedValue(undefined);
   mocks.speak.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -309,6 +342,250 @@ afterEach(async () => {
 });
 
 describe('Realtime teacher controls lifecycle', () => {
+  it('exposes the oral speech port and keeps ordinary drafts and quotes separate from oral answers', async () => {
+    useHtmlQuestionContext.getState().setQuote({ sceneId: 'scene-1', text: 'An unsent quote' });
+    const { container } = await render(
+      createElement(RealtimeTeacherControls, {
+        onTeacherChange: (teacher) => {
+          currentTeacher = teacher;
+        },
+      }),
+    );
+    await click(
+      [...container.querySelectorAll('button')].find(
+        (button) => button.textContent === 'livecourse.questionExample',
+      )!,
+    );
+    await act(async () => {
+      await currentTeacher?.connect();
+    });
+    const planned = { question: 'Why does the slope change?', guidance: 'Reason about the rate.' };
+    const options = { hintText: 'Hint.', resumeText: 'Continue.' };
+    await act(async () => {
+      await currentTeacher?.question?.(planned, options);
+    });
+    expect(mocks.question).toHaveBeenCalledWith(planned, options);
+    await act(async () =>
+      mocks.sessions[0].emit({
+        type: 'oral_question',
+        state: {
+          phase: 'waiting',
+          question: planned.question,
+          teacherText: 'What changes locally?',
+          answer: '',
+          answeredRounds: 0,
+          error: null,
+        },
+      }),
+    );
+    expect(container.querySelector('[data-testid=classroom-oral-question]')?.textContent).toContain(
+      planned.question,
+    );
+    expect(container.querySelector('[role=group]')).toBeNull();
+    expect(container.querySelector('[data-testid=classroom-question-quote]')).toBeNull();
+    const textarea = container.querySelector('textarea')!;
+    expect(textarea.value).toBe('');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'The local rate changes.',
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    mocks.ask.mockRejectedValueOnce(new Error('Response failed'));
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    expect(textarea.value).toBe('The local rate changes.');
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    expect(mocks.ask).toHaveBeenLastCalledWith('The local rate changes.');
+    expect(textarea.value).toBe('');
+    expect(useHtmlQuestionContext.getState().quote?.text).toBe('An unsent quote');
+    await act(async () => mocks.sessions[0].emit({ type: 'oral_question', state: null }));
+    expect(textarea.value).toBe('livecourse.questionExamplePrompt');
+    expect(container.querySelector('[data-testid=classroom-question-quote]')).not.toBeNull();
+  });
+
+  it('gates oral hints, retry and continuation by the current dialogue phase', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    await click(getButton(container, '连接实时语音'));
+    const state = { question: 'Why?', teacherText: '', answer: '', answeredRounds: 0, error: null };
+    const emit = async (phase: string) => {
+      await act(async () =>
+        mocks.sessions[0].emit({ type: 'oral_question', state: { ...state, phase } }),
+      );
+    };
+    const button = (key: string) =>
+      [...container.querySelectorAll('button')].find((item) => item.textContent === key)!;
+    await emit('asking');
+    expect(container.querySelector('textarea')!.disabled).toBe(true);
+    expect(button('livecourse.oralContinue').disabled).toBe(true);
+    await emit('waiting');
+    await click(button('livecourse.questionHint'));
+    expect(mocks.hintOralQuestion).toHaveBeenCalledOnce();
+    await emit('failed');
+    await click(button('livecourse.oralRetry'));
+    expect(mocks.retryOralQuestion).toHaveBeenCalledOnce();
+    await click(button('livecourse.oralContinue'));
+    expect(mocks.endOralQuestion).toHaveBeenCalledOnce();
+  });
+  it('prepares editable quick questions without connecting, interrupting or overwriting a draft', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    const textarea = container.querySelector('textarea')!;
+    const quickButton = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionExample',
+    )!;
+    await click(quickButton);
+    expect(textarea.value).toBe('livecourse.questionExamplePrompt');
+    expect(document.activeElement).toBe(textarea);
+    expect(mocks.sessions).toHaveLength(0);
+    expect(mocks.ask).not.toHaveBeenCalled();
+    expect(mocks.emitAction).not.toHaveBeenCalled();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'My own question.',
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(quickButton);
+    await click(quickButton);
+    expect(textarea.value).toBe('My own question.\nlivecourse.questionExamplePrompt');
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    expect(mocks.ask).toHaveBeenCalledWith('My own question.\nlivecourse.questionExamplePrompt');
+  });
+
+  it('preserves typed content at the length limit rather than truncating it for a quick question', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    const textarea = container.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'x'.repeat(2000),
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const quickButtons = container.querySelectorAll<HTMLButtonElement>('[role=group] button');
+    expect(quickButtons.length).toBe(3);
+    expect([...quickButtons].every((button) => button.disabled)).toBe(true);
+    expect(textarea.value).toHaveLength(2000);
+  });
+
+  it('sends a visible quote only on explicit submission and retains it after a failed ask', async () => {
+    useHtmlQuestionContext
+      .getState()
+      .setQuote({ sceneId: 'scene-1', text: '<em>Secant slope</em>' });
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    const quoted = container.querySelector('[data-testid=classroom-question-quote]')!;
+    expect(quoted.textContent).toContain('<em>Secant slope</em>');
+    expect(quoted.querySelector('em')).toBeNull();
+    expect(mocks.ask).not.toHaveBeenCalled();
+    const hint = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionHint',
+    )!;
+    await click(hint);
+    mocks.ask.mockRejectedValueOnce(new Error('Question failed'));
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    const expected = 'Quote: <em>Secant slope</em>\nQuestion: livecourse.questionHintPrompt';
+    expect(mocks.ask).toHaveBeenCalledWith(expected);
+    expect(container.querySelector('textarea')!.value).toBe('livecourse.questionHintPrompt');
+    expect(useHtmlQuestionContext.getState().quote?.text).toBe('<em>Secant slope</em>');
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    expect(mocks.ask).toHaveBeenLastCalledWith(expected);
+    expect(useHtmlQuestionContext.getState().quote).toBeNull();
+    expect(container.querySelector('textarea')!.value).toBe('');
+  });
+
+  it('removes a quote without changing the question or asking the teacher', async () => {
+    useHtmlQuestionContext.getState().setQuote({ sceneId: 'scene-1', text: 'Current passage' });
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    const rephrase = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionRephrase',
+    )!;
+    await click(rephrase);
+    await click(getButton(container, 'livecourse.removeQuestionQuote'));
+    expect(useHtmlQuestionContext.getState().quote).toBeNull();
+    expect(container.querySelector('textarea')!.value).toBe('livecourse.questionRephrasePrompt');
+    expect(mocks.ask).not.toHaveBeenCalled();
+  });
+
+  it('does not consume a newer selection when the previous question finishes', async () => {
+    useHtmlQuestionContext.getState().setQuote({ sceneId: 'scene-1', text: 'First passage' });
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    let finish!: () => void;
+    mocks.ask.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const rephrase = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionRephrase',
+    )!;
+    await click(rephrase);
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    await act(async () => {
+      useHtmlQuestionContext.getState().setQuote({ sceneId: 'scene-1', text: 'Next passage' });
+      finish();
+    });
+    expect(useHtmlQuestionContext.getState().quote?.text).toBe('Next passage');
+  });
+
+  it('supports checkpoint hints but blocks submission and shortcuts while paused', async () => {
+    mocks.currentNodeType = 'checkpoint';
+    mocks.classroomState = 'checking';
+    const view = await render(createElement(RealtimeTeacherControls));
+    const hint = [...view.container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionHint',
+    )!;
+    await click(hint);
+    await click(getButton(view.container, 'livecourse.sendQuestion'));
+    expect(mocks.ask).toHaveBeenCalledWith('livecourse.questionHintPrompt');
+    mocks.classroomState = 'paused';
+    await act(async () => view.root.render(createElement(RealtimeTeacherControls)));
+    expect(hint.disabled).toBe(true);
+    await act(async () => {
+      view.container
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(mocks.ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show a quotation from another classroom page', async () => {
+    useHtmlQuestionContext.getState().setQuote({ sceneId: 'other-scene', text: 'Other page' });
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    expect(container.querySelector('[data-testid=classroom-question-quote]')).toBeNull();
+  });
+
+  it.each(['page', 'pause'] as const)(
+    'keeps the question without sending if %s changes while voice connects',
+    async (change) => {
+      let connect!: () => void;
+      mocks.connect.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            connect = resolve;
+          }),
+      );
+      const view = await render(createElement(RealtimeTeacherControls));
+      const example = [...view.container.querySelectorAll('button')].find(
+        (button) => button.textContent === 'livecourse.questionExample',
+      )!;
+      await click(example);
+      await click(getButton(view.container, 'livecourse.sendQuestion'));
+      if (change === 'page') mocks.currentSceneId = 'scene-2';
+      else mocks.classroomState = 'paused';
+      await act(async () => view.root.render(createElement(RealtimeTeacherControls)));
+      await act(async () => connect());
+      expect(mocks.ask).not.toHaveBeenCalled();
+      expect(view.container.querySelector('textarea')!.value).toBe(
+        'livecourse.questionExamplePrompt',
+      );
+      expect(view.container.querySelector('[role=alert]')?.textContent).toBe(
+        'livecourse.questionContextChanged',
+      );
+    },
+  );
+
   it('keeps interrupted questions retryable but blocks input while paused', async () => {
     const view = await render(createElement(RealtimeTeacherControls));
     await click(getButton(view.container, '连接实时语音'));
@@ -768,9 +1045,9 @@ describe('Realtime teacher controls lifecycle', () => {
         payload: { target: 'slides' },
       });
     });
-    expect(container.querySelector('[data-avatar-look-at]')?.getAttribute('data-avatar-look-at')).toBe(
-      'camera',
-    );
+    expect(
+      container.querySelector('[data-avatar-look-at]')?.getAttribute('data-avatar-look-at'),
+    ).toBe('camera');
   });
 
   it('does not freeze a grinning open mouth while the lectern teacher speaks', async () => {

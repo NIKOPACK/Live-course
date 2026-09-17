@@ -97,4 +97,56 @@ describe('ActionEngine widget actions', () => {
       },
     ]);
   });
+
+  it('waits for the iframe result before finishing a visual action', async () => {
+    vi.useFakeTimers();
+    let acknowledge!: () => void;
+    const callback = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const engine = new ActionEngine({} as never, null, callback);
+    const finished = vi.fn();
+    const controller = new AbortController();
+    const execution = engine
+      .execute(
+        { id: 'focus', type: 'widget_highlight', target: '#concept' },
+        { signal: controller.signal },
+      )
+      .then(finished);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(finished).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith(
+      'HIGHLIGHT_ELEMENT',
+      { target: '#concept', content: undefined },
+      { signal: controller.signal },
+    );
+    acknowledge();
+    await vi.advanceTimersByTimeAsync(300);
+    await execution;
+    expect(finished).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces an iframe failure instead of claiming the action completed', async () => {
+    const engine = new ActionEngine({} as never, null, async () => {
+      throw new Error('Teacher action target not found');
+    });
+    await expect(
+      engine.execute({
+        id: 'focus',
+        type: 'widget_highlight',
+        target: '#missing',
+      }),
+    ).rejects.toThrow('target not found');
+    const disconnected = new ActionEngine({} as never);
+    await expect(
+      disconnected.execute({
+        id: 'focus',
+        type: 'widget_highlight',
+        target: '#concept',
+      }),
+    ).rejects.toThrow('callback not set');
+  });
 });

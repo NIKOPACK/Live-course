@@ -4,23 +4,26 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { RealtimeSettings } from '@/components/settings/realtime-settings';
-import { useProviderCredentials } from '@/components/settings/use-provider-credentials';
-import type { RealtimeProviderId } from '@/lib/types/settings';
+import {
+  useProviderCredentials,
+  type CredentialConfigs,
+} from '@/components/settings/use-provider-credentials';
 
 vi.mock('@/lib/hooks/use-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 
 const persist = vi.fn<(changes: Record<string, object>) => Promise<void>>();
 
 function Harness() {
-  const [configs, setConfigs] = useState({
+  const [configs, setConfigs] = useState<CredentialConfigs>({
     openai: { apiKey: '', baseUrl: '', requiresApiKey: true },
   });
   const credentials = useProviderCredentials(configs, async (changes) => {
     setConfigs((previous) => {
       const next = { ...previous };
       for (const [key, fields] of Object.entries(changes)) {
-        const id = key as RealtimeProviderId;
-        next[id] = { ...next[id], ...fields };
+        const config = next[key];
+        if (!config) throw new Error(`Unknown credential provider: ${key}`);
+        next[key] = { ...config, ...fields };
       }
       return next;
     });

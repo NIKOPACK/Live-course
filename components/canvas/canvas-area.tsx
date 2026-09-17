@@ -69,8 +69,7 @@ export function CanvasArea({
     currentScene?.type === 'slide' &&
     !isLiveSession &&
     !isPendingScene;
-  const classroomFillBoard =
-    classroomChrome && !whiteboardOpen && currentScene?.type !== 'slide';
+  const classroomFillBoard = classroomChrome && !whiteboardOpen && currentScene?.type !== 'slide';
 
   const handleSlideClick = useCallback(
     (e: React.MouseEvent) => {
@@ -134,9 +133,7 @@ export function CanvasArea({
                 ? 'shadow-blue-200/40 dark:shadow-blue-950/40'
                 : 'shadow-gray-300/50 dark:shadow-black/40'),
           )}
-          style={
-            classroomFillBoard ? undefined : { width: 'min(100cqw, calc(100cqh * 16 / 9))' }
-          }
+          style={classroomFillBoard ? undefined : { width: 'min(100cqw, calc(100cqh * 16 / 9))' }}
           onClick={handleSlideClick}
         >
           {/* Whiteboard Layer */}

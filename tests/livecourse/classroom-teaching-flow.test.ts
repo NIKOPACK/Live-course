@@ -18,8 +18,9 @@ import { listEvidenceRecords } from '@/lib/livecourse/evidence/runtime-repositor
 import { useStageStore } from '@/lib/store';
 import { useSettingsStore } from '@/lib/store/settings';
 import type { Scene } from '@/lib/types/stage';
-import { createDefaultSlideContent } from '@/lib/api/stage-api-defaults';
 import { PlaybackChromeRoot } from '@/components/edit/PlaybackChromeRoot';
+import { ReplayPresentationBoundary } from '@/components/livecourse/ReplayPresentationBoundary';
+import { LiveCourseReplayHost } from '@/components/livecourse/LiveCourseReplayHost';
 import { useLiveCaptionStore } from '@/lib/store/live-caption';
 import {
   ClassroomLifecycleOverlay,
@@ -54,6 +55,12 @@ vi.mock('@/lib/hooks/use-i18n', () => ({
 }));
 vi.mock('@/lib/hooks/use-discussion-tts', () => ({ useDiscussionTTS: () => mocks.discussion }));
 vi.mock('@/components/audio/speech-button', () => ({ SpeechButton: () => null }));
+vi.mock('@/lib/livecourse/session/replay-speech', () => ({
+  createReplaySpeech: () => {
+    if (!mocks.teacher) throw new Error('Replay teacher is not configured');
+    return { ...mocks.teacher, close: async () => undefined };
+  },
+}));
 vi.mock('@/components/livecourse/TeacherAvatarHost', async () => {
   const React = await import('react');
   return {
@@ -153,6 +160,36 @@ function ClassroomApp() {
   };
   return createElement(LiveCourseSessionProvider, props);
 }
+
+function ReplayApp() {
+  const [ended, setEnded] = useState(false);
+  const onEnd = useCallback(() => {
+    mocks.finalized();
+    setEnded(true);
+  }, []);
+  if (ended) return createElement('div', null, 'Replay ended');
+  // eslint-disable-next-line react/no-children-prop -- Boundary children are a typed render prop.
+  return createElement(ReplayPresentationBoundary, {
+    children: ({ presentationStore, replayBridge }) =>
+      createElement(
+        Fragment,
+        null,
+        createElement(PlaybackChromeRoot, {
+          presentationOnly: true,
+          presentationStore,
+          replayBridge,
+        }),
+        createElement(LiveCourseReplayHost, {
+          courseId: COURSE_ID,
+          lessonId: LESSON_ONE,
+          presentationStore,
+          replayBridge,
+          onEnd,
+          onAbort: onEnd,
+        }),
+      ),
+  });
+}
 async function until(predicate: () => boolean) {
   const deadline = Date.now() + 5000;
   while (!predicate() && Date.now() < deadline) {
@@ -175,7 +212,11 @@ async function finishSpeech(index: number) {
     mocks.speech[index].finish();
   });
 }
-async function mount(checkpointLast = false, introText = 'Introduction') {
+async function mount(
+  checkpointLast = false,
+  introText = 'Introduction',
+  replay: boolean | 'all' = false,
+) {
   const previousSession = session;
   const coursePlan = makeAdjustmentCoursePlan();
   const nodes: LessonPlan['nodes'] = [
@@ -223,6 +264,7 @@ async function mount(checkpointLast = false, introText = 'Introduction') {
     createdAt: coursePlan.createdAt,
     goals: coursePlan.goals,
     nodes,
+    presentation: { mode: 'html', visualStyle: 'Ink diagrams on warm paper.' },
   });
   const scenes: Scene[] = nodes.map((node) => ({
     id: node.sceneId,
@@ -234,6 +276,7 @@ async function mount(checkpointLast = false, introText = 'Introduction') {
           type: 'quiz' as const,
           content: {
             type: 'quiz' as const,
+            html: '<html><head></head><body>Checkpoint</body></html>',
             questions: [
               {
                 id: 'q1',
@@ -251,8 +294,12 @@ async function mount(checkpointLast = false, introText = 'Introduction') {
           },
         }
       : {
-          type: 'slide' as const,
-          content: createDefaultSlideContent(),
+          type: 'interactive' as const,
+          content: {
+            type: 'interactive' as const,
+            url: '',
+            html: '<html><head></head><body>Lesson</body></html>',
+          },
           actions: [
             {
               id: `speech:${node.id}`,
@@ -279,9 +326,23 @@ async function mount(checkpointLast = false, introText = 'Introduction') {
       teachingActions: { actions: [], currentNodeId: null, lastSequence: -1 },
     }),
   );
+  if (replay) {
+    await createCourseStateRepository({ store, ...scope }).saveProgress({
+      idempotencyKey: 'replay-taught-intro',
+      progress: {
+        completedNodeIds: replay === 'all' ? ['node:intro', 'node:quiz'] : ['node:intro'],
+        lastCompletedNodeId: replay === 'all' ? 'node:quiz' : 'node:intro',
+        updatedAt: coursePlan.createdAt,
+      },
+    });
+  }
   await act(async () => {
-    root.render(createElement(ClassroomApp));
+    root.render(createElement(replay ? ReplayApp : ClassroomApp));
   });
+  if (replay) {
+    await until(() => mocks.speech.length > 0);
+    return;
+  }
   await until(
     () =>
       session !== previousSession &&
@@ -359,6 +420,59 @@ afterEach(async () => {
 });
 
 describe('whole classroom with controlled real-audio boundaries', () => {
+  it('naturally ends a replay through its actionless checkpoint without synthesizing empty speech', async () => {
+    await mount(true, 'Introduction', 'all');
+    const repository = createCourseStateRepository({ store, ...scope });
+    const baseline = await repository.loadVersioned();
+    await finishSpeech(0);
+    await until(() => mocks.finalized.mock.calls.length === 1);
+    expect(mocks.speech).toHaveLength(1);
+    expect(await repository.loadVersioned()).toEqual(baseline);
+    expect(await listEvidenceRecords(scope.stageId, { store, ...scope })).toHaveLength(0);
+    expect(
+      (await store.listSessions(scope.stageId, scope.learnerId)).some((entry) =>
+        entry.id.includes(':replay:'),
+      ),
+    ).toBe(false);
+  }, 20_000);
+
+  it('surfaces asynchronous replay speech failure and retries without writing C or evidence', async () => {
+    await mount(true, 'Introduction', true);
+    const repository = createCourseStateRepository({ store, ...scope });
+    const baseline = await repository.loadVersioned();
+    await act(async () => mocks.speech[0].fail(new Error('Replay voice unavailable')));
+    await until(() => !!container.textContent?.includes('livecourse.replayFailed'));
+    expect(container.textContent).not.toContain('livecourse.pause');
+    expect(await repository.loadVersioned()).toEqual(baseline);
+    await click('livecourse.retry');
+    await until(() => mocks.speech.length === 2);
+    await finishSpeech(1);
+    await until(() => mocks.finalized.mock.calls.length === 1);
+    expect(await repository.loadVersioned()).toEqual(baseline);
+    expect(await listEvidenceRecords(scope.stageId, { store, ...scope })).toHaveLength(0);
+    expect(
+      (await store.listSessions(scope.stageId, scope.learnerId)).some((entry) =>
+        entry.id.includes(':replay:'),
+      ),
+    ).toBe(false);
+  }, 20_000);
+
+  it('pauses and resumes actual replay audio without advancing C', async () => {
+    await mount(true, 'Introduction', true);
+    const repository = createCourseStateRepository({ store, ...scope });
+    const baseline = await repository.loadVersioned();
+    await click('livecourse.pause');
+    expect(mocks.speech[0].signal?.aborted).toBe(true);
+    await until(() => !!container.textContent?.includes('livecourse.resume'));
+    await click('livecourse.resume');
+    await until(() => mocks.speech.length === 2);
+    expect(mocks.speech[1].text).toBe('Introduction');
+    await finishSpeech(1);
+    await until(() => mocks.finalized.mock.calls.length === 1);
+    expect(await repository.loadVersioned()).toEqual(baseline);
+    expect(await listEvidenceRecords(scope.stageId, { store, ...scope })).toHaveLength(0);
+  }, 20_000);
+
   it('bounds long Chinese narration and waits for every audio chunk before advancing', async () => {
     const script = '这是课堂中的重要概念。'.repeat(60);
     await mount(false, script);

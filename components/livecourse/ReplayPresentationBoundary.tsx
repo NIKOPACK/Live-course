@@ -77,6 +77,7 @@ export interface ReplayPresentationBridge {
     positionMismatch?: boolean;
   }>;
   complete?: () => void;
+  /** Retain an asynchronous playback failure after the engine start was acknowledged. */
   fail?: () => Promise<void>;
   /** Local PlaybackEngine controls, registered by PlaybackChromeRoot. */
   engineControls?: ReplayEngineControls;

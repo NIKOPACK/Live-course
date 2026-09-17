@@ -37,7 +37,7 @@ import { ActionEngine } from '@/lib/action/engine';
 import { createAudioPlayer } from '@/lib/utils/audio-player';
 import { useDiscussionTTS } from '@/lib/hooks/use-discussion-tts';
 import { isLiveCourseTTSEnabled } from '@/lib/config/feature-flags';
-import { useWidgetIframeStore } from '@/lib/store/widget-iframe';
+import { sendWidgetMessage } from '@/lib/store/widget-iframe';
 import type { AudioIndicatorState } from '@/components/roundtable/audio-indicator';
 import type { Action, DiscussionAction, SpeechAction } from '@/lib/types/action';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
@@ -80,6 +80,11 @@ import {
 import type { StageStore } from '@/lib/api/stage-api-types';
 import type { ReplayPresentationBridge } from '@/components/livecourse/ReplayPresentationBoundary';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
+import { shouldBindOralQuestionPort } from '@/lib/livecourse/realtime/client/oral-question';
+import { createReplaySpeech } from '@/lib/livecourse/session/replay-speech';
+import { resolveCourseIdentity } from '@/lib/livecourse/session/course-identity';
+import { resolveRealtimeClientApiKey } from '@/lib/livecourse/realtime/providers';
+import { getLearnerKey } from '@/lib/runtime/learner-key';
 import {
   checkpointFeedbackText,
   createCheckpointSubmissionCoordinator,
@@ -315,6 +320,30 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const emitLiveCourseAction = liveCourseSession?.emitAction;
     const liveCourseSessionRef = useRef(liveCourseSession);
     const teacherSpeechRef = useRef<TeacherSpeechPort | null>(null);
+    useEffect(() => {
+      if (!presentationOnly || !stage?.id) return;
+      const { courseId, lessonId } = resolveCourseIdentity({
+        stageId: stage.id,
+        coursePlan: useStageStore.getState().coursePlan,
+      });
+      const provider = useSettingsStore.getState().realtimeProvidersConfig?.volc?.isServerConfigured
+        ? 'volc'
+        : 'openai';
+      const teacher = createReplaySpeech({
+        provider,
+        courseId,
+        lessonId,
+        getLearnerId: getLearnerKey,
+        getApiKey: () => resolveRealtimeClientApiKey(provider, useSettingsStore.getState()),
+        getInstructions: () =>
+          'Replay the supplied authored lesson narration verbatim. This is read-only listening: no questions, learner input, or classroom tools.',
+      });
+      teacherSpeechRef.current = teacher;
+      return () => {
+        if (teacherSpeechRef.current === teacher) teacherSpeechRef.current = null;
+        void teacher.close().catch((error) => console.warn('Replay voice cleanup failed:', error));
+      };
+    }, [presentationOnly, stage?.id]);
     const [startingTeaching, setStartingTeaching] = useState(false);
     const startingTeachingRef = useRef(false);
     const [checkpointFeedbackBusy, setCheckpointFeedbackBusy] = useState(false);
@@ -1647,6 +1676,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         // waits for the next generated scene to materialize.
         const hasPlayableActions =
           hasPlayableSceneActions(currentScene) ||
+          (presentationOnly && !!currentScene) ||
           (!presentationOnly && !!liveCourseSessionRef.current && currentScene?.type === 'quiz');
         if (!currentScene || !hasPlayableActions) {
           // The previous engine may still own audio/timers while the new
@@ -1686,8 +1716,21 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         // on a scene's first visit and silently drop every widget action. Looking it
         // up per-send always sees the live registration.
         const sceneIdForWidget = currentScene.id;
-        const widgetSendMessage = (type: string, payload: Record<string, unknown>) =>
-          useWidgetIframeStore.getState().getSendMessage(sceneIdForWidget)?.(type, payload);
+        const widgetSendMessage = (
+          type: string,
+          payload: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ) => {
+          if (
+            presentationOnly &&
+            type !== 'HIGHLIGHT_ELEMENT' &&
+            type !== 'REVEAL_ELEMENT' &&
+            type !== 'ANNOTATE_ELEMENT'
+          ) {
+            return;
+          }
+          return sendWidgetMessage(sceneIdForWidget, type, payload, options);
+        };
 
         // Create ActionEngine for playback (with audioPlayer for TTS and widget messaging)
         const actionEngine = new ActionEngine(
@@ -1764,8 +1807,38 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
               }
             : currentScene;
         engine = new PlaybackEngine([teachingScene], actionEngine, audioPlayerRef.current, {
-          ...(!presentationOnly && liveCourseSessionRef.current
-            ? { speak: speakClassroomText }
+          // Empty replay checkpoints use the synthetic visual dwell, not a speech turn.
+          ...(liveCourseSessionRef.current || (presentationOnly && currentScene.actions?.length)
+            ? {
+                speak: speakClassroomText,
+                ...(!presentationOnly &&
+                shouldBindOralQuestionPort({
+                  relistening: Boolean(relistenRef.current),
+                  classroomState: liveCourseSessionRef.current?.classroomState,
+                })
+                  ? {
+                      question: async (question, signal) => {
+                        if (
+                          !shouldBindOralQuestionPort({
+                            relistening: Boolean(relistenRef.current),
+                            classroomState: liveCourseSessionRef.current?.classroomState,
+                          })
+                        ) {
+                          return;
+                        }
+                        const teacher = teacherSpeechRef.current;
+                        if (!teacher?.question)
+                          throw new Error('Classroom oral questions are unavailable');
+                        signal.throwIfAborted();
+                        await teacher.question(question, {
+                          signal,
+                          hintText: t('livecourse.oralHintRequest'),
+                          resumeText: t('livecourse.oralResumeText'),
+                        });
+                      },
+                    }
+                  : {}),
+              }
             : {}),
           ...(presentationOnly || liveCourseSessionRef.current
             ? { skipRoundtableDiscussion: true }
@@ -1779,7 +1852,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             attempt.activeSpeech = null;
           },
           onError: (error) => {
-            markPlaybackAttemptFailure(attempt, error, 'Teacher speech failed');
+            const failure = markPlaybackAttemptFailure(attempt, error, 'Teacher speech failed');
+            if (failure && presentationOnly) {
+              console.error('[LiveCourseReplay] Playback failed', failure);
+              void replayBridge?.fail?.().catch((cause) => {
+                console.error('[LiveCourseReplay] Could not retain playback failure', cause);
+              });
+            }
           },
           onModeChange: (mode) => {
             if (engineRef.current !== engine || sceneEpochRef.current !== engineEpoch) return;

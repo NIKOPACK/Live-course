@@ -566,6 +566,7 @@ export class PlaybackEngine {
     text: string,
     cursor: { sceneIndex: number; actionIndex: number },
     generation: number,
+    oralQuestion?: SpeechAction['oralQuestion'],
   ): Promise<boolean> {
     const speak = this.callbacks.speak;
     if (!speak) return false;
@@ -586,6 +587,18 @@ export class PlaybackEngine {
       if (!this.isCurrentGeneration(generation) || this.activeSpeech !== activeSpeech) return false;
       this.activeSpeech = null;
       this.callbacks.onSpeechEnd?.();
+      if (!this.isCurrentGeneration(generation)) return false;
+      if (oralQuestion && this.callbacks.question) {
+        const activeAction = { controller: new AbortController(), ...cursor, settled: false };
+        this.activeAction = activeAction;
+        try {
+          await this.callbacks.question(oralQuestion, activeAction.controller.signal);
+        } finally {
+          activeAction.settled = true;
+          if (this.activeAction === activeAction) this.activeAction = null;
+        }
+        if (!this.isCurrentGeneration(generation)) return false;
+      }
       return true;
     } catch (error) {
       this.failTeachingAction(error, cursor, generation);
@@ -686,7 +699,14 @@ export class PlaybackEngine {
       case 'speech': {
         const speechAction = action as SpeechAction;
         if (this.callbacks.speak) {
-          if (await this.playTeacherSpeech(speechAction.text, actionCursor, generation)) {
+          if (
+            await this.playTeacherSpeech(
+              speechAction.text,
+              actionCursor,
+              generation,
+              speechAction.oralQuestion,
+            )
+          ) {
             this.processNext(generation);
           }
           break;

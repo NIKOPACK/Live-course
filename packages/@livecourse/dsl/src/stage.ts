@@ -157,9 +157,8 @@ export interface Stage {
    */
   generatedAgentConfigs?: GeneratedAgentConfig[];
   /**
-   * True when this classroom was generated with Interactive Mode enabled
-   * (the INTERACTIVE_OUTLINES prompt branch).
-   * Absent on legacy classrooms, imports, and regular-mode generations.
+   * Leftover flag from the withdrawn Interactive Mode product switch.
+   * Absent on new HTML classrooms; kept so old documents still load.
    */
   interactiveMode?: boolean;
   /**

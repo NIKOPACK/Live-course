@@ -9,11 +9,7 @@
 import { NextRequest } from 'next/server';
 import { completeLLMText } from '@/lib/ai/llm';
 import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
-import {
-  applyOutlineFallbacks,
-  generateSceneContent,
-  buildVisionUserContent,
-} from '@/lib/generation/generation-pipeline';
+import { generateSceneContent, buildVisionUserContent } from '@/lib/generation/generation-pipeline';
 import type { AgentInfo } from '@/lib/generation/generation-pipeline';
 import type {
   SceneOutline,
@@ -90,10 +86,10 @@ export async function POST(req: NextRequest) {
 
     const outline: SceneOutline = { ...rawOutline };
     const presentationResult = lessonPresentationSchema.safeParse(rawPresentation);
-    if (rawPresentation !== undefined && !presentationResult.success) {
-      return apiError('INVALID_REQUEST', 400, 'Invalid classroom presentation');
+    if (!presentationResult.success) {
+      return apiError('INVALID_REQUEST', 400, 'HTML classroom visual direction is required');
     }
-    const presentation = presentationResult.success ? presentationResult.data : undefined;
+    const presentation = presentationResult.data;
 
     // ── Model resolution from request headers/body ──
     // Route per scene-content type (e.g. `scene-content:quiz`); getStageModel
@@ -156,11 +152,7 @@ export async function POST(req: NextRequest) {
 
     // ── Apply fallbacks ──
     const vocationalActive = resolveVocationalActive(requirements);
-    const effectiveOutline = presentation
-      ? outline
-      : applyOutlineFallbacks(outline, !!languageModel, {
-          allowProceduralSkill: vocationalActive,
-        });
+    const effectiveOutline = outline;
 
     // ── Filter images assigned to this outline ──
     let assignedImages: PdfImage[] | undefined;

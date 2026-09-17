@@ -74,16 +74,9 @@ describe('media prompt condition wiring', () => {
       ],
     };
 
-    const result = await generateSceneContent(outline, aiCall);
-
-    expect(result).not.toBeNull();
-    expect(capturedPrompt).toContain('VideoElement');
-    expect(capturedPrompt).toContain('mediaRef');
-    expect(capturedPrompt).toContain('gen_vid_unique1');
-    expect(capturedPrompt).not.toContain('"src": "gen_vid_1"');
-    expect(capturedPrompt).not.toContain('ImageElement');
-    expect(capturedPrompt).not.toContain('gen_img_');
-    expect(capturedPrompt).not.toContain('{{');
+    await expect(generateSceneContent(outline, aiCall)).rejects.toMatchObject({
+      name: 'ClassroomHtmlRequiredError',
+    });
   });
 });
 

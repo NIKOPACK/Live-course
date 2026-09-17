@@ -25,6 +25,8 @@
  *     with a typed validation error.
  */
 import { z } from 'zod';
+import type { Scene } from '@/lib/types/stage';
+import { bindLessonNodesToGeneratedScenes } from '@/lib/livecourse/domain/lesson-plan';
 
 import {
   assistantTaskSnapshotSchema,
@@ -95,6 +97,14 @@ export const courseLifecycleSchema = z
   .object({
     status: z.enum(['in_progress', 'archived']),
     updatedAt: z.string().datetime({ offset: true }),
+    finalization: z
+      .object({
+        version: z.literal(1),
+        idempotencyKey: z.string().trim().min(1).max(240),
+        phase: z.enum(['pending', 'memory-finalized']),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -563,7 +573,10 @@ export interface CourseEntryProjection {
   resumeNodeId: string | null;
 }
 
-export function resolveCourseEntry(snapshot: CourseStateSnapshot): CourseEntryProjection {
+export function resolveCourseEntry(
+  snapshot: CourseStateSnapshot,
+  scenes: readonly Scene[] = [],
+): CourseEntryProjection {
   const parsed = parseCourseStateSnapshot(snapshot);
   const status = parsed.lifecycle?.status ?? 'in_progress';
   const lesson = parsed.coursePlan.lessons.find((candidate) => candidate.id === parsed.lessonId);
@@ -571,11 +584,13 @@ export function resolveCourseEntry(snapshot: CourseStateSnapshot): CourseEntryPr
   const lessonNodeIds = lesson ? lesson.nodes.map((node) => node.id) : [];
   const taughtNodeIds =
     status === 'archived' ? lessonNodeIds : (parsed.progress?.completedNodeIds ?? []);
+  const boundNodes = lesson ? bindLessonNodesToGeneratedScenes(lesson.nodes, scenes) : [];
+  const boundIds = new Map(lesson?.nodes.map((node, index) => [node.id, boundNodes[index].id]));
   return {
     status,
     canContinue: status !== 'archived',
     canReplay: taughtNodeIds.length > 0,
-    taughtNodeIds,
+    taughtNodeIds: taughtNodeIds.map((id) => boundIds.get(id) ?? id),
     resumeNodeId: parsed.teachingActions.currentNodeId,
   };
 }

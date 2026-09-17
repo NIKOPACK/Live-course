@@ -73,14 +73,6 @@ export function resolveVocationalActive(
 }
 
 /**
- * Optional client-only affordance for exposing the experimental vocational
- * test toggle. This is not a security or routing gate.
- */
-export function shouldShowVocationalTestUi(): boolean {
-  return readBoolean(process.env.NEXT_PUBLIC_SHOW_VOCATIONAL_TEST_UI);
-}
-
-/**
  * Experimental classroom video export (Hyperframes composition ZIP, #865).
  * Default OFF — gates only the "Export Video" affordance in the export menu.
  * The emitter/compiler code paths are unaffected; this hides the UI entry

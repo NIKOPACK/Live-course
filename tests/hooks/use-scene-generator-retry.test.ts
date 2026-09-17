@@ -77,6 +77,7 @@ const retryOptions = {
   sleep: async () => undefined,
   random: () => 0,
 };
+const presentation = { mode: 'html' as const, visualStyle: 'Teal diagrams on paper.' };
 
 function jsonResponse(status: number, body: unknown) {
   return {
@@ -133,7 +134,6 @@ describe('browser scene generation retry wrappers', () => {
       .mockResolvedValueOnce(jsonResponse(429, { error: 'rate limited' }))
       .mockResolvedValueOnce(jsonResponse(200, { success: true, content: { elements: [] } }));
 
-    const presentation = { mode: 'html' as const, visualStyle: 'Teal diagrams on paper.' };
     const result = await fetchSceneContent(
       {
         outline,
@@ -188,6 +188,7 @@ describe('browser scene generation retry wrappers', () => {
         allOutlines: [outline],
         stageId: 'stage-1',
         stageInfo: { name: 'Retry Course' },
+        presentation,
       },
       undefined,
       { ...retryOptions, maxRetries: 0 },
@@ -216,6 +217,7 @@ describe('browser scene generation retry wrappers', () => {
         allOutlines: [outline],
         stageId: 'stage-1',
         stageInfo: { name: 'Retry Course' },
+        presentation,
       },
       undefined,
       { ...retryOptions, maxRetries: 0 },
@@ -240,6 +242,7 @@ describe('browser scene generation retry wrappers', () => {
           allOutlines: [outline],
           stageId: 'stage-1',
           stageInfo: { name: 'Retry Course' },
+          presentation,
         },
         undefined,
         retryOptions,

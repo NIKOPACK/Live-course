@@ -18,6 +18,12 @@ import type { AssistantTask } from '@/lib/livecourse/domain';
 
 import { RealtimeAudioBridge } from './audio-bridge';
 import type { TeacherSpeechPort } from './teacher-speech';
+import {
+  OralQuestionSession,
+  type OralQuestionOptions,
+  type OralQuestionState,
+} from './oral-question';
+import type { OralQuestion } from '@/lib/livecourse/domain/schemas';
 
 export type RealtimeTeacherStatus =
   | 'idle'
@@ -28,6 +34,7 @@ export type RealtimeTeacherStatus =
   | 'closed';
 
 export type RealtimeTeacherEvent =
+  | { type: 'oral_question'; state: OralQuestionState | null }
   | { type: 'status'; status: RealtimeTeacherStatus }
   | { type: 'audio_start' }
   | { type: 'audio_stopped' }
@@ -310,7 +317,7 @@ function createRealtimeTools(
 
 interface SpeechTurn {
   token: string;
-  kind: 'narration' | 'answer';
+  kind: 'narration' | 'answer' | 'oral-answer';
   generation: number;
   responseId: string | null;
   audioStarted: boolean;
@@ -355,6 +362,10 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
   readonly #cancelledTokens = new Set<string>();
   readonly #cancelledResponseIds = new Set<string>();
   #microphoneItemId: string | null = null;
+  #oralQuestion: OralQuestionSession | null = null;
+  #oralReleased: Promise<void> = Promise.resolve();
+  #learnerMuted = false;
+  #inputEnabled = true;
   #removeAudioErrorListener: (() => void) | null = null;
   #responseBoundary: {
     token: string;
@@ -372,7 +383,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
   }
 
   get muted(): boolean {
-    return this.#session?.muted ?? false;
+    return this.#options.readOnly === true || this.#learnerMuted;
   }
 
   connect(): Promise<void> {
@@ -565,15 +576,18 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
     if (this.#options.readOnly && !muted) throw new Error('Replay microphone cannot be enabled');
     const session = this.#session;
     if (!session) throw new Error('Realtime teacher is not connected');
-    session.mute(muted);
+    this.#learnerMuted = muted;
+    session.mute(muted || !this.#inputEnabled);
     this.#emit({ type: 'muted', muted });
   }
 
-  speak(text: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+  async speak(text: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+    if (this.#oralQuestion?.closed) await this.#oralReleased;
     return this.#requestSpeech('narration', text, options.signal);
   }
 
   async ask(text: string): Promise<void> {
+    if (this.#oralQuestion) return this.#oralQuestion.answer(text);
     if (!text.trim()) throw new Error('A classroom question cannot be empty');
     this.#requireSession();
     if (!this.#beginLearnerTurn()) throw new Error('Classroom questions are not available now');
@@ -582,6 +596,71 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
     await this.#waitForInterruption();
     if (generation !== this.#responseGeneration) throw speechAbortError();
     await this.#requestSpeech('answer', text);
+  }
+
+  async question(question: OralQuestion, options: OralQuestionOptions): Promise<void> {
+    if (this.#options.readOnly || this.#oralQuestion)
+      throw new Error('Oral question is unavailable');
+    const session = this.#requireSession();
+    const oral = new OralQuestionSession(
+      question,
+      {
+        speak: (text, signal) => this.speak(text, { signal }),
+        respond: (text, signal, native) => this.#requestSpeech('oral-answer', text, signal, native),
+        updateInstructions: async () => {
+          this.#requireSession();
+        },
+        setListening: (enabled) => {
+          this.#inputEnabled = enabled;
+          this.#session?.mute(this.#learnerMuted || !enabled);
+        },
+        cancel: async () => {
+          for (const turn of this.#turns.values()) this.#failTurn(turn, speechAbortError());
+        },
+        manualMicrophoneResponse: true,
+        onState: (state) => this.#emit({ type: 'oral_question', state }),
+      },
+      options,
+    );
+    let release!: () => void;
+    this.#oralReleased = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#oralQuestion = oral;
+    try {
+      await oral.run();
+    } finally {
+      this.#microphoneItemId = null;
+      this.#inputEnabled = true;
+      try {
+        if (this.#session === session && !this.#closing) {
+          session.mute(this.#learnerMuted);
+          session.transport.updateSessionConfig({
+            ...this.#sessionConfig,
+            instructions: buildAgentInstructions(this.#options.getTeachingContext()),
+          });
+        }
+      } finally {
+        this.#oralQuestion = null;
+        this.#emit({ type: 'oral_question', state: null });
+        release();
+      }
+    }
+  }
+
+  hintOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().hint();
+  }
+  retryOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().retry();
+  }
+  endOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().end();
+  }
+
+  #requireOralQuestion(): OralQuestionSession {
+    if (!this.#oralQuestion) throw new Error('No oral question is active');
+    return this.#oralQuestion;
   }
 
   #requireSession(): RealtimeSession {
@@ -653,7 +732,10 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
       if (kind === 'answer' && this.#options.canInterrupt?.() === false) {
         throw new Error('Classroom questions are not available now');
       }
-      const context = buildAgentInstructions(this.#options.getTeachingContext());
+      const oralInstructions =
+        kind === 'oral-answer' ? this.#requireOralQuestion().instructions : null;
+      const context =
+        oralInstructions ?? buildAgentInstructions(this.#options.getTeachingContext());
       // The SDK merges updates with its defaults, not the live session.
       // Retain voice/transcription/manual VAD on every context refresh.
       session.transport.updateSessionConfig({ ...this.#sessionConfig, instructions: context });
@@ -664,11 +746,13 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
               'Read the supplied lesson script faithfully, in its current language. Do not summarize, add commentary, answer it as a question, call tools, or navigate.',
               `Lesson script:\n${text}`,
             ].join('\n')
-          : [
-              context,
-              `Confirm the learner's question, answer it, then explicitly return to the original node ${this.#resumeNodeId}. Do not advance the lesson.`,
-            ].join('\n');
-      if (kind === 'answer' && !inputRecorded) {
+          : kind === 'oral-answer'
+            ? (oralInstructions ?? this.#requireOralQuestion().instructions)
+            : [
+                context,
+                `Confirm the learner's question, answer it, then explicitly return to the original node ${this.#resumeNodeId}. Do not advance the lesson.`,
+              ].join('\n');
+      if ((kind === 'answer' || kind === 'oral-answer') && !inputRecorded) {
         session.transport.sendMessage(text, {}, { triggerResponse: false });
       }
       let release!: () => void;
@@ -773,6 +857,11 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
   }
 
   #beginLearnerTurn(itemId: string | null = null): boolean {
+    if (this.#oralQuestion) {
+      const accepted = !this.#learnerMuted && this.#oralQuestion.nativeStarted();
+      if (accepted) this.#microphoneItemId = itemId;
+      return accepted;
+    }
     if (this.#options.readOnly || this.#options.canInterrupt?.() === false) {
       this.#microphoneItemId = null;
       return false;
@@ -824,6 +913,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
 
   async #close(): Promise<void> {
     this.#closing = true;
+    this.#oralQuestion?.cancel(new Error('Realtime teacher connection was closed'));
     // Invalidate any in-flight handshake. Its late continuation is required
     // to close its own transport instead of attaching it to this instance.
     this.#connectionGeneration += 1;
@@ -1035,6 +1125,11 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
           typeof details.error?.message === 'string' && details.error.message.trim().length > 0
             ? details.error.message
             : 'Realtime speech recognition failed';
+        if (this.#oralQuestion) {
+          this.#oralQuestion.nativeFailed(new Error(message));
+          this.#microphoneItemId = null;
+          return;
+        }
         this.#emit({
           type: 'recognition_failed',
           error: new Error(message),
@@ -1053,6 +1148,10 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
       ) {
         this.#microphoneItemId = null;
         const text = extractTransportEventText(event);
+        if (this.#oralQuestion) {
+          this.#oralQuestion.nativeTranscript(text);
+          return;
+        }
         if (!text.trim()) {
           this.#emit({
             type: 'recognition_failed',
@@ -1128,6 +1227,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
       this.#invalidateAnswer();
       this.#releaseResponseBoundary();
       this.#connectionGeneration += 1;
+      this.#oralQuestion?.cancel(new Error('Realtime teacher transport disconnected'));
       this.#session = null;
       this.#sessionConfig = null;
       this.#connectPromise = null;
@@ -1411,6 +1511,9 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
   }
 
   #emit(event: RealtimeTeacherEvent): void {
+    if (event.type === 'transcript' && event.speaker === 'teacher') {
+      this.#oralQuestion?.teacherTranscript(event.text);
+    }
     this.#options.onEvent?.(event);
   }
 }

@@ -54,12 +54,14 @@ describe('HTML lesson preparation route', () => {
     expect(mocks.designLegacy).not.toHaveBeenCalled();
   });
 
-  it('preserves legacy plan-only callers and their existing graceful degradation', async () => {
-    mocks.designLegacy.mockResolvedValue(null);
+  it('always uses the HTML designer even when the caller omits htmlPresentation', async () => {
+    const plan = { presentation: { mode: 'html', visualStyle: 'Teal diagrams on warm paper.' } };
+    mocks.designHtml.mockResolvedValue(plan);
     const response = await POST(request());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ success: true, lessonPlan: null });
-    expect(mocks.designHtml).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ success: true, lessonPlan: plan });
+    expect(mocks.designLegacy).not.toHaveBeenCalled();
+    expect(mocks.designHtml).toHaveBeenCalled();
   });
 
   it('forwards an abort signal so a refresh can cancel the in-flight design', async () => {

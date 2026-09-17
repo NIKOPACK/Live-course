@@ -47,6 +47,8 @@ export interface LaserAction extends ActionBase {
 export interface SpeechAction extends ActionBase {
   type: 'speech';
   text: string;
+  /** Optional formative dialogue after this sentence; replay reads only the sentence. */
+  oralQuestion?: { question: string; guidance: string };
   /**
    * An asset reference for narration audio. Legacy documents and TTS paths also store TTS-derived
    * ids here; such values are foreign to the asset pool and are addressed by later delivery-plan

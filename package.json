@@ -76,9 +76,7 @@
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@streamdown/code": "^1.1.1",
     "@types/js-yaml": "^4.0.9",
-    "@xyflow/react": "^12.10.0",
     "ai": "^6.0.168",
-    "animate.css": "^4.1.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -147,6 +145,7 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.3.16",
     "@playwright/test": "^1.58.2",
     "@rollup/plugin-commonjs": "^28.0.1",
     "@rollup/plugin-node-resolve": "^16.0.1",
@@ -174,8 +173,7 @@
     "tslib": "^2.8.0",
     "tsx": "^4.21.0",
     "typescript": "^5",
-    "vitest": "^4.1.8",
-    "vue-to-react": "^1.0.0"
+    "vitest": "^4.1.8"
   },
   "pnpm": {
     "ignoredBuiltDependencies": [

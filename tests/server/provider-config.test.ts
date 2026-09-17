@@ -411,7 +411,6 @@ providers:
       expect(resolveWebSearchBaseUrl('zhihu')).toBe('https://developer.zhihu.com');
       expect(getServerWebSearchProviders().zhihu).toEqual({});
     });
-
   });
 
   describe('baseUrl-only providers (e.g. mineru)', () => {
@@ -679,7 +678,7 @@ pdf:
 
     it('does not treat an OpenAI-compatible LLM gateway as OpenAI Realtime', async () => {
       vi.stubEnv('OPENAI_API_KEY', 'sk-gateway');
-      vi.stubEnv('OPENAI_BASE_URL', 'https://api.openai-next.com/v1');
+      vi.stubEnv('OPENAI_BASE_URL', 'https://gateway.example.com/v1');
       vi.stubEnv('VOLCENGINE_REALTIME_API_KEY', 'ark-server');
       const { getServerRealtimeProviders } = await import('@/lib/server/provider-config');
       expect(getServerRealtimeProviders()).toEqual({ volc: {} });

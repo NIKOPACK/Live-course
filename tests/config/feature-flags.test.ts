@@ -9,7 +9,6 @@ import {
   isVideoExportEnabled,
   isVocationalTaskEngineEnabled,
   resolveVocationalActive,
-  shouldShowVocationalTestUi,
 } from '@/lib/config/feature-flags';
 
 describe('isLiveCourseTTSEnabled', () => {
@@ -225,36 +224,6 @@ describe('isVocationalTaskEngineEnabled', () => {
 
     process.env[flag] = 'false';
     expect(resolveVocationalActive({ taskEngineMode: true })).toBe(false);
-  });
-});
-
-describe('shouldShowVocationalTestUi', () => {
-  const flag = 'NEXT_PUBLIC_SHOW_VOCATIONAL_TEST_UI';
-  let original: string | undefined;
-
-  beforeEach(() => {
-    original = process.env[flag];
-  });
-
-  afterEach(() => {
-    if (original === undefined) {
-      delete process.env[flag];
-    } else {
-      process.env[flag] = original;
-    }
-  });
-
-  it('defaults off when unset', () => {
-    delete process.env[flag];
-    expect(shouldShowVocationalTestUi()).toBe(false);
-  });
-
-  it("returns true for 'true' and '1'", () => {
-    process.env[flag] = 'true';
-    expect(shouldShowVocationalTestUi()).toBe(true);
-
-    process.env[flag] = '1';
-    expect(shouldShowVocationalTestUi()).toBe(true);
   });
 });
 

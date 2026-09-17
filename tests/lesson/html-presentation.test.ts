@@ -50,16 +50,28 @@ const input = {
 
 describe('main-agent HTML visual direction', () => {
   it('decides one shared style before node workers and persists it in the plan', async () => {
+    const plannedDesign = {
+      ...design,
+      oralQuestion: {
+        question: 'Why does the rate change?',
+        guidance: 'Consider the local slope.',
+      },
+    };
     const aiCall = vi
       .fn()
       .mockResolvedValueOnce(JSON.stringify({ visualStyle: presentation.visualStyle }))
-      .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
+      .mockResolvedValueOnce(
+        JSON.stringify({ nodes: [{ sceneId: outline.id, design: plannedDesign }] }),
+      );
     const plan = await designHtmlLessonPlan(input, runtime, aiCall);
     expect(aiCall).toHaveBeenCalledTimes(2);
     expect(aiCall.mock.calls[0][0]).toContain('main agent');
     expect(aiCall.mock.calls[1][1]).toContain(presentation.visualStyle);
     expect(plan.presentation).toEqual(presentation);
-    expect(plan.nodes[0].design).toEqual(design);
+    expect(plan.nodes[0].design).toEqual(plannedDesign);
+    expect(lessonPlanSchema.parse(JSON.parse(JSON.stringify(plan))).nodes[0].design).toEqual(
+      plannedDesign,
+    );
     expect(lessonPlanSchema.parse(JSON.parse(JSON.stringify(plan))).presentation).toEqual(
       presentation,
     );
@@ -84,6 +96,71 @@ describe('main-agent HTML visual direction', () => {
 });
 
 describe('model-authored classroom pages', () => {
+  it('rejects invalid oral metadata before generation and requires narration after the trigger', async () => {
+    const oralQuestion = {
+      question: 'Why does the rate change?',
+      guidance: 'Reason about the slope.',
+    };
+    const content = await generateSceneContent(outline, vi.fn().mockResolvedValue(html), {
+      presentation,
+      lessonNodeDesign: { ...design, oralQuestion },
+    });
+    if (!content || !('htmlPresentation' in content)) throw new Error('Expected an HTML lesson');
+    const aiCall = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+        { type: 'text', content: 'Only one sentence.' },
+      ]),
+    );
+    await expect(generateSceneActions(outline, content, aiCall)).rejects.toMatchObject({
+      isRetryable: true,
+    });
+    aiCall.mockClear();
+    await expect(
+      generateSceneActions(
+        outline,
+        { ...content, oralQuestion: { ...oralQuestion, question: '' } },
+        aiCall,
+      ),
+    ).rejects.toThrow();
+    expect(aiCall).not.toHaveBeenCalled();
+  });
+  it('preserves a planned oral question and binds it to one middle narration beat', async () => {
+    const oralQuestion = {
+      question: 'Why does the slope change?',
+      guidance: 'Look at the local rate.',
+    };
+    const content = await generateSceneContent(outline, vi.fn().mockResolvedValue(html), {
+      presentation,
+      lessonNodeDesign: { ...design, oralQuestion },
+    });
+    expect(content).toMatchObject({ oralQuestion });
+    const aiCall = vi.fn().mockResolvedValue(
+      JSON.stringify(
+        ['first', 'second', 'third', 'fourth'].flatMap((text) => [
+          { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+          { type: 'text', content: text },
+        ]),
+      ),
+    );
+    const actions = await generateSceneActions(outline, content!, aiCall);
+    const speeches = actions.filter((action) => action.type === 'speech');
+    expect(speeches.map((action) => action.oralQuestion)).toEqual([
+      undefined,
+      oralQuestion,
+      undefined,
+      undefined,
+    ]);
+    expect(aiCall.mock.calls[0][1]).toContain(oralQuestion.question);
+    expect(aiCall.mock.calls[0][1]).not.toContain(oralQuestion.guidance);
+    const saved = buildCompleteScene(outline, content!, actions, 'stage');
+    expect(saved?.actions).toEqual(actions);
+    expect(
+      JSON.parse(JSON.stringify(saved)).actions.filter(
+        (action: { type: string }) => action.type === 'speech',
+      )[1],
+    ).toMatchObject({ oralQuestion });
+  });
   it('persists HTML in the server scene constructor for lecture and checkpoint pages', () => {
     const state: ReturnType<StageStore['getState']> = {
       stage: { id: 'stage', name: 'Derivatives', createdAt: 1, updatedAt: 1 },
@@ -96,7 +173,16 @@ describe('model-authored classroom pages', () => {
       setState: (partial) => Object.assign(state, partial),
       subscribe: () => () => {},
     });
-    expect(createSceneWithActions(outline, { html, htmlPresentation: true }, [], api)).toBeTruthy();
+    const oralSpeech = {
+      id: 'oral-speech',
+      type: 'speech' as const,
+      text: 'A local rate.',
+      oralQuestion: { question: 'Why?', guidance: 'Consider local changes.' },
+    };
+    expect(
+      createSceneWithActions(outline, { html, htmlPresentation: true }, [oralSpeech], api),
+    ).toBeTruthy();
+    expect(state.scenes[0].actions).toEqual([oralSpeech]);
     expect(
       createSceneWithActions(
         { ...outline, id: 'check', type: 'quiz' },
@@ -203,14 +289,15 @@ describe('model-authored classroom pages', () => {
   it('teaches the actual HTML rather than generating a generic widget introduction', async () => {
     const aiCall = vi.fn().mockResolvedValue(
       JSON.stringify([
-        { type: 'text', content: 'The secant slope approaches the tangent slope.' },
         { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+        { type: 'text', content: 'The secant slope approaches the tangent slope.' },
       ]),
     );
     const actions = await generateSceneActions(outline, { html, htmlPresentation: true }, aiCall);
     expect(aiCall.mock.calls[0][1]).toContain(html);
     expect(aiCall.mock.calls[0][0]).not.toContain('3-8');
     expect(actions.some((action) => action.type === 'speech')).toBe(true);
+    expect(actions.map((action) => action.type)).toEqual(['widget_highlight', 'speech']);
     await expect(
       generateSceneActions(
         outline,
@@ -218,6 +305,92 @@ describe('model-authored classroom pages', () => {
         vi.fn().mockResolvedValue('[]'),
       ),
     ).rejects.toThrow('No teacher narration');
+  });
+
+  it('interleaves real visual targets with every teaching beat', async () => {
+    const page = html.replace('<p>', '<p id="example" hidden>');
+    const aiCall = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+        { type: 'text', content: 'Start with the secant.' },
+        { type: 'action', name: 'widget_reveal', params: { target: '#example' } },
+        { type: 'action', name: 'widget_highlight', params: { target: '#example' } },
+        { type: 'text', content: 'Now take the limit.' },
+      ]),
+    );
+    const actions = await generateSceneActions(
+      outline,
+      { html: page, htmlPresentation: true },
+      aiCall,
+    );
+    expect(actions.map((action) => action.type)).toEqual([
+      'widget_highlight',
+      'speech',
+      'widget_reveal',
+      'widget_highlight',
+      'speech',
+    ]);
+    expect(aiCall.mock.calls[0][0]).toContain('BEFORE EVERY');
+    expect(aiCall.mock.calls[0][1]).toContain('Real element inventory:');
+    expect(aiCall.mock.calls[0][1]).toContain('#example <p>');
+  });
+
+  it.each([
+    [{ type: 'text', content: 'Speech without a visual cue.' }],
+    [
+      { type: 'text', content: 'Too late to highlight.' },
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+    ],
+    [
+      { type: 'action', name: 'widget_highlight', params: { target: '#invented' } },
+      { type: 'text', content: 'Unknown element.' },
+    ],
+    [
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+      { type: 'text', content: 'First beat.' },
+      { type: 'text', content: 'Second beat has no cue.' },
+    ],
+    [
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+      { type: 'text', content: 'First beat.' },
+      { type: 'action', name: 'widget_reveal', params: { target: '#slope' } },
+    ],
+    [
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+      { type: 'text', content: 'Do not batch every focus before a single long narration.' },
+    ],
+  ])(
+    'rejects unsynchronized action sequences as retryable generation failures: %j',
+    async (...items) => {
+      await expect(
+        generateSceneActions(
+          outline,
+          { html, htmlPresentation: true },
+          vi.fn().mockResolvedValue(JSON.stringify(items)),
+        ),
+      ).rejects.toMatchObject({ name: 'ClassroomHtmlActionsError', isRetryable: true });
+    },
+  );
+
+  it('does not validate targets found only in scripts or comments', async () => {
+    const page = html.replace(
+      '</body>',
+      '<!-- <p id="fake"> -->' +
+        '<script>const markup = \'<div id="fake"></div>\';</script></body>',
+    );
+    await expect(
+      generateSceneActions(
+        outline,
+        { html: page, htmlPresentation: true },
+        vi.fn().mockResolvedValue(
+          JSON.stringify([
+            { type: 'action', name: 'widget_highlight', params: { target: '#fake' } },
+            { type: 'text', content: 'Not a real teaching region.' },
+          ]),
+        ),
+      ),
+    ).rejects.toThrow('Unknown HTML teaching target');
   });
 
   it('accepts a fenced complete document, but rejects truncated and empty pages', () => {

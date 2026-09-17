@@ -18,18 +18,35 @@
 - 才新写（A2）：课堂状态机明确 `loading / teaching / interrupted / checking / paused / replaying / completed / finalizing / failed`；失败保持原状态和恢复点，不推进节点。必要检查未产生有效证据时不得迁移到 `completed`
 - 才新写（A2）：新增权威、类型化、幂等的节点讲授完成事件 schema `lesson.complete_node`（**现有 schema 尚无此事件，A2 才新写，不得假称沿用**），至少携带稳定 idempotency key、`classroomSessionId`、`courseId`、`nodeId` 与已成功结束的 speech / action 引用。只有教师 speech 与 action 都报告成功结束后，控制器才可提交；媒体播放到达或加载回调无权提交
 - 才新写（A2）：`lesson.complete_node` 去重后先更新 `W`，并由同一协调器立即持久化 `C.completedNode / C.progress`。该事件不创建 `EvidenceRecord`、不投影 `GoalState`、不表示掌握。最后一个必需讲授节点提交成功，或最后一个必要检查已有有效 evidence，且它补齐最后尚缺的必需动作时，唯一迁移为 `completed → finalizing → J4.1`
+  - 完成事件已持久化而完成门读取失败时，同 key 重试仍重评完成门；新协调器加载持久化完成进度后也恢复该门，不重复写完成事件或进度。暂停 / 重听期间仍沿用原状态门禁。
 - 才新写（A2）：提交答案、重试节点、暂停 / 继续、`saveAndLeaveSession` 与 `finalizeSession` 带稳定 idempotency key。判分重试复用同一次提交，`EvidenceRecord` 只 append 一次；重听和媒体重试永不产生 evidence
 - 才新写（A2）：未完成课堂只由「暂时离开课堂」调用幂等 `saveAndLeaveSession`：显示保存中，成功时严格先写 `C` 恢复点、再销毁 `W`、最后导航首页；任一步保存失败都留在课堂可重试。浏览器 / 标签卸载只允许 best-effort 保存，不算成功状态迁移
 - 才新写（A2）：唯一 `finalizeSession` 在进入 `finalizing` 后幂等归档 `W → C`、把合法 learner-only candidate 经 policy 写 `L`；全部成功后才销毁 `W` 并进入课后选择。失败停在 `finalizing`、保留 `W` 与待归档状态并显示重试。J4.3「离开」仅导航，不得再次调用保存 / 归档 / 销毁
+  - C 的可选 `lifecycle.finalization` 使用 `version: 1`，保存固定归档 key 与 `pending / memory-finalized` 阶段；归档先写 pending，C/L 全部完成后先持久化 memory-finalized，再清理 action W 与 working-memory W。阶段确认版本不算再次归档，销毁 W 后不再尝试必要的 C/L 或阶段写入；阶段确认失败后重试沿用原归档时间，避免重复刷新同一 learner 贡献的时间戳。
+  - 重新打开课堂时校验原归档身份并检查两份 teaching W，不计 replay W。memory-finalized 且两份 W 都缺席才进入课后；残留 W 或 pending 只恢复同一 finalizing，不挂载教学 Stage、不启动教学动作。旧 archived 无阶段字段也必须定位原 W 并确认两份都缺席；未知原归档身份、读取失败或恢复资料缺失均显示可重试错误，不静默当作完成。
+  - 上述归档恢复仅属于普通课堂入口；`?replay=1` 与 replaySession 遇到未完成归档必须加载失败并允许返回原选择态，不得转为教学 / finalization，不写 C/L，也不创建 teaching W。
 - 才新写（A2）：首页同课「继续」是 teaching 恢复生命周期且只对未完成 `C` 可用：加载同一 `C + L` 成功后新建 teaching `W` 并恢复持久化未完成位置，绝不恢复旧 `W`。加载失败留在首页同课选择态，不新建课程，也不得退化为 replay；已完成 `C` 拒绝「继续」
 - 才新写（A2）：首页同课与课后「再听」共用一个独立 `replaySession` 生命周期。每次加载同一 `C + L` 后新建 replay `W`，播放范围严格取 `C` 中持久化的已讲范围（完成课即全课），并允许暂停 / 继续 /「结束重听」；加载失败留在发起入口的选择态，播放失败保留 replay `W` 的当前回放位置并可重试。自然结束或「结束重听」只销毁 replay `W`，按入口返回首页同课选择态或课后选择态。它不恢复旧 `W`、不调用 `finalizeSession`、不写 `C / L`、不新增 `EvidenceRecord`、不重判 `GoalState`
+  - replay 在读取 C 范围后复用教案的 outline→生成 scene 绑定，把整段播放范围、导航与播放完成握手统一为生成场景节点 ID；已完成课含检查节点，未完成课不扩大持久化已讲范围。映射仅为读侧投影，不回写 C 或原教案。
+  - 引擎启动确认后发生的语音或视觉动作失败仍须通知 replay 控制器，界面切换为可重试失败态，不得继续显示正在播放；暂停、继续、重试及其补偿事务保留各控制器方法的实例绑定。
+  - 没有讲授动作的 replay 检查页沿用展示停留后自然推进，不把合成的空白停留动作发送给实时语音；有讲稿的节点仍等待真实语音结束。
 - 改角色：插话先冻结 `resumeNode`，识别失败只提示重说；教师确认、回答后显式派发恢复命令。课中重听结束回到进入回放前的位置，不改变原教学序列
 - 改角色（A2 闭环修复）：`lib/playback/engine.ts` 接收可取消的真实语音播放端口；课堂的每条 speech 交给 `LiveCourseRealtimeSession`，只在对应响应成功且音频实际结束后发出 speech end。暂停 / 插话取消未讲完语句并保留游标，恢复重新讲该语句；连接、生成、播放失败均显式报错，禁止回退到阅读计时器。普通非教学播放器保留原行为
 - 才新写（A2 闭环修复）：`lib/livecourse/realtime/client/teacher-speech.ts` 定义课堂语音端口，复用现有 Realtime transport，不新增 ASR / TTS。显式讲稿、文字问题、自然语音共用单一会话；每次响应更新当前节点上下文。文字问题与麦克风共用插话事务，取消的讲稿不得冒充回答结束；等待作答时不要求存在正在播放的讲稿
+- 改角色（J3.2 便捷提问）：`RealtimeTeacherControls.tsx` 增加快捷追问填入及选文引用预览 / 移除，仍显式调用原教师 `ask`，不新建问答或判分通道。`teacher-bridge.ts` 只投影正文选区（不读取输入控件 / contenteditable 草稿）；`InteractiveIframeHost.tsx` 校验消息来源、当前页面所有权、交互权限与 500 字上限，再写 `lib/livecourse/html/question-context.ts` 的临时引用。引用按 scene 隔离并随切页 / 回放 / 卸载清除；发送成功只消费本次引用，不清掉后来选中的内容；连接后重新核对节点与可提问状态。草稿不持久化，不写课堂动作或学习证据。
 - 改角色（A2 闭环修复）：课堂壳在节点完成后自动推进，检查节点等待显式提交；不依赖旧圆桌的 `autoPlayLecture`。检查点经已注册的教师反馈端口先完成语音反馈，再完成提交迁移；重试复用已评分结果与 attempt identity，最后检查反馈前不得 finalization。答错补讲取本题解释与当前教案，不直接修改掌握投影。课中重听借用同一真实语音端口，结束显式恢复原位置，不提交讲授完成或检查证据
+  - Volc 普通讲稿 / 回答同样必须有有效 PCM 且全部音源实际结束；取消音频事件不得充当回答完成，插话恢复等待冻结事务提交，失败保留原恢复点；普通连接跨节点使用最新 instructions。独立 replay 复用 receive-only 语音端口，不采集麦克风、不提供提问或课堂工具。
 - 才新写（A2 闭环修复）：`lib/livecourse/session/teaching-flow.ts` 统一节点后继、检查反馈与提交去重。检查完成只表示已显式提交且有有效评分：客观评分 accepted 或模型评分 pending_review 均可证明完成本次检查；后者保留 model provenance 和 pending_review，不因此成为 accepted 掌握证据、不伪造人工审核。`GoalState` 仍只由原证据规则投影
 
 完成：新课上课时只有教师音频与动作日志；插话后 `resumeNode` 回到原节点；失败不推进。讲授完成、未完成离开、finalization 与 replay 均走各自唯一的类型化幂等边界，`C` 进度及时持久化，且判分 / 重试 / 重听不重复证据。
+
+### J3.2a 口头问答实现缝
+
+- 才新写：教案 design 的可选 `oralQuestion { question, guidance }`；生成时绑定到中段 `SpeechAction.oralQuestion`，两条 HTML 生成路径共享该字段。正式检查不附加口头问答。
+- 改角色：PlaybackEngine 在当前句真实音频结束后等待教师口头问答端口；完成前不处理下一动作，不提交节点完成。取消保持当前句游标，replay 不提供问答端口。
+- 才新写：`realtime/client/oral-question.ts` 管理 asking / waiting / listening / responding / failed / ending，最多三个有效回答轮次；提示不计次，沉默不推进，失败重试同轮。问题、临时回答和轮次只在当前播放尝试内存在，不生成证据。
+- 改角色：OpenAI 复用手动 VAD 和转写完成事件，口头答案使用独立的受控回应类型，不触发普通插话的自动恢复。Volc 复用原生双工回应及实际音频结束事件；等待前刷新问题上下文，非等待阶段关闭输入投递，结束恢复原讲课上下文。字幕仍只是展示，只有传输层的最终输入与真实音频边界驱动问答。
+- 改角色：RealtimeTeacherControls 展示问题、阶段、文字回答、提示 / 继续和失败重试；语音及文字使用同一问答实例，防重复回答。课程控制器、判分和掌握投影不变。
 
 ## 2. 名册与画像 — 改角色
 
@@ -69,14 +86,14 @@
 
 接口：`LessonPlan`（目标、节点、检查点 + 每节点讲授设计）。上课读它，不在对话里另记进度。
 
-- 沿用：`lib/livecourse/domain/lesson-plan.ts`、`deriveLessonPlanFromStage`
-- 才新写（A1）：生成在大纲与内容之间写入 LessonPlan。教案设计 Agent 把每条大纲展开成节点讲授设计：`design.teachingPoints`（这个节点具体讲什么）、`design.explanationPlan`（怎么讲：引入、展开、小结）、`design.examples`、`design.anticipatedQuestions`（学生可能的问题与预设回应）、`design.misconceptions`（易错点）。schema 只加可选字段，旧课不受影响
-- 才新写（A1）：教案随文档持久化（`AppDocumentOutline.lessonPlan`）；课堂运行时优先读持久化教案，`deriveLessonPlanFromStage` 只服务旧课导入
+- 沿用：`lib/livecourse/domain/lesson-plan.ts`
+- 才新写（A1）：生成在大纲与内容之间写入 LessonPlan。教案设计 Agent 把每条大纲展开成节点讲授设计：`design.teachingPoints`（这个节点具体讲什么）、`design.explanationPlan`（怎么讲：引入、展开、小结）、`design.examples`、`design.anticipatedQuestions`（学生可能的问题与预设回应）、`design.misconceptions`（易错点）
+- 才新写（A1）：教案随文档持久化（`AppDocumentOutline.lessonPlan`）；课堂运行时只读持久化 HTML 教案，缺 `presentation.mode = html` 时打开失败，不再反推
 - 改角色（A1）：逐段内容生成以教案节点为输入，不再只看大纲条目
-- 才新写（A5）：节点讲授设计增加声明式配图意图 `design.visualAids`（可选）：每项含全局唯一占位 `id`、给图片生成模型的 `prompt`、讲授用途 `purpose`、可选 `aspectRatio`。教案设计 Agent 只为确有需要静态示意图的讲授节点声明配图；schema 仍只加可选字段，旧课不受影响
+- 才新写（A5）：节点讲授设计增加声明式配图意图 `design.visualAids`（可选）：每项含全局唯一占位 `id`、给图片生成模型的 `prompt`、讲授用途 `purpose`、可选 `aspectRatio`。教案设计 Agent 只为确有需要静态示意图的讲授节点声明配图
 - 禁止：平行再写一套课程大纲模型；教案 Agent 与学习者在界面对话（它是台后 worker）；教案侧直接调用图片生成 API（声明与执行分离，执行只走 §7 的既有媒体通道）
 
-完成（S 期）：现有反推教案仍能驱动节点与检查点。完成（A1）：新课先有含讲授设计与预设问答的教案，再有幻灯片；课堂直接读这份教案。
+完成（A1）：每堂课先有含讲授设计、预设问答和 HTML 视觉方向的教案，再有课堂页；课堂只读这份教案。
 
 ## 6. 证据、掌握与多层记忆 — 沿用事实层，A6 才新写记忆层
 
@@ -157,14 +174,15 @@
 ### A5.1 模型原生 HTML 课堂
 
 - 才新写：`lib/livecourse/lesson/html-presentation.ts` 负责主 Agent 的课程级视觉方向与自由 HTML 页面 prompt。教案 schema 增加可选 `presentation: { mode: 'html', visualStyle: string }`；视觉方向以自由文本描述配色、字体、构图、图形语言和动效，不引入另一套模板枚举。先定风格，再让节点 worker 读同一方向。风格失败显式报错；节点设计失败仍可使用真实大纲骨架。
-- 改角色：`app/api/generate/lesson-plan/`、`app/generation-preview/`、`lib/hooks/use-scene-generator.ts`、`app/api/generate/scene-content/`、`lib/server/classroom-generation.ts` 两条主路径启用 HTML；失败段与恢复生成复用已保存方向。旧课无 presentation 时保持兼容。
-- 改角色：`lib/generation/scene-generator.ts`、`scene-builder.ts` 沿用内容与动作两阶段。新课非检查页用现有 interactive HTML 存储/动作通道，不要求 widget 分类；检查仍为 quiz，新增可选 HTML 字段，结构化题目保留为判分事实。两种场景构造路径必须保存 HTML，不把检查变成无需作答的普通互动。
-- 改角色：`packages/@livecourse/dsl/src/stage.ts`、`lib/types/generation.ts` 增加可选 quiz HTML；存储和媒体处理沿用现有文档/资源通道。不增加数据库迁移或强制转换旧课。
+- 改角色：`app/api/generate/lesson-plan/`、`app/generation-preview/`、`lib/hooks/use-scene-generator.ts`、`app/api/generate/scene-content/`、`lib/server/classroom-generation.ts` 只生成 HTML 课；视觉方向失败则整课失败，禁止无 presentation 继续。打开课堂时 `assertHtmlClassroom`：无 `presentation.mode = html`、或含 slide / widget / PBL 场景的文档显式失败，不回退播放。
+- 改角色：`lib/generation/scene-generator.ts`、`scene-builder.ts` 沿用内容与动作两阶段。非检查页用 interactive HTML 存储/动作通道，不要求 widget 分类；检查仍为 quiz，必须带 HTML 字段，结构化题目保留为判分事实。两种场景构造路径必须保存 HTML，不把检查变成无需作答的普通互动。`generateSceneContent` 没有 HTML presentation 时失败。
+- 改角色：`packages/@livecourse/dsl/src/stage.ts`、`lib/types/generation.ts` 增加可选 quiz HTML；存储和媒体处理沿用现有文档/资源通道。不做旧格式迁移。
 - 改角色：场景渲染、测验视图、生成预览、场景缩略图显示真实 HTML。自由布局与页内 JavaScript 在不带 `allow-same-origin` 的 iframe 沙箱运行；保留运行错误反馈。测验桥只传递经校验的当前题目答案/展示状态，显式提交及重试沿用原判分与幂等逻辑，不接受页内宣称的分数或完成事件；只读预览与 replay 不写 evidence、C 或 L。
 - 沿用：既有 `postProcessInteractiveHtml`、iframe host、媒体占位替换、节点控制器与语音完成边界；HTML 页不得越权访问宿主页、配置密钥、课程存储或注册新发言者。
 - 才新写：`lib/livecourse/html/teacher-bridge.ts` 给新讲授页注入通用高亮、标注与显露处理；只接收父窗口的既有类型化消息，不要求模型每页重复实现通信代码，也不限制页面构图。`quiz-bridge.ts` 只传递草稿与宿主展示状态，不能提交或判分。
+- 改角色（HTML 讲授同步）：页面提供真实稳定的教学区域 id；动作生成沿用元素清单，逐段先显露 / 高亮再讲解，拒绝纯讲稿、虚构目标和讲完才执行的动作。高亮持续到下一重点。课堂渲染时升级已注入的教师桥，不改写持久化 HTML；宿主等待桥的 DOM 就绪与动作执行确认，失败交还现有播放游标重试，暂停 / 插话 / 切页取消尚未投递的动作。replay 投递讲授视觉动作但不写证据或课程进度。
 
-完成：新课每页都有模型 HTML；逐页生成前先确定主 Agent 的方向，所有页复用该方向，方向随课持久化；页面生成失败不回退成固定模板；缩略图与预览不再使用虚构占位画面；旧课、检查恢复、回放与单段重试语义不变。
+完成：每页都有模型 HTML；逐页生成前先确定主 Agent 的方向，所有页复用该方向，方向随课持久化；页面生成失败不回退成固定模板；缩略图与预览不再使用虚构占位画面；无 HTML 方向的课打开失败；检查恢复、回放与单段重试语义不变。
 
 ## 8. 编排 — 改用途，不换框架
 

@@ -1,3 +1,5 @@
+import type { SpeechAction } from '@/lib/types/action';
+
 /**
  * Playback Types - Types for lecture playback and live discussion engine
  */
@@ -35,6 +37,10 @@ export interface PlaybackEngineCallbacks {
   onSpeechStart?: (text: string) => void;
   onSpeechEnd?: () => void;
   speak?: (text: string, signal: AbortSignal) => Promise<void>;
+  question?: (
+    question: NonNullable<SpeechAction['oralQuestion']>,
+    signal: AbortSignal,
+  ) => Promise<void>;
   /**
    * Classroom teaching / replay: consume leftover `discussion` actions without
    * the roundtable classmate protocol. Editor playback omits this and keeps

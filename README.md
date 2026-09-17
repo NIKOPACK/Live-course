@@ -40,6 +40,11 @@ pnpm build
 pnpm start
 ```
 
+Standalone deployments use `node .next/standalone/server.js` instead of
+`pnpm start`. Copy `public/` and `.next/static/` into the corresponding paths
+inside `.next/standalone/`; the [Dockerfile](Dockerfile) already assembles this
+layout. `/api/health` reports the built package version in either startup mode.
+
 For a containerized setup:
 
 ```bash
@@ -51,7 +56,12 @@ Optional PostgreSQL persistence and video rendering are available through the Co
 
 ## Validation
 
+The root tests do not load `.env.local` or application credentials. Embedded PostgreSQL
+contracts run locally through PGlite. Set `PG_CONTRACT_URL` explicitly only for a
+disposable PostgreSQL test database: those optional contract tests truncate their tables.
+
 ```bash
+pnpm exec tsc --noEmit
 pnpm test
 pnpm lint
 pnpm check:i18n-keys

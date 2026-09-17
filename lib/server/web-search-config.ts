@@ -81,8 +81,7 @@ export function resolveClassroomWebSearchConfig(input: {
     : undefined;
   const serverProviderId = resolveServerWebSearchProviderId();
   const providerId =
-    requestedProviderId ??
-    (isWebSearchProviderId(serverProviderId) ? serverProviderId : undefined);
+    requestedProviderId ?? (isWebSearchProviderId(serverProviderId) ? serverProviderId : undefined);
   if (!providerId) return undefined;
 
   const provider = WEB_SEARCH_PROVIDERS[providerId];

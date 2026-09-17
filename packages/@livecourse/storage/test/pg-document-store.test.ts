@@ -79,14 +79,41 @@ describe('PgDocumentStore Postgres behavior', () => {
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('document_stages', 'document_scenes', 'document_outlines')
+          AND table_name IN ('document_stages', 'document_scenes', 'document_outlines', 'document_course_plans')
         ORDER BY table_name`,
     );
     expect(tables.rows.map((row) => row.table_name)).toEqual([
+      'document_course_plans',
       'document_outlines',
       'document_scenes',
       'document_stages',
     ]);
+  });
+
+  test('adds course-plan storage to an existing document schema without replacing its rows', async () => {
+    await store.saveDocument(makeDocument());
+    const baseline = await store.loadDocument('stage-1');
+    if (!baseline) throw new Error('Document fixture was not saved');
+    await db.exec('DROP TABLE document_course_plans');
+
+    await ensureDocumentSchema(db);
+    await ensureDocumentSchema(db);
+    expect(await store.loadDocument('stage-1')).toEqual(baseline);
+
+    const coursePlan = {
+      schemaVersion: 1,
+      version: 1,
+      id: 'plan-1',
+      courseId: 'course-1',
+      title: 'Course',
+      goals: [],
+      lessons: [],
+      checkpointRules: [],
+    };
+    await store.saveDocument({ ...baseline, coursePlan });
+    expect((await store.loadDocument('stage-1'))?.coursePlan).toEqual(coursePlan);
+    await store.deleteDocument('stage-1');
+    expect((await db.query('SELECT * FROM document_course_plans')).rows).toEqual([]);
   });
 
   test('requires a transaction hook at construction time', () => {

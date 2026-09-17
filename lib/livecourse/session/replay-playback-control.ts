@@ -84,9 +84,9 @@ export function pauseReplayPlayback(
   playback: Pick<ReplayPlaybackControlPort, 'pause' | 'resume'>,
 ): Promise<unknown> {
   return runReplayPlaybackTransaction({
-    first: playback.pause,
-    commit: controller.pause,
-    rollback: playback.resume,
+    first: () => playback.pause(),
+    commit: () => controller.pause(),
+    rollback: () => playback.resume(),
   });
 }
 
@@ -100,9 +100,9 @@ export function resumeReplayPlayback(
   playback: Pick<ReplayPlaybackControlPort, 'resume' | 'pause'>,
 ): Promise<unknown> {
   return runReplayPlaybackTransaction({
-    first: controller.resume,
-    commit: playback.resume,
-    rollback: controller.pause,
+    first: () => controller.resume(),
+    commit: () => playback.resume(),
+    rollback: () => controller.pause(),
   });
 }
 
@@ -117,8 +117,8 @@ export function retryReplayPlayback(
   playback: Pick<ReplayPlaybackControlPort, 'retry'>,
 ): Promise<unknown> {
   return runReplayPlaybackTransaction({
-    first: controller.retry,
-    commit: playback.retry,
-    rollback: controller.notifyPlaybackFailure,
+    first: () => controller.retry(),
+    commit: () => playback.retry(),
+    rollback: () => controller.notifyPlaybackFailure(),
   });
 }

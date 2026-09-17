@@ -200,7 +200,7 @@ describe('course material upload', () => {
       expect.objectContaining({ name: 'exercises.txt', storageKey: 'stable-exercises', order: 2 }),
     ]);
     expect(saved.pdfStorageKey).toBe('stable-notes');
-    expect(saved.requirements).toEqual({ requirement: 'Learn fractions' });
+    expect(saved.requirements).toEqual({ requirement: 'Learn fractions', webSearch: false });
     expect(mocks.store).toHaveBeenCalledTimes(3);
     expect(mocks.remove).not.toHaveBeenCalled();
     await act(async () => root!.unmount());

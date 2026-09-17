@@ -26,16 +26,11 @@ describe('widget actions direct pipeline', () => {
       return '<!DOCTYPE html><html><body><div id="energy-slider"></div></body></html>';
     };
 
-    const content = await generateSceneContent(baseInteractiveOutline(), aiCall, {
-      languageDirective: 'Teach in English.',
-    });
-
-    expect(capturedUsers).toHaveLength(1);
-    expect(content).toMatchObject({
-      html: expect.stringContaining('energy-slider'),
-      widgetType: 'simulation',
-    });
-    expect(content && 'teacherActions' in content).toBe(false);
+    await expect(
+      generateSceneContent(baseInteractiveOutline(), aiCall, {
+        languageDirective: 'Teach in English.',
+      }),
+    ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
   });
 
   it('uses interactive action generation directly and preserves all four widget action types', async () => {

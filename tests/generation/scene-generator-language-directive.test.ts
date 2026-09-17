@@ -63,32 +63,30 @@ describe('scene-generator language directive threading (issue #472)', () => {
         JSON.stringify({ elements: [], background: null, remark: '' }),
       );
 
-      await generateSceneContent(baseOutline({ type: 'slide' }), aiCall, {
-        languageDirective: DIRECTIVE,
-      });
-
-      expect(lastUser()).toContain(DIRECTIVE);
-      expect(lastUser()).not.toContain('{{languageDirective}}');
+      await expect(
+        generateSceneContent(baseOutline({ type: 'slide' }), aiCall, {
+          languageDirective: DIRECTIVE,
+        }),
+      ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
     });
 
     it('threads languageDirective into quiz content prompt', async () => {
       const { aiCall, lastUser } = makeCapturingAiCall(JSON.stringify([]));
 
-      await generateSceneContent(
-        baseOutline({
-          type: 'quiz',
-          quizConfig: {
-            questionCount: 1,
-            difficulty: 'easy',
-            questionTypes: ['single'],
-          },
-        }),
-        aiCall,
-        { languageDirective: DIRECTIVE },
-      );
-
-      expect(lastUser()).toContain(DIRECTIVE);
-      expect(lastUser()).not.toContain('{{languageDirective}}');
+      await expect(
+        generateSceneContent(
+          baseOutline({
+            type: 'quiz',
+            quizConfig: {
+              questionCount: 1,
+              difficulty: 'easy',
+              questionTypes: ['single'],
+            },
+          }),
+          aiCall,
+          { languageDirective: DIRECTIVE },
+        ),
+      ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
     });
   });
 
@@ -263,22 +261,17 @@ describe('scene-generator language directive threading (issue #472)', () => {
         return '<!DOCTYPE html><html><body>widget</body></html>';
       };
 
-      await generateSceneContent(
-        baseOutline({
-          type: 'interactive',
-          widgetType: 'simulation',
-          widgetOutline: { concept: 'Projectile', keyVariables: ['angle'] },
-        }),
-        aiCall,
-        { languageDirective: DIRECTIVE },
-      );
-
-      expect(captured).toHaveLength(1);
-      for (const user of captured) {
-        expect(user).toContain(DIRECTIVE);
-        expect(user).not.toContain('{{languageDirective}}');
-        expect(user).not.toContain('{{language}}');
-      }
+      await expect(
+        generateSceneContent(
+          baseOutline({
+            type: 'interactive',
+            widgetType: 'simulation',
+            widgetOutline: { concept: 'Projectile', keyVariables: ['angle'] },
+          }),
+          aiCall,
+          { languageDirective: DIRECTIVE },
+        ),
+      ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
     });
   });
 
@@ -293,26 +286,22 @@ describe('scene-generator language directive threading (issue #472)', () => {
           : '[]';
       };
 
-      await buildSceneFromOutline(
-        baseOutline({ type: 'slide' }),
-        aiCall,
-        'stage-1',
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        DIRECTIVE,
-      );
-
-      expect(captured).toHaveLength(2);
-      for (const user of captured) {
-        expect(user).toContain(DIRECTIVE);
-        expect(user).not.toContain('{{languageDirective}}');
-      }
+      await expect(
+        buildSceneFromOutline(
+          baseOutline({ type: 'slide' }),
+          aiCall,
+          'stage-1',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          DIRECTIVE,
+        ),
+      ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
     });
   });
 });

@@ -1,11 +1,14 @@
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
-import type {
-  RealtimeClassroomLocation,
-  RealtimeTeacherEvent,
+import {
+  RealtimeInterruptionUncertaintyError,
+  type RealtimeClassroomLocation,
+  type RealtimeTeacherEvent,
 } from '@/lib/livecourse/realtime/client/session';
 import { withRealtimeSpeechRetry } from '@/lib/livecourse/realtime/client/speech-retry';
 import { VolcRealtimeBrowserSession } from '@/lib/livecourse/realtime/volc/client';
 import type { GenerationRetryOptions } from '@/lib/generation/generation-retry';
+import { OralQuestionSession, type OralQuestionOptions } from './oral-question';
+import type { OralQuestion } from '@/lib/livecourse/domain/schemas';
 
 function speechAbortError(): Error {
   return new DOMException('Realtime speech was cancelled', 'AbortError');
@@ -13,6 +16,7 @@ function speechAbortError(): Error {
 
 export interface VolcTeacherSpeechSessionOptions {
   getInstructions: () => string;
+  readOnly?: boolean;
   onEvent?: (event: RealtimeTeacherEvent) => void;
   getLocation?: () => RealtimeClassroomLocation | null;
   canInterrupt?: () => boolean;
@@ -36,6 +40,12 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   #muted = false;
   #heldNodeId: string | null = null;
   #holdSource: 'ask' | 'barge' | null = null;
+  #holdPending: Promise<void> | null = null;
+  #resumeQueue: Promise<void> = Promise.resolve();
+  #responseGeneration = 0;
+  #instructions: string | null = null;
+  #oralQuestion: OralQuestionSession | null = null;
+  #oralReleased: Promise<void> = Promise.resolve();
 
   constructor(options: VolcTeacherSpeechSessionOptions) {
     this.#options = options;
@@ -50,6 +60,7 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   async speak(text: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+    if (this.#oralQuestion?.closed) await this.#oralReleased;
     if (!text.trim()) throw new Error('Realtime speech text cannot be empty');
     if (options.signal?.aborted) throw speechAbortError();
     this.#emit({ type: 'transcript', speaker: 'teacher', text });
@@ -61,20 +72,97 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   async ask(text: string): Promise<void> {
+    if (this.#options.readOnly) throw new Error('Replay does not accept learner questions');
+    if (this.#oralQuestion) return this.#oralQuestion.answer(text);
     if (!text.trim()) throw new Error('A classroom question cannot be empty');
+    const generation = ++this.#responseGeneration;
     this.#emit({ type: 'transcript', speaker: 'student', text });
     await this.#holdPlayback('ask');
-    try {
-      if (!this.connected) await this.#connectOnce();
-      const session = this.#requireSession();
-      await session.cancelNarration();
-      await withRealtimeSpeechRetry(() => session.askQuestion(text), {
+    if (!this.connected) await this.#connectOnce();
+    const session = this.#requireSession();
+    await session.cancelNarration();
+    await withRealtimeSpeechRetry(
+      async () => {
+        await this.#syncInstructions(session);
+        if (generation !== this.#responseGeneration) throw speechAbortError();
+        await session.askQuestion(text, { requireAudio: true });
+      },
+      {
         label: 'volc.ask',
         ...this.#options.speechRetry,
-      });
+      },
+    );
+    if (generation !== this.#responseGeneration) throw speechAbortError();
+    await this.#queueReleasePlayback(generation);
+  }
+
+  async question(question: OralQuestion, options: OralQuestionOptions): Promise<void> {
+    if (this.#options.readOnly) throw new Error('Replay does not start oral questions');
+    if (this.#oralQuestion) throw new Error('An oral question is already active');
+    const session = this.#requireSession();
+    const oral = new OralQuestionSession(
+      question,
+      {
+        speak: (text, signal) => this.speak(text, { signal }),
+        respond: async (text, signal) => {
+          if (signal.aborted) throw speechAbortError();
+          const cancel = () => {
+            void session.cancelNarration().catch(() => {
+              /* The browser session reports cancellation failures and closes. */
+            });
+          };
+          signal.addEventListener('abort', cancel, { once: true });
+          try {
+            if (signal.aborted) throw speechAbortError();
+            await session.askQuestion(text, { requireAudio: true });
+            if (signal.aborted) throw speechAbortError();
+          } finally {
+            signal.removeEventListener('abort', cancel);
+          }
+        },
+        updateInstructions: (instructions) => session.updateInstructions(instructions),
+        setListening: (enabled) => session.setInputEnabled(enabled),
+        cancel: () => session.cancelNarration(),
+        manualMicrophoneResponse: false,
+        onState: (state) => this.#emit({ type: 'oral_question', state }),
+      },
+      options,
+    );
+    let release!: () => void;
+    this.#oralReleased = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#oralQuestion = oral;
+    try {
+      await oral.run();
     } finally {
-      if (this.#holdSource === 'ask') await this.#releasePlayback();
+      try {
+        if (this.connected) {
+          await session.cancelNarration();
+          await session.updateInstructions(this.#options.getInstructions());
+        }
+      } finally {
+        this.#oralQuestion = null;
+        session.setInputEnabled(true);
+        this.#emit({ type: 'oral_question', state: null });
+        release();
+      }
     }
+  }
+
+  hintOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().hint();
+  }
+  retryOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().retry();
+  }
+  endOralQuestion(): Promise<void> {
+    return this.#requireOralQuestion().end();
+  }
+
+  #requireOralQuestion(): OralQuestionSession {
+    if (!this.#oralQuestion) throw new Error('No oral question is active');
+    return this.#oralQuestion;
   }
 
   mute(muted: boolean): void {
@@ -85,12 +173,18 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   interrupt(): void {
-    void this.#session?.cancelNarration();
+    this.#responseGeneration += 1;
+    void this.#session?.cancelNarration().catch(() => {
+      /* The browser session reports cancellation failures and closes. */
+    });
   }
 
   async close(): Promise<void> {
+    this.#responseGeneration += 1;
+    this.#oralQuestion?.cancel(new Error('Realtime teacher connection was closed'));
     const session = this.#session;
     this.#session = null;
+    this.#instructions = null;
     this.connected = false;
     this.#muted = false;
     if (session) await session.close();
@@ -103,46 +197,96 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     await this.#session?.close().catch(() => {});
     const session = new VolcRealtimeBrowserSession({
       // HTTPS can barge in. HTTP / missing getUserMedia must still start lecture.
-      captureMicrophone: shouldCaptureRealtimeMicrophone(),
+      captureMicrophone: !this.#options.readOnly && shouldCaptureRealtimeMicrophone(),
       onEvent: (event) => {
+        if (this.#session !== session) return;
         if (event.type === 'status') {
           if (event.status === 'error' || event.status === 'closed') {
             this.connected = false;
+            this.#oralQuestion?.cancel(new Error('Realtime teacher connection was closed'));
           }
           this.#emit({ type: 'status', status: event.status === 'idle' ? 'idle' : event.status });
           return;
         }
         if (event.type === 'error') {
           this.connected = false;
+          this.#oralQuestion?.cancel(event.error);
           this.#emit({ type: 'error', error: event.error });
           return;
         }
         if (event.type === 'learner_turn_started') {
-          void this.#holdPlayback('barge');
+          if (this.#oralQuestion) {
+            this.#oralQuestion.nativeStarted();
+            return;
+          }
+          this.#responseGeneration += 1;
+          // The transaction reports its failure before rejecting.
+          void this.#holdPlayback('barge').catch(() => undefined);
           return;
         }
         if (event.type === 'speaking') {
           this.#emit({ type: event.speaking ? 'audio_start' : 'audio_stopped' });
-          if (!event.speaking && this.#holdSource === 'barge') {
-            void this.#releasePlayback();
+          return;
+        }
+        if (event.type === 'audio_completed') {
+          if (this.#oralQuestion) {
+            if (event.hasAudio) this.#oralQuestion.nativeCompleted();
+            else
+              this.#oralQuestion.nativeFailed(
+                new Error('Teacher response completed without audio'),
+              );
+          } else if (this.#holdSource === 'barge') {
+            if (!event.hasAudio) {
+              this.#emit({
+                type: 'error',
+                error: new Error('Teacher response completed without audio'),
+              });
+            } else {
+              void this.#queueReleasePlayback(this.#responseGeneration).catch((cause) => {
+                this.#emit({
+                  type: 'error',
+                  error: cause instanceof Error ? cause : new Error(String(cause)),
+                });
+              });
+            }
           }
+          return;
+        }
+        if (event.type === 'learner_answer') {
+          this.#oralQuestion?.nativeTranscript(event.text);
+          return;
+        }
+        if (event.type === 'recognition_failed') {
+          if (this.#oralQuestion) this.#oralQuestion.nativeFailed(event.error);
+          else
+            this.#emit({
+              type: 'recognition_failed',
+              error: event.error,
+              nodeId: this.#heldNodeId,
+            });
           return;
         }
         this.#emit({ type: 'transcript', speaker: event.speaker, text: event.text });
       },
     });
     this.#session = session;
+    if (this.#options.readOnly) session.setInputEnabled(false);
     try {
       await session.preparePlayback();
-      const instructions =
-        this.#options.getInstructions().trim() ||
-        'You are the live teacher for a single learner. Match the learner language and keep spoken turns concise.';
+      const instructions = this.#currentInstructions();
       await session.connect(instructions);
+      if (this.#session !== session) {
+        await session.close();
+        throw speechAbortError();
+      }
+      this.#instructions = instructions;
       this.connected = true;
     } catch (error) {
-      this.connected = false;
-      this.#session = null;
-      this.#emit({ type: 'status', status: 'error' });
+      if (this.#session === session) {
+        this.connected = false;
+        this.#session = null;
+        this.#emit({ type: 'status', status: 'error' });
+      }
       throw error;
     }
   }
@@ -151,12 +295,20 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     if (signal?.aborted) throw speechAbortError();
     if (!this.connected) await this.#connectOnce();
     const session = this.#requireSession();
+    const generation = this.#responseGeneration;
     const abort = () => {
-      void session.cancelNarration();
+      // A native learner turn already cancelled the old narration. Do not
+      // cancel the new answer while freezing that narration's playback.
+      if (generation !== this.#responseGeneration) return;
+      void session.cancelNarration().catch(() => {
+        /* The browser session reports cancellation failures and closes. */
+      });
     };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      await session.speakText(text);
+      if (!this.#oralQuestion) await this.#syncInstructions(session);
+      if (signal?.aborted || generation !== this.#responseGeneration) throw speechAbortError();
+      await session.speakText(text, { requireAudio: true });
       if (signal?.aborted) throw speechAbortError();
     } catch (error) {
       if (isSessionLostError(error)) this.connected = false;
@@ -167,37 +319,98 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   async #holdPlayback(source: 'ask' | 'barge'): Promise<void> {
-    if (this.#heldNodeId) return;
+    if (this.#heldNodeId) {
+      this.#holdSource = source;
+      return this.#holdPending ?? undefined;
+    }
     const nodeId = this.#options.getLocation?.()?.nodeId;
     const interruptNode = this.#options.interruptNode;
-    if (!nodeId || !interruptNode || this.#options.canInterrupt?.() === false) {
+    if (
+      this.#options.readOnly ||
+      !nodeId ||
+      !interruptNode ||
+      this.#options.canInterrupt?.() === false
+    ) {
       if (source === 'ask') await this.#session?.cancelNarration();
       return;
     }
     this.#heldNodeId = nodeId;
     this.#holdSource = source;
     this.#emit({ type: 'interrupted', nodeId });
-    try {
-      await interruptNode(nodeId);
-    } catch (error) {
-      this.#heldNodeId = null;
-      this.#holdSource = null;
-      const failure = error instanceof Error ? error : new Error(String(error));
-      this.#emit({ type: 'interruption_failed', nodeId, error: failure });
-      throw failure;
-    }
+    return this.#startHold(nodeId);
   }
 
-  async #releasePlayback(): Promise<void> {
+  #startHold(nodeId: string): Promise<void> {
+    const pending = Promise.resolve()
+      .then(async () => {
+        if (!this.#options.interruptNode)
+          throw new Error('Classroom interruption is not configured');
+        await this.#options.interruptNode(nodeId);
+      })
+      .catch((cause) => {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        if (this.#holdPending === pending) {
+          this.#holdPending = null;
+          if (cause instanceof RealtimeInterruptionUncertaintyError) {
+            this.#emit({ type: 'interruption_uncertain', nodeId, error });
+          } else {
+            this.#heldNodeId = null;
+            this.#holdSource = null;
+            this.#emit({ type: 'interruption_failed', nodeId, error });
+          }
+        }
+        throw error;
+      });
+    this.#holdPending = pending;
+    return pending;
+  }
+
+  #queueReleasePlayback(generation: number): Promise<void> {
+    const operation = this.#resumeQueue.then(() => this.#releasePlayback(generation));
+    this.#resumeQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  async #releasePlayback(generation: number): Promise<void> {
     const nodeId = this.#heldNodeId;
     if (!nodeId) return;
     try {
-      await this.#options.resumeNode?.(nodeId);
-      this.#emit({ type: 'node_resumed', nodeId });
-    } finally {
-      this.#heldNodeId = null;
-      this.#holdSource = null;
+      await this.#holdPending;
+    } catch (cause) {
+      if (this.#heldNodeId !== nodeId) return;
+      if (!(cause instanceof RealtimeInterruptionUncertaintyError)) throw cause;
     }
+    if (this.#heldNodeId !== nodeId || generation !== this.#responseGeneration) return;
+    if (!this.#options.resumeNode) throw new Error('Classroom resume is not configured');
+    await this.#options.resumeNode(nodeId);
+    if (this.#heldNodeId !== nodeId) return;
+    if (generation !== this.#responseGeneration) {
+      await this.#startHold(nodeId);
+      return;
+    }
+    this.#heldNodeId = null;
+    this.#holdSource = null;
+    this.#holdPending = null;
+    this.#emit({ type: 'node_resumed', nodeId });
+  }
+
+  #currentInstructions(): string {
+    return (
+      this.#options.getInstructions().trim() ||
+      'You are the live teacher for a single learner. Match the learner language and keep spoken turns concise.'
+    );
+  }
+
+  async #syncInstructions(session: VolcRealtimeBrowserSession): Promise<void> {
+    if (this.#session !== session || !this.connected) throw speechAbortError();
+    const instructions = this.#currentInstructions();
+    if (instructions === this.#instructions) return;
+    await session.updateInstructions(instructions);
+    if (this.#session !== session || !this.connected) throw speechAbortError();
+    this.#instructions = instructions;
   }
 
   #requireSession(): VolcRealtimeBrowserSession {
@@ -206,6 +419,9 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   #emit(event: RealtimeTeacherEvent): void {
+    if (event.type === 'transcript' && event.speaker === 'teacher') {
+      this.#oralQuestion?.teacherTranscript(event.text);
+    }
     this.#options.onEvent?.(event);
   }
 }

@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { CircleStop, LoaderCircle, Mic, MicOff, Power, Radio, Send } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState, type ComponentProps } from 'react';
+import { CircleStop, LoaderCircle, Mic, MicOff, Power, Quote, Radio, Send, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -34,6 +34,11 @@ import type { SpeechAction } from '@/lib/types/action';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
 import { cn } from '@/lib/utils';
 import { createBrowserUuid } from '@/lib/utils/random-id';
+import { useHtmlQuestionContext } from '@/lib/livecourse/html/question-context';
+import { hasHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
+import type { OralQuestionState } from '@/lib/livecourse/realtime/client/oral-question';
+
+const MAX_QUESTION_LENGTH = 2000;
 
 export type RealtimePlaybackHandler = (nodeId: string) => void | Promise<void>;
 
@@ -142,6 +147,12 @@ export function RealtimeTeacherControls({
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
+  const [oralQuestion, setOralQuestion] = useState<OralQuestionState | null>(null);
+  const oralQuestionRef = useRef<OralQuestionState | null>(null);
+  const oralEpochRef = useRef(0);
+  const [oralAnswer, setOralAnswer] = useState('');
+  const questionInputRef = useRef<HTMLTextAreaElement>(null);
+  const questionHintId = useId();
   const [sendingQuestion, setSendingQuestion] = useState(false);
   const sendingQuestionRef = useRef(false);
   /** J3.2：冻结中的 resumeNode；识别失败提示重说时据此判断。 */
@@ -152,6 +163,12 @@ export function RealtimeTeacherControls({
 
   const currentNodeId = livecourse?.currentNodeId ?? null;
   const currentSceneId = currentScene?.id ?? null;
+  const quote = useHtmlQuestionContext((state) =>
+    state.quote?.sceneId === currentSceneId ? state.quote : null,
+  );
+  const supportsSelection =
+    currentScene?.content.type === 'interactive' &&
+    hasHtmlTeacherBridge(currentScene.content.html ?? '');
 
   const currentNode = livecourse?.lessonPlan?.nodes.find((node) => node.id === currentNodeId);
   const currentGoal = livecourse?.lessonPlan?.goals.find((goal) =>
@@ -222,7 +239,7 @@ export function RealtimeTeacherControls({
       if (!['teaching', 'checking', 'interrupted'].includes(state ?? '')) return;
       // The classroom engine owns authored speech boundaries; only learner
       // answers need a separate avatar action from the transport.
-      if (onTeacherChange && state !== 'interrupted') return;
+      if (onTeacherChange && state !== 'interrupted' && !oralQuestionRef.current) return;
       void emitActionRef.current?.(input).catch((cause) => {
         setError(cause instanceof Error ? cause.message : String(cause));
       });
@@ -233,6 +250,12 @@ export function RealtimeTeacherControls({
   const handleEvent = useCallback(
     (event: RealtimeTeacherEvent) => {
       switch (event.type) {
+        case 'oral_question':
+          if (Boolean(event.state) !== Boolean(oralQuestionRef.current)) oralEpochRef.current += 1;
+          oralQuestionRef.current = event.state;
+          setOralQuestion(event.state);
+          if (!event.state) setOralAnswer('');
+          break;
         case 'status':
           setStatus(event.status);
           if (event.status === 'closed' || event.status === 'error') {
@@ -322,150 +345,150 @@ export function RealtimeTeacherControls({
       return state === 'teaching' || state === 'checking' || state === 'interrupted';
     };
     const interruptNode = async (nodeId: string) => {
-          const interruptPlayback = playbackInterruptRef.current;
-          const resumePlayback = playbackResumeRef.current;
-          if (Boolean(interruptPlayback) !== Boolean(resumePlayback)) {
-            throw new Error('Realtime playback interrupt and resume handlers must be paired');
-          }
-          if (interruptionPhaseRef.current !== 'idle') {
-            throw new Error('A realtime interruption transaction is already active');
-          }
-          const interruptionKey = createInterruptionKey();
-          interruptionKeyRef.current = interruptionKey;
-          interruptionResumeAttemptRef.current = 0;
-          let playbackTransitionStarted = false;
+      const interruptPlayback = playbackInterruptRef.current;
+      const resumePlayback = playbackResumeRef.current;
+      if (Boolean(interruptPlayback) !== Boolean(resumePlayback)) {
+        throw new Error('Realtime playback interrupt and resume handlers must be paired');
+      }
+      if (interruptionPhaseRef.current !== 'idle') {
+        throw new Error('A realtime interruption transaction is already active');
+      }
+      const interruptionKey = createInterruptionKey();
+      interruptionKeyRef.current = interruptionKey;
+      interruptionResumeAttemptRef.current = 0;
+      let playbackTransitionStarted = false;
+      try {
+        if (interruptPlayback) {
           try {
-            if (interruptPlayback) {
-              try {
-                await interruptPlayback(nodeId);
-                playbackTransitionStarted = true;
-              } catch (cause) {
-                // freezeRealtimePlayback normally restores the local sides
-                // before surfacing an ordinary operation failure. A
-                // RealtimePlaybackControlError means that at least one
-                // inverse failed after a partial mutation, so the release
-                // compensation below must still be attempted.
-                playbackTransitionStarted = cause instanceof RealtimePlaybackControlError;
-                throw cause;
-              }
-            }
-            interruptionPhaseRef.current = 'interrupt-commit-pending';
-            const emitAction = emitActionRef.current;
-            if (!emitAction) throw new Error('LiveCourse session is not ready');
-            await emitAction({
-              type: 'lesson.interrupt',
-              nodeId,
-              idempotencyKey: interruptionKey,
-              payload: {},
-            });
-            interruptionPhaseRef.current = 'held';
+            await interruptPlayback(nodeId);
+            playbackTransitionStarted = true;
           } catch (cause) {
-            const authority = readClassroomActionAuthority(cause);
-            if (authority === 'uncertain' || authority === 'committed') {
-              interruptionPhaseRef.current = 'interrupt-commit-pending';
-              throw new RealtimeInterruptionUncertaintyError(nodeId, cause);
-            }
-            if (playbackTransitionStarted && resumePlayback) {
-              try {
-                await resumePlayback(nodeId);
-              } catch (compensationCause) {
-                interruptionPhaseRef.current = 'playback-release-only';
-                throw new RealtimeInterruptionUncertaintyError(
-                  nodeId,
-                  new AggregateError(
-                    [cause, compensationCause],
-                    'Classroom interruption failed and playback could not be restored',
-                  ),
-                );
-              }
-            }
-            interruptionKeyRef.current = null;
-            interruptionResumeAttemptRef.current = 0;
-            interruptionPhaseRef.current = 'idle';
+            // freezeRealtimePlayback normally restores the local sides
+            // before surfacing an ordinary operation failure. A
+            // RealtimePlaybackControlError means that at least one
+            // inverse failed after a partial mutation, so the release
+            // compensation below must still be attempted.
+            playbackTransitionStarted = cause instanceof RealtimePlaybackControlError;
             throw cause;
           }
+        }
+        interruptionPhaseRef.current = 'interrupt-commit-pending';
+        const emitAction = emitActionRef.current;
+        if (!emitAction) throw new Error('LiveCourse session is not ready');
+        await emitAction({
+          type: 'lesson.interrupt',
+          nodeId,
+          idempotencyKey: interruptionKey,
+          payload: {},
+        });
+        interruptionPhaseRef.current = 'held';
+      } catch (cause) {
+        const authority = readClassroomActionAuthority(cause);
+        if (authority === 'uncertain' || authority === 'committed') {
+          interruptionPhaseRef.current = 'interrupt-commit-pending';
+          throw new RealtimeInterruptionUncertaintyError(nodeId, cause);
+        }
+        if (playbackTransitionStarted && resumePlayback) {
+          try {
+            await resumePlayback(nodeId);
+          } catch (compensationCause) {
+            interruptionPhaseRef.current = 'playback-release-only';
+            throw new RealtimeInterruptionUncertaintyError(
+              nodeId,
+              new AggregateError(
+                [cause, compensationCause],
+                'Classroom interruption failed and playback could not be restored',
+              ),
+            );
+          }
+        }
+        interruptionKeyRef.current = null;
+        interruptionResumeAttemptRef.current = 0;
+        interruptionPhaseRef.current = 'idle';
+        throw cause;
+      }
     };
     const resumeNode = async (nodeId: string) => {
-          const emitAction = emitActionRef.current;
-          if (!emitAction) throw new Error('LiveCourse session is not ready');
-          const interruptionKey = interruptionKeyRef.current;
-          if (!interruptionKey || interruptionPhaseRef.current === 'idle') {
-            throw new Error('No realtime interruption transaction is available to resume');
-          }
+      const emitAction = emitActionRef.current;
+      if (!emitAction) throw new Error('LiveCourse session is not ready');
+      const interruptionKey = interruptionKeyRef.current;
+      if (!interruptionKey || interruptionPhaseRef.current === 'idle') {
+        throw new Error('No realtime interruption transaction is available to resume');
+      }
 
-          if (interruptionPhaseRef.current === 'playback-release-only') {
-            await playbackResumeRef.current?.(nodeId);
-            interruptionKeyRef.current = null;
-            interruptionResumeAttemptRef.current = 0;
-            interruptionPhaseRef.current = 'idle';
-            return;
-          }
+      if (interruptionPhaseRef.current === 'playback-release-only') {
+        await playbackResumeRef.current?.(nodeId);
+        interruptionKeyRef.current = null;
+        interruptionResumeAttemptRef.current = 0;
+        interruptionPhaseRef.current = 'idle';
+        return;
+      }
 
-          if (interruptionPhaseRef.current === 'interrupt-commit-pending') {
-            try {
-              await emitAction({
-                type: 'lesson.interrupt',
-                nodeId,
-                idempotencyKey: interruptionKey,
-                payload: {},
-              });
-              interruptionPhaseRef.current = 'held';
-            } catch (cause) {
-              const authority = readClassroomActionAuthority(cause);
-              if (authority === 'uncertain' || authority === 'committed') {
-                throw new RealtimeInterruptionUncertaintyError(nodeId, cause);
-              }
-              throw cause;
-            }
-          }
-
-          if (interruptionPhaseRef.current === 'resume-compensation-pending') {
-            // Retry exactly the compensation action whose outcome was lost.
-            // Only a confirmed append advances the attempt number.
-            await emitAction({
-              type: 'lesson.interrupt',
-              nodeId,
-              idempotencyKey: `${interruptionKey}:compensate:${interruptionResumeAttemptRef.current}`,
-              payload: {},
-            });
-            interruptionPhaseRef.current = 'held';
-            interruptionResumeAttemptRef.current += 1;
-            throw new Error('Interruption restored; retry the learner response to resume');
-          }
-
-          const resumeKey = `${interruptionKey}:resume:${interruptionResumeAttemptRef.current}`;
-          // J3.2：回答结束后唯一回到被冻结 resumeNode 的显式恢复命令。
+      if (interruptionPhaseRef.current === 'interrupt-commit-pending') {
+        try {
           await emitAction({
-            type: 'lesson.resume_interrupted',
+            type: 'lesson.interrupt',
             nodeId,
-            idempotencyKey: resumeKey,
-            payload: { targetNodeId: nodeId },
+            idempotencyKey: interruptionKey,
+            payload: {},
           });
-          try {
-            await playbackResumeRef.current?.(nodeId);
-          } catch (cause) {
-            try {
-              await emitAction({
-                type: 'lesson.interrupt',
-                nodeId,
-                idempotencyKey: `${interruptionKey}:compensate:${interruptionResumeAttemptRef.current}`,
-                payload: {},
-              });
-              interruptionPhaseRef.current = 'held';
-              interruptionResumeAttemptRef.current += 1;
-            } catch (compensationCause) {
-              interruptionPhaseRef.current = 'resume-compensation-pending';
-              throw new AggregateError(
-                [cause, compensationCause],
-                'Classroom resume failed and the interruption could not be restored',
-              );
-            }
-            throw cause;
+          interruptionPhaseRef.current = 'held';
+        } catch (cause) {
+          const authority = readClassroomActionAuthority(cause);
+          if (authority === 'uncertain' || authority === 'committed') {
+            throw new RealtimeInterruptionUncertaintyError(nodeId, cause);
           }
-          interruptionKeyRef.current = null;
-          interruptionResumeAttemptRef.current = 0;
-          interruptionPhaseRef.current = 'idle';
-        };
+          throw cause;
+        }
+      }
+
+      if (interruptionPhaseRef.current === 'resume-compensation-pending') {
+        // Retry exactly the compensation action whose outcome was lost.
+        // Only a confirmed append advances the attempt number.
+        await emitAction({
+          type: 'lesson.interrupt',
+          nodeId,
+          idempotencyKey: `${interruptionKey}:compensate:${interruptionResumeAttemptRef.current}`,
+          payload: {},
+        });
+        interruptionPhaseRef.current = 'held';
+        interruptionResumeAttemptRef.current += 1;
+        throw new Error('Interruption restored; retry the learner response to resume');
+      }
+
+      const resumeKey = `${interruptionKey}:resume:${interruptionResumeAttemptRef.current}`;
+      // J3.2：回答结束后唯一回到被冻结 resumeNode 的显式恢复命令。
+      await emitAction({
+        type: 'lesson.resume_interrupted',
+        nodeId,
+        idempotencyKey: resumeKey,
+        payload: { targetNodeId: nodeId },
+      });
+      try {
+        await playbackResumeRef.current?.(nodeId);
+      } catch (cause) {
+        try {
+          await emitAction({
+            type: 'lesson.interrupt',
+            nodeId,
+            idempotencyKey: `${interruptionKey}:compensate:${interruptionResumeAttemptRef.current}`,
+            payload: {},
+          });
+          interruptionPhaseRef.current = 'held';
+          interruptionResumeAttemptRef.current += 1;
+        } catch (compensationCause) {
+          interruptionPhaseRef.current = 'resume-compensation-pending';
+          throw new AggregateError(
+            [cause, compensationCause],
+            'Classroom resume failed and the interruption could not be restored',
+          );
+        }
+        throw cause;
+      }
+      interruptionKeyRef.current = null;
+      interruptionResumeAttemptRef.current = 0;
+      interruptionPhaseRef.current = 'idle';
+    };
     if (!realtime && preferVolc) {
       realtime = new VolcTeacherSpeechSession({
         getInstructions: () => teachingContextRef.current,
@@ -523,6 +546,11 @@ export function RealtimeTeacherControls({
   startRef.current = start;
   useEffect(() => {
     const teacher: TeacherSpeechPort = {
+      question: async (question, options) => {
+        const realtime = realtimeRef.current;
+        if (!realtime?.connected) throw new Error(translateRef.current('livecourse.voiceRequired'));
+        await realtime.question(question, options);
+      },
       connect: () => startRef.current(),
       speak: (text, options) => {
         const realtime = realtimeRef.current;
@@ -553,18 +581,57 @@ export function RealtimeTeacherControls({
   }, [onTeacherChange]);
 
   const sendQuestion = async () => {
-    const text = question.trim();
-    if (!text || sendingQuestionRef.current) return;
+    const text = (oralQuestion ? oralAnswer : question).trim();
+    if (!canAsk || !text || sendingQuestionRef.current) return;
+    const location = locationRef.current;
+    const oralEpoch = oralEpochRef.current;
+    const message =
+      quote && !oralQuestion
+        ? t('livecourse.quotedQuestion', { quote: quote.text, question: text })
+        : text;
     sendingQuestionRef.current = true;
     setSendingQuestion(true);
     setError(null);
     try {
       await start();
+      const current = locationRef.current;
+      if (
+        !location ||
+        current?.nodeId !== location.nodeId ||
+        current.sceneId !== location.sceneId ||
+        oralEpoch !== oralEpochRef.current ||
+        !['teaching', 'checking', 'interrupted'].includes(classroomStateRef.current ?? '')
+      ) {
+        throw new Error(t('livecourse.questionContextChanged'));
+      }
       const realtime = realtimeRef.current;
       if (!realtime) throw new Error(t('livecourse.voiceRequired'));
-      await realtime.ask(text);
-      useLiveCaptionStore.getState().setCaption({ speaker: 'student', text });
-      setQuestion((current) => (current.trim() === text ? '' : current));
+      await realtime.ask(message);
+      useLiveCaptionStore.getState().setCaption({ speaker: 'student', text: message });
+      if (oralQuestion) setOralAnswer((current) => (current.trim() === text ? '' : current));
+      else {
+        setQuestion((current) => (current.trim() === text ? '' : current));
+        if (quote) useHtmlQuestionContext.getState().clearQuote(quote);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      sendingQuestionRef.current = false;
+      setSendingQuestion(false);
+    }
+  };
+
+  const runOralControl = async (
+    operation: 'hintOralQuestion' | 'retryOralQuestion' | 'endOralQuestion',
+  ) => {
+    if (sendingQuestionRef.current || !canUseOral) return;
+    sendingQuestionRef.current = true;
+    setSendingQuestion(true);
+    setError(null);
+    try {
+      const realtime = realtimeRef.current;
+      if (!realtime) throw new Error(t('livecourse.voiceRequired'));
+      await realtime[operation]();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -618,15 +685,24 @@ export function RealtimeTeacherControls({
 
   const connected = status === 'connected';
   const canStart = livecourse?.status === 'ready' && Boolean(currentSceneId);
+  const canUseOral = canStart && livecourse?.classroomState === 'teaching';
   const canAsk =
     canStart &&
+    (!oralQuestion || oralQuestion.phase === 'waiting') &&
     (livecourse?.classroomState === 'teaching' ||
       livecourse?.classroomState === 'checking' ||
       livecourse?.classroomState === 'interrupted');
   const label = statusLabel(status, speaking, activeTool);
+  const quickQuestions = [
+    { label: t('livecourse.questionRephrase'), prompt: t('livecourse.questionRephrasePrompt') },
+    { label: t('livecourse.questionExample'), prompt: t('livecourse.questionExamplePrompt') },
+    { label: t('livecourse.questionHint'), prompt: t('livecourse.questionHintPrompt') },
+  ];
 
   return (
-    <div className={cn(lectern ? 'pt-1' : 'px-0 py-2', lectern && 'text-[var(--lc-classroom-ink)]')}>
+    <div
+      className={cn(lectern ? 'pt-1' : 'px-0 py-2', lectern && 'text-[var(--lc-classroom-ink)]')}
+    >
       <audio key={audioElementGeneration} ref={audioRef} className="hidden" autoPlay playsInline />
       <div className="flex min-h-11 flex-wrap items-center gap-1.5">
         <span
@@ -700,6 +776,124 @@ export function RealtimeTeacherControls({
           </IconButton>
         )}
       </div>
+      {oralQuestion ? (
+        <div
+          data-testid="classroom-oral-question"
+          className="mt-2 rounded-md border border-primary/30 bg-muted/30 p-3"
+        >
+          <p className="text-xs font-medium text-primary">{t('livecourse.oralTitle')}</p>
+          <p className="mt-1 text-sm leading-6">{oralQuestion.question}</p>
+          {oralQuestion.teacherText && oralQuestion.teacherText !== oralQuestion.question ? (
+            <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-sm leading-6">
+              {oralQuestion.teacherText}
+            </p>
+          ) : null}
+          <p role="status" className="mt-2 text-xs text-muted-foreground">
+            {t(`livecourse.oralPhase_${oralQuestion.phase}`)}
+          </p>
+          {oralQuestion.answer ? (
+            <p className="mt-1 break-words text-xs">
+              {t('livecourse.oralYourAnswer', { answer: oralQuestion.answer })}
+            </p>
+          ) : null}
+          {oralQuestion.error ? (
+            <p role="alert" className="mt-1 text-xs text-destructive">
+              {oralQuestion.error}
+            </p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-2">
+            {oralQuestion.phase === 'failed' ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={sendingQuestion || !canUseOral}
+                onClick={() => void runOralControl('retryOralQuestion')}
+              >
+                {t('livecourse.oralRetry')}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={sendingQuestion || !canUseOral || oralQuestion.phase !== 'waiting'}
+                onClick={() => void runOralControl('hintOralQuestion')}
+              >
+                {t('livecourse.questionHint')}
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={
+                sendingQuestion ||
+                !canUseOral ||
+                !['waiting', 'failed'].includes(oralQuestion.phase)
+              }
+              onClick={() => void runOralControl('endOralQuestion')}
+            >
+              {t('livecourse.oralContinue')}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div
+          role="group"
+          aria-label={t('livecourse.quickQuestions')}
+          className="mt-2 flex flex-wrap gap-1.5"
+        >
+          {quickQuestions.map(({ label, prompt }) => {
+            const nextQuestion = question.split('\n').includes(prompt)
+              ? question
+              : question.trim()
+                ? `${question.trimEnd()}\n${prompt}`
+                : prompt;
+            return (
+              <Button
+                key={label}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="min-h-9 rounded-full px-3 text-xs"
+                disabled={!canAsk || sendingQuestion || nextQuestion.length > MAX_QUESTION_LENGTH}
+                onClick={() => {
+                  setQuestion(nextQuestion);
+                  questionInputRef.current?.focus();
+                }}
+              >
+                {label}
+              </Button>
+            );
+          })}
+        </div>
+      )}
+      {quote && !oralQuestion ? (
+        <div
+          data-testid="classroom-question-quote"
+          className="mt-2 flex items-start gap-2 rounded-md border-l-2 border-primary bg-muted/40 py-2 pl-3 pr-1"
+        >
+          <Quote aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1" role="status">
+            <p className="text-xs font-medium">{t('livecourse.questionQuote')}</p>
+            <blockquote className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+              {quote.text}
+            </blockquote>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-9 shrink-0"
+            aria-label={t('livecourse.removeQuestionQuote')}
+            disabled={sendingQuestion}
+            onClick={() => useHtmlQuestionContext.getState().clearQuote(quote)}
+          >
+            <X aria-hidden="true" className="size-3.5" />
+          </Button>
+        </div>
+      ) : null}
       <form
         className={cn('mt-2 flex gap-2', lectern ? 'items-center' : 'items-end')}
         onSubmit={(event) => {
@@ -708,13 +902,15 @@ export function RealtimeTeacherControls({
         }}
       >
         <textarea
+          ref={questionInputRef}
           data-testid="classroom-question-input"
-          aria-label={t('livecourse.askTeacher')}
-          placeholder={t('livecourse.askTeacher')}
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
+          aria-label={t(oralQuestion ? 'livecourse.oralAnswer' : 'livecourse.askTeacher')}
+          aria-describedby={questionHintId}
+          placeholder={t(oralQuestion ? 'livecourse.oralAnswer' : 'livecourse.askTeacher')}
+          value={oralQuestion ? oralAnswer : question}
+          onChange={(event) => (oralQuestion ? setOralAnswer : setQuestion)(event.target.value)}
           rows={lectern ? 1 : 2}
-          maxLength={2000}
+          maxLength={MAX_QUESTION_LENGTH}
           disabled={!canAsk || sendingQuestion}
           className={cn(
             'min-w-0 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50',
@@ -733,7 +929,7 @@ export function RealtimeTeacherControls({
           variant="outline"
           aria-label={t('livecourse.sendQuestion')}
           aria-busy={sendingQuestion}
-          disabled={!canAsk || !question.trim() || sendingQuestion}
+          disabled={!canAsk || !(oralQuestion ? oralAnswer : question).trim() || sendingQuestion}
           className="size-11 shrink-0"
         >
           {sendingQuestion ? (
@@ -743,6 +939,13 @@ export function RealtimeTeacherControls({
           )}
         </Button>
       </form>
+      <p id={questionHintId} className="mt-1.5 text-xs leading-5 text-muted-foreground">
+        {oralQuestion
+          ? t('livecourse.oralInputHint')
+          : supportsSelection
+            ? t('livecourse.questionSelectionHint')
+            : t('livecourse.questionDraftHint')}
+      </p>
       {error ? (
         <p role="alert" className={cn('mt-1 break-words text-xs leading-5 text-destructive')}>
           {error}

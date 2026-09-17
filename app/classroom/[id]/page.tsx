@@ -6,8 +6,16 @@ import { useStageStore } from '@/lib/store';
 import { useSettingsStore } from '@/lib/store/settings';
 import { claimStageSceneLoadToken, isCurrentStageSceneLoadToken } from '@/lib/store/stage';
 import { loadImageMapping } from '@/lib/utils/image-storage';
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import {
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  type ComponentProps,
+} from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useSceneGenerator } from '@/lib/hooks/use-scene-generator';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
@@ -20,7 +28,8 @@ import {
   defaultClassroomLoadDeps,
   runClassroomLoad,
 } from '@/lib/classroom/load-classroom';
-import { LiveCourseSessionProvider } from '@/lib/livecourse/session/context';
+import { LiveCourseSessionProvider, useLiveCourseSession } from '@/lib/livecourse/session/context';
+import { needsFinalizationRecovery } from '@/lib/livecourse/session/finalization-recovery';
 import { createCourseStateRepository } from '@/lib/livecourse/session/course-state-repository';
 import { resolveCourseIdentity } from '@/lib/livecourse/session/course-identity';
 import { getLearnerKey } from '@/lib/runtime/learner-key';
@@ -42,10 +51,52 @@ import {
   readGenerationParams,
   type StageGenerationParams,
 } from '@/lib/livecourse/session/generation-params';
+import { LEGACY_CLASSROOM_ERROR } from '@/lib/livecourse/lesson/html-classroom';
 
 const log = createLogger('Classroom');
 
 export default function ClassroomDetailPage() {
+  return (
+    <Suspense fallback={<GameLoader />}>
+      <ClassroomRoute />
+    </Suspense>
+  );
+}
+
+function ClassroomRoute() {
+  const params = useParams();
+  const search = useSearchParams();
+  return (
+    <ClassroomDetailContent
+      key={`${params?.id}:${search.toString()}`}
+      replayRequested={search.get('replay') === '1'}
+      replayFrom={search.get('from') === 'post' ? 'post' : 'home'}
+    />
+  );
+}
+
+function ClassroomTeachingContent({
+  onFinalized,
+  ...stageProps
+}: ComponentProps<typeof Stage> & { onFinalized: () => void }) {
+  const { classroomState } = useLiveCourseSession();
+  return (
+    <>
+      {classroomState !== 'finalizing' && classroomState !== 'completed' ? (
+        <Stage {...stageProps} />
+      ) : null}
+      <ClassroomLifecycleOverlay onFinalized={onFinalized} />
+    </>
+  );
+}
+
+function ClassroomDetailContent({
+  replayRequested,
+  replayFrom,
+}: {
+  replayRequested: boolean;
+  replayFrom: 'home' | 'post';
+}) {
   const { t } = useI18n();
   const params = useParams();
   const router = useRouter();
@@ -112,20 +163,12 @@ export default function ClassroomDetailPage() {
   // A2 生命周期视图：teach →（finalizing 自动归档成功）→ post（J4.1 课后
   // 选择）→ replay（J4.2/J4.4 再听）。?replay=1&from=home|post 直接进入再听。
   const [view, setView] = useState<'teach' | 'post' | 'replay'>(() =>
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('replay') === '1'
-      ? 'replay'
-      : 'teach',
+    replayRequested ? 'replay' : 'teach',
   );
-  const [archiveStatus, setArchiveStatus] = useState<'checking' | 'active' | 'archived' | 'error'>(
-    'checking',
-  );
-  const [replayEntry, setReplayEntry] = useState<'home' | 'post'>(() =>
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('from') === 'post'
-      ? 'post'
-      : 'home',
-  );
+  const [archiveStatus, setArchiveStatus] = useState<
+    'checking' | 'active' | 'recovering' | 'archived' | 'error'
+  >('checking');
+  const [replayEntry, setReplayEntry] = useState<'home' | 'post'>(replayFrom);
 
   // The initial route query decides whether the document loader is allowed to
   // perform maintenance writes. Keep this as a ref so switching between the
@@ -155,15 +198,21 @@ export default function ClassroomDetailPage() {
           setArchiveStatus('active');
           return;
         }
-        setArchiveStatus('archived');
-        setView((current) => (current === 'teach' ? 'post' : current));
-      } catch {
+        const recovering = await needsFinalizationRecovery(snapshot, getRuntimeStore());
+        if (cancelled) return;
+        setArchiveStatus(recovering ? 'recovering' : 'archived');
+        setView((current) => {
+          if (current === 'replay') return current;
+          if (recovering) return 'teach';
+          return current === 'teach' ? 'post' : current;
+        });
+      } catch (cause) {
         // Keep the route blocked until the archive check has a definitive
         // result; starting teaching while the check is unresolved can create
         // a new W for an already archived course.
         if (!cancelled) {
           setArchiveStatus('error');
-          setError('Unable to verify classroom lifecycle');
+          setError(cause instanceof Error ? cause.message : 'Unable to verify classroom lifecycle');
         }
       }
     })();
@@ -364,7 +413,9 @@ export default function ClassroomDetailPage() {
                   role="alert"
                   className="my-4 break-words text-sm leading-6 text-muted-foreground"
                 >
-                  {displayError}
+                  {displayError === LEGACY_CLASSROOM_ERROR
+                    ? t('livecourse.legacyClassroomUnsupported')
+                    : displayError}
                 </p>
                 <button
                   onClick={() => {
@@ -444,8 +495,10 @@ export default function ClassroomDetailPage() {
                   sessionEnabled
                 >
                   <ClassroomSessionBoundary>
-                    <Stage onRetryOutline={retrySingleOutline} />
-                    <ClassroomLifecycleOverlay onFinalized={() => setView('post')} />
+                    <ClassroomTeachingContent
+                      onRetryOutline={retrySingleOutline}
+                      onFinalized={() => setView('post')}
+                    />
                   </ClassroomSessionBoundary>
                 </LiveCourseSessionProvider>
               )}

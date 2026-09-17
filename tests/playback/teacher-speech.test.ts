@@ -98,6 +98,100 @@ function setup(actions: Action[], callbacks: PlaybackEngineCallbacks = {}) {
 }
 
 describe('PlaybackEngine teaching speech port', () => {
+  it('does not begin a dialogue if the speech-end observer synchronously pauses playback', async () => {
+    const question = vi.fn();
+    const state = setup(
+      [
+        {
+          id: 'first',
+          type: 'speech',
+          text: 'First',
+          oralQuestion: { question: 'Why?', guidance: 'Explain why.' },
+        },
+      ],
+      { question, onSpeechEnd: () => state.engine.pause() },
+    );
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    expect(question).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+  });
+  it('waits for an oral question after narration before moving to the next sentence', async () => {
+    const dialogue = deferred();
+    const question = vi.fn(() => dialogue.promise);
+    const state = setup(
+      [
+        {
+          id: 'first',
+          type: 'speech',
+          text: 'First',
+          oralQuestion: { question: 'Why?', guidance: 'Explain why.' },
+        },
+        speech('Second'),
+      ],
+      { question },
+    );
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    expect(state.onSpeechEnd).toHaveBeenCalledOnce();
+    expect(question).toHaveBeenCalledOnce();
+    expect(state.requests).toHaveLength(1);
+    expect(state.onComplete).not.toHaveBeenCalled();
+    dialogue.resolve();
+    await flush();
+    expect(state.requests[1].text).toBe('Second');
+    state.engine.stop();
+  });
+
+  it('cancels a waiting oral question on pause and retains the original speech cursor', async () => {
+    let signal!: AbortSignal;
+    const dialogue = deferred();
+    const state = setup(
+      [
+        {
+          id: 'first',
+          type: 'speech',
+          text: 'First',
+          oralQuestion: { question: 'Why?', guidance: 'Explain why.' },
+        },
+      ],
+      {
+        question: (_question, value) => {
+          signal = value;
+          return dialogue.promise;
+        },
+      },
+    );
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    state.engine.pause();
+    expect(signal.aborted).toBe(true);
+    expect(state.engine.getSnapshot().actionIndex).toBe(0);
+    dialogue.resolve();
+    await flush();
+    expect(state.onComplete).not.toHaveBeenCalled();
+    state.engine.resume();
+    expect(state.requests[1].text).toBe('First');
+    state.engine.stop();
+  });
+
+  it('replays narration without reopening an optional oral question', async () => {
+    const state = setup([
+      {
+        id: 'first',
+        type: 'speech',
+        text: 'First',
+        oralQuestion: { question: 'Why?', guidance: 'Explain why.' },
+      },
+    ]);
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    expect(state.onComplete).toHaveBeenCalledOnce();
+  });
   it('does not count an empty-scene dwell as a voiced lesson', async () => {
     const state = setup([]);
     state.engine.start();

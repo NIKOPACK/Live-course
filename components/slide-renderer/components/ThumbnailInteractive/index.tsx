@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import type { InteractiveContent } from '@/lib/types/stage';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
+import { useResolvedHtml } from '@/lib/livecourse/html/use-resolved-html';
 
 interface ThumbnailInteractiveProps {
   /** Interactive content to render */
@@ -46,10 +47,10 @@ export function ThumbnailInteractive({
   // Calculate scale ratio
   const scale = useMemo(() => size / viewportSize, [size, viewportSize]);
 
-  // Patch HTML for iframe rendering (only when visible to save memory)
+  const resolvedHtml = useResolvedHtml(content.html ?? '');
   const patchedHtml = useMemo(
-    () => (isVisible && content.html ? patchHtmlForIframe(content.html) : undefined),
-    [isVisible, content.html],
+    () => (isVisible && resolvedHtml ? patchHtmlForIframe(resolvedHtml) : undefined),
+    [isVisible, resolvedHtml],
   );
 
   // Calculate thumbnail height (16:9 aspect ratio)

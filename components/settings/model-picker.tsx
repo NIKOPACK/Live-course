@@ -55,7 +55,11 @@ interface ModelPickerProps {
  * Groups every configured provider's models into one searchable list so switching
  * providers no longer requires locating the provider in the middle column first.
  */
-export function ModelPicker({ providersConfig, onNavigateProvider, providerIds }: ModelPickerProps) {
+export function ModelPicker({
+  providersConfig,
+  onNavigateProvider,
+  providerIds,
+}: ModelPickerProps) {
   const { t } = useI18n();
   const anchor = useComboboxAnchor();
 
@@ -146,9 +150,7 @@ export function ModelPicker({ providersConfig, onNavigateProvider, providerIds }
       <div ref={anchor} className="w-full">
         <ComboboxInput
           className="w-full"
-          placeholder={
-            totalModels === 0 ? t('settings.noModelsAdded') : t('settings.searchModels')
-          }
+          placeholder={totalModels === 0 ? t('settings.noModelsAdded') : t('settings.searchModels')}
           aria-label={t('settings.activeModel')}
         />
       </div>
@@ -199,7 +201,10 @@ export function ModelPicker({ providersConfig, onNavigateProvider, providerIds }
                         </span>
                       )}
                       {option.model.contextWindow && (
-                        <span className="flex items-center gap-0.5" title={t('settings.contextWindow')}>
+                        <span
+                          className="flex items-center gap-0.5"
+                          title={t('settings.contextWindow')}
+                        >
                           <FileText className="h-3 w-3" />
                           <span className="text-[10px] tabular-nums">
                             {formatContextWindow(option.model.contextWindow)}
@@ -207,7 +212,10 @@ export function ModelPicker({ providersConfig, onNavigateProvider, providerIds }
                         </span>
                       )}
                       {option.model.outputWindow && (
-                        <span className="flex items-center gap-0.5" title={t('settings.outputWindow')}>
+                        <span
+                          className="flex items-center gap-0.5"
+                          title={t('settings.outputWindow')}
+                        >
                           <Send className="h-3 w-3" />
                           <span className="text-[10px] tabular-nums">
                             {formatContextWindow(option.model.outputWindow)}

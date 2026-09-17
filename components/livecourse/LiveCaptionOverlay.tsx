@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 
 import { useI18n } from '@/lib/hooks/use-i18n';
@@ -20,21 +20,16 @@ export function LiveCaptionOverlay() {
   const reduceMotion = useReducedMotion();
   const caption = useLiveCaptionStore((state) => state.caption);
   const held = useLiveCaptionStore((state) => state.holdCount > 0);
-  // Hides exactly the caption that was current when the timer fired; a newer
-  // caption (different `at`) re-shows itself without an extra state write.
-  const [staleAt, setStaleAt] = useState<number | null>(null);
+  const captionWindow = useMemo(() => ({ caption, held }), [caption, held]);
+  const [expiredWindow, setExpiredWindow] = useState<typeof captionWindow | null>(null);
 
   useEffect(() => {
-    if (!caption || held) {
-      setStaleAt(null);
-      return;
-    }
-    const at = caption.at;
-    const timer = setTimeout(() => setStaleAt(at), CAPTION_STALE_MS);
+    if (!captionWindow.caption || captionWindow.held) return;
+    const timer = setTimeout(() => setExpiredWindow(captionWindow), CAPTION_STALE_MS);
     return () => clearTimeout(timer);
-  }, [caption, held]);
+  }, [captionWindow]);
 
-  const visible = caption !== null && caption.at !== staleAt;
+  const visible = caption !== null && captionWindow !== expiredWindow;
 
   return (
     <div

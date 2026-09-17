@@ -180,6 +180,12 @@ export async function fetchSceneContent(
   signal?: AbortSignal,
   retryOptions?: ClientRetryOptions<SceneContentResult>,
 ): Promise<SceneContentResult> {
+  if (params.presentation?.mode !== 'html') {
+    return {
+      success: false,
+      error: 'HTML classroom visual direction is required',
+    };
+  }
   try {
     return await withGenerationRetry(
       async () => {

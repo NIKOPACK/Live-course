@@ -5,6 +5,7 @@ import type { SceneOutline } from '@/lib/types/generation';
 const completeLLMTextMock = vi.hoisted(() => vi.fn());
 const resolveModelFromRequestMock = vi.hoisted(() => vi.fn());
 const VOCATIONAL_FLAG = 'LIVECOURSE_ENABLE_VOCATIONAL';
+const PRESENTATION = { mode: 'html' as const, visualStyle: 'Teal diagrams on paper.' };
 let originalVocationalFlag: string | undefined;
 
 vi.mock('@/lib/ai/llm', () => ({
@@ -37,59 +38,69 @@ describe('scene-content vocational gate', () => {
     }
   });
 
-  test('flag off direct/replayed procedural-skill outline is downgraded before content generation', async () => {
+  test.each(['false', '1', undefined])(
+    'flag %s never bypasses the HTML classroom prerequisite',
+    async (flag) => {
+      vi.resetModules();
+      if (flag !== undefined) process.env[VOCATIONAL_FLAG] = flag;
+
+      const { POST } = await import('@/app/api/generate/scene-content/route');
+      const response = await POST(
+        mockRequest(createProceduralSkillOutline(), { taskEngineMode: true }),
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({ success: false, errorCode: 'INVALID_REQUEST' });
+      expect(body.error).toContain('HTML classroom visual direction');
+      expect(completeLLMTextMock).not.toHaveBeenCalled();
+      expect(resolveModelFromRequestMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('omitting legacy mode requirements still requires an HTML visual direction', async () => {
     vi.resetModules();
-    process.env[VOCATIONAL_FLAG] = 'false';
-    completeLLMTextMock.mockResolvedValueOnce(htmlForWidget('diagram'));
-
-    const { POST } = await import('@/app/api/generate/scene-content/route');
-    const response = await POST(
-      mockRequest(createProceduralSkillOutline(), { taskEngineMode: true }),
-    );
-    const body = await response.json();
-
-    expect(body.success).toBe(true);
-    expect(body.effectiveOutline.widgetType).toBe('diagram');
-    expect(body.effectiveOutline.widgetOutline.task).toBeUndefined();
-    expect(body.content.widgetType).toBe('diagram');
-    expect(body.content.widgetConfig.type).toBe('diagram');
-    expect(completeLLMTextMock).toHaveBeenCalledTimes(1);
-    expect(completeLLMTextMock.mock.calls[0][0].system).not.toContain('Procedural Skill');
-  });
-
-  test('flag off without requirements defaults to safe false for persisted procedural-skill outlines', async () => {
-    vi.resetModules();
-    completeLLMTextMock.mockResolvedValueOnce(htmlForWidget('diagram'));
 
     const { POST } = await import('@/app/api/generate/scene-content/route');
     const response = await POST(mockRequest(createProceduralSkillOutline()));
     const body = await response.json();
 
-    expect(body.success).toBe(true);
-    expect(body.effectiveOutline.widgetType).toBe('diagram');
-    expect(body.content.widgetType).toBe('diagram');
+    expect(response.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(completeLLMTextMock).not.toHaveBeenCalled();
   });
 
-  test('flag on with effective taskEngineMode allows procedural-skill content generation', async () => {
-    vi.resetModules();
-    process.env[VOCATIONAL_FLAG] = '1';
-    completeLLMTextMock.mockResolvedValueOnce(htmlForWidget('procedural-skill'));
+  test.each(['false', '1'])(
+    'flag %s uses free-form HTML instead of restoring the widget engine',
+    async (flag) => {
+      vi.resetModules();
+      process.env[VOCATIONAL_FLAG] = flag;
+      completeLLMTextMock.mockResolvedValueOnce(
+        '<!DOCTYPE html><html><body><main>Free-form classroom</main></body></html>',
+      );
 
-    const { POST } = await import('@/app/api/generate/scene-content/route');
-    const response = await POST(
-      mockRequest(createProceduralSkillOutline(), { taskEngineMode: true }),
-    );
-    const body = await response.json();
+      const { POST } = await import('@/app/api/generate/scene-content/route');
+      const response = await POST(
+        mockRequest(createProceduralSkillOutline(), { taskEngineMode: true }, PRESENTATION),
+      );
+      const body = await response.json();
 
-    expect(body.success).toBe(true);
-    expect(body.effectiveOutline.widgetType).toBe('procedural-skill');
-    expect(body.content.widgetType).toBe('procedural-skill');
-    expect(body.content.widgetConfig.type).toBe('procedural-skill');
-    expect(completeLLMTextMock.mock.calls[0][0].system).toContain('Procedural Skill');
-  });
+      expect(body.success).toBe(true);
+      expect(body.content.html).toContain('Free-form classroom');
+      expect(body.content.widgetType).toBeUndefined();
+      expect(body.content.widgetConfig).toBeUndefined();
+      expect(completeLLMTextMock).toHaveBeenCalledTimes(1);
+      expect(completeLLMTextMock.mock.calls[0][0].system).not.toContain('Procedural Skill');
+      expect(completeLLMTextMock.mock.calls[0][0].prompt).toContain(PRESENTATION.visualStyle);
+    },
+  );
 });
 
-function mockRequest(outline: SceneOutline, requirements?: { taskEngineMode?: boolean }) {
+function mockRequest(
+  outline: SceneOutline,
+  requirements?: { taskEngineMode?: boolean },
+  presentation?: typeof PRESENTATION,
+) {
   return {
     json: async () => ({
       outline,
@@ -97,6 +108,7 @@ function mockRequest(outline: SceneOutline, requirements?: { taskEngineMode?: bo
       stageId: 'stage-1',
       stageInfo: { name: 'Test Stage' },
       requirements,
+      presentation,
     }),
   } as unknown as Parameters<typeof import('@/app/api/generate/scene-content/route').POST>[0];
 }
@@ -120,16 +132,4 @@ function createProceduralSkillOutline(): SceneOutline {
       errorConsequences: ['Unsafe readings require stopping and rechecking'],
     },
   };
-}
-
-function htmlForWidget(type: string): string {
-  return `<!DOCTYPE html>
-<html>
-  <body>
-    <script type="application/json" id="widget-config">
-      {"type": "${type}"}
-    </script>
-    <main>${type} widget</main>
-  </body>
-</html>`;
 }

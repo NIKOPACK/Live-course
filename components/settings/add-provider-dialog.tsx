@@ -117,9 +117,7 @@ export function AddProviderDialog({
           {catalogProviders.length > 0 && (
             <div className="flex items-center gap-3 pt-1">
               <div className="h-px flex-1 bg-border" />
-              <span className="text-xs text-muted-foreground">
-                {t('settings.customProvider')}
-              </span>
+              <span className="text-xs text-muted-foreground">{t('settings.customProvider')}</span>
               <div className="h-px flex-1 bg-border" />
             </div>
           )}

@@ -275,6 +275,111 @@ afterEach(() => {
 });
 
 describe('LiveCourseRealtimeSession', () => {
+  it('conducts oral voice and typed rounds without resuming the lecture before audio drains', async () => {
+    const interruptNode = vi.fn();
+    const state = setup({
+      interruptNode,
+      getTeachingContext: () =>
+        'Prepared teaching content:\nThe next sentence explains the derivative.',
+    });
+    await state.session.connect();
+    const fake = mocks.FakeSession.instances[0];
+    const completion = state.session.question(
+      { question: 'Why does the rate change?', guidance: 'Consider the local slope.' },
+      {
+        hintText: 'Give a hint.',
+        resumeText: 'Continue.',
+      },
+    );
+    await flushRealtime();
+    const initial = startResponse(fake);
+    finishResponse(fake, initial, { drain: false });
+    await flushRealtime();
+    expect(state.events.filter((event) => event.type === 'oral_question').at(-1)).toMatchObject({
+      state: { phase: 'asking' },
+    });
+    fake.emit('transport_event', { type: 'output_audio_buffer.stopped', response_id: initial });
+    await flushRealtime();
+    expect(fake.muted).toBe(false);
+    for (let round = 0; round < 3; round++) {
+      let answering: Promise<void> | undefined;
+      if (round === 0) {
+        fake.emit('transport_event', {
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'oral-input',
+        });
+        fake.emit('transport_event', {
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'oral-input',
+        });
+        fake.emit('transport_event', {
+          type: 'conversation.item.input_audio_transcription.completed',
+          item_id: 'oral-input',
+          transcript: 'The local rate is changing.',
+        });
+      } else answering = state.session.ask(`Typed reasoning ${round}`);
+      await flushRealtime();
+      const id = startResponse(fake);
+      const request = fake.transport.events
+        .filter((event) => event.type === 'response.create')
+        .at(-1);
+      expect(request).toMatchObject({
+        response: {
+          instructions: expect.stringContaining(
+            round === 2 ? 'final answer round' : 'short oral dialogue',
+          ),
+        },
+      });
+      const oralInstructions = (request as { response: { instructions: string } }).response
+        .instructions;
+      expect(oralInstructions).not.toContain('Prepared teaching content');
+      expect(oralInstructions).not.toContain('The next sentence explains the derivative.');
+      const oralConfig = fake.transport.configs.at(-1) as { instructions: string };
+      expect(oralConfig.instructions).toContain('short oral dialogue');
+      expect(oralConfig.instructions).not.toContain('Prepared teaching content');
+      fake.emit('transport_event', {
+        type: 'response.output_audio_transcript.done',
+        response_id: id,
+        transcript: `Feedback and question ${round}`,
+      });
+      finishResponse(fake, id);
+      await answering;
+      await flushRealtime();
+      expect(interruptNode).not.toHaveBeenCalled();
+      expect(state.resumed).toEqual([]);
+    }
+    await completion;
+    expect(fake.transport.messages).toHaveLength(2);
+    expect(state.events.filter((event) => event.type === 'oral_question').at(-1)).toMatchObject({
+      state: null,
+    });
+    await state.session.close();
+  });
+
+  it('preserves a muted microphone when leaving oral dialogue', async () => {
+    const state = setup();
+    await state.session.connect();
+    state.session.mute(true);
+    const fake = mocks.FakeSession.instances[0];
+    const controller = new AbortController();
+    const completion = state.session.question(
+      { question: 'Why?', guidance: 'Reason about the rate.' },
+      {
+        hintText: 'Hint.',
+        resumeText: 'Continue.',
+        signal: controller.signal,
+      },
+    );
+    void completion.catch(() => undefined);
+    await flushRealtime();
+    finishResponse(fake, startResponse(fake));
+    await flushRealtime();
+    expect(fake.muted).toBe(true);
+    controller.abort();
+    await expect(completion).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fake.muted).toBe(true);
+    await state.session.close();
+  });
   it('connects without requesting speech or publishing a fake completion', async () => {
     const state = setup();
     await state.session.connect();

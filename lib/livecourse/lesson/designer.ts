@@ -72,6 +72,7 @@ Given a course requirement and its scene outlines, design the teaching plan for 
 - examples (optional): concrete worked examples.
 - anticipatedQuestions (optional, 1-3 items): the questions a self-learner is most likely to get stuck on at this node, each with a prepared response.
 - misconceptions (optional): common mistakes or misconceptions that checkpoints should verify.
+- oralQuestion (instruction nodes): prepare one short oral reasoning question about the first half of this node, with {"question":"what the teacher asks aloud","guidance":"teacher-only reasoning, likely misconceptions and hints"}. Omit for introductions, recaps and checkpoints. This is a brief formative conversation, not a graded checkpoint. Do not ask about content that has not yet been taught.
 - visualAids (optional, at most 3 items, instruction nodes only): declarative image intents for slides where a static visual genuinely helps understanding (diagrams, charts, process illustrations). Omit entirely when text suffices. Each item:
   - id: a globally unique placeholder, format "lesson_img_<sceneId>_<n>" (n starts at 1). Reusing the same id in a later node reuses the same image — do not request near-identical images.
   - prompt: a clear, specific description for the image generation model. If the image contains text, labels, or annotations, the prompt MUST explicitly state that all text in the image is in the course language.
@@ -99,6 +100,7 @@ You are designing the teaching plan for ONE scene node of a lesson. Produce a co
 - examples (optional): concrete worked examples.
 - anticipatedQuestions (required): the questions a self-learner is most likely to get stuck on at this node, each with a prepared response. 2-4 items.
 - misconceptions (required): common mistakes or misconceptions that checkpoints should verify.
+- oralQuestion (instruction nodes): prepare one short oral reasoning question about the first half of this node, with {"question":"what the teacher asks aloud","guidance":"teacher-only reasoning, likely misconceptions and hints"}. Omit for introductions, recaps and checkpoints. This is a brief formative conversation, not a graded checkpoint. Do not ask about content that has not yet been taught.
 - visualAids (optional, at most 3 items, instruction nodes only): declarative image intents for slides where a static visual genuinely helps understanding (diagrams, charts, process illustrations). Omit entirely when text suffices. Each item:
   - id: a globally unique placeholder, format "lesson_img_<sceneId>_<n>" (n starts at 1 for this node).
   - prompt: a clear, specific description for the image generation model. If the image contains text, labels, or annotations, the prompt MUST explicitly state that all text in the image is in the course language.

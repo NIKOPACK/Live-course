@@ -31,7 +31,9 @@ it('isProviderInUse keeps only providers with user or operator intent', () => {
   // Keyless built-in with only a registry default URL is NOT user intent.
   expect(isProviderInUse(provider({ requiresApiKey: false }))).toBe(false);
   // Keyless with explicit baseUrl: visible.
-  expect(isProviderInUse(provider({ requiresApiKey: false, baseUrl: 'http://localhost:11434/v1' }))).toBe(true);
+  expect(
+    isProviderInUse(provider({ requiresApiKey: false, baseUrl: 'http://localhost:11434/v1' })),
+  ).toBe(true);
   // API key entered: visible (whitespace-only does not count).
   expect(isProviderInUse(provider({ apiKey: '   ' }))).toBe(false);
   expect(isProviderInUse(provider({ apiKey: 'sk-x' }))).toBe(true);

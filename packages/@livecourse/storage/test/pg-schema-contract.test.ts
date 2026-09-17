@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS document_scenes (
 CREATE INDEX IF NOT EXISTS document_scenes_stage_order_idx
   ON document_scenes (stage_id, scene_order, id);
 
+CREATE TABLE IF NOT EXISTS document_course_plans (
+  stage_id TEXT PRIMARY KEY REFERENCES document_stages(id) ON DELETE CASCADE,
+  data JSONB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS document_outlines (
   stage_id TEXT PRIMARY KEY REFERENCES document_stages(id) ON DELETE CASCADE,
   data JSONB NOT NULL

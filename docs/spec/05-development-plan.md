@@ -53,13 +53,13 @@ S0–S1 不新增 `lib/livecourse` 领域文件。A1 才允许新文件，且必
 
 ## A1 先设计再生成
 
-大纲与内容之间写入 `LessonPlan`。教案设计 Agent 把每条大纲展开成节点讲授设计：讲什么（teachingPoints）、怎么讲（explanationPlan）、例子、预设学生问题与回应（anticipatedQuestions）、易错点（misconceptions）。教案随文档持久化；课堂运行时读持久化教案，`deriveLessonPlanFromStage` 只服务旧课。逐段内容生成以教案节点为输入。
+大纲与内容之间写入 `LessonPlan`。教案设计 Agent 把每条大纲展开成节点讲授设计：讲什么（teachingPoints）、怎么讲（explanationPlan）、例子、预设学生问题与回应（anticipatedQuestions）、易错点（misconceptions）。教案随文档持久化，并必须带 HTML 视觉方向；课堂运行时只读这份教案，缺 presentation 不得打开。逐段内容生成以教案节点为输入。
 
 约束：教案设计 Agent 是台后 worker；学习者在任何画面只面对一位 Agent 老师（`02` 首页节）。
 
 验收：
 
-- 每堂新课先有含讲授设计与预设问答的教案，再有幻灯片
+- 每堂课先有含讲授设计、预设问答和 HTML 视觉方向的教案，再有课堂页
 - 教案随课持久化，再打开同一堂课时直接读取，不靠反推
 - 生成与上课全程，界面上学习者只看到一位 Agent
 
@@ -130,13 +130,13 @@ worker Agent 支持派生并行 subagent（`04` §7）：
 - `lib/livecourse/lesson/visual-aids.ts`：逐段内容生成前把 visualAids 合并进对应 outline 的 `mediaGenerations`（`04` §7）；两条生成链路（一键生成 `lib/server/classroom-generation.ts`、预览生成 `app/generation-preview/`）共用同一转换
 - 执行沿用 media-orchestrator 与 `/api/generate/image` 及 `lib/media` 适配器矩阵；subagent 保持无工具，不新增 provider 路径
 
-约束：教案 schema 只加可选字段，旧课不受影响；教案侧不直接调图片生成 API。
+约束：教案 schema 的 visualAids 仍为可选；教案侧不直接调图片生成 API。
 
 验收：
 
 - 需要图示的课（如「水循环」）生成的幻灯片含 AI 生成配图，图内文字语言与课程语言一致
 - 无配图需求的节点不产出 mediaGenerations；未配置图片 provider 时生成不中断（沿用现有降级）
-- 旧课（教案无 visualAids）打开与生成行为不变
+- 无 HTML 视觉方向的课不得打开或生成
 
 ## A5.1 模型原生 HTML 课堂
 
@@ -144,7 +144,13 @@ worker Agent 支持派生并行 subagent（`04` §7）：
 
 主 Agent 先确定全课视觉方向并随教案持久化，再逐页生成自由 HTML/CSS/SVG/Canvas/JavaScript。新课不再受固定 slide 元素或 widget 模板限制；检查页同样使用 HTML，但结构化题目和原有判分/证据逻辑不变。
 
-验收：浏览器与服务端生成都使用同一课程方向；每页 HTML 真实显示在课堂、只读预览与缩略图；失败段重试不改变风格或成功段；无效 HTML 显式失败；检查显式提交、失败恢复及 replay 无证据写入保持不变；旧格式课程仍可打开。
+验收：浏览器与服务端生成都使用同一课程方向；每页 HTML 真实显示在课堂、只读预览与缩略图；失败段重试不改变风格或成功段；无效 HTML 显式失败；检查显式提交、失败恢复及 replay 无证据写入保持不变；无 `presentation.mode = html` 的课打开失败，不回退到幻灯片 / widget / PBL。
+
+## J3.2a 口头问答增量
+
+依据：`01` J3.2a、`02`「讲授中的口头问答」、`04`「J3.2a 口头问答实现缝」。
+
+验收：教案可保存预设问题并在讲稿中段触发；老师问完真正等待语音或文字，依据回答最多追问两次；提示、继续、识别失败、回应失败重试、暂停取消与回放不提问都有明确边界；OpenAI 与 Volc 共用同一有限轮次控制，不新增语音供应商、判分或学习证据。无 HTML 课不得打开，因此也不改写或补写旧格式。
 
 ## A6 多层记忆闭环
 

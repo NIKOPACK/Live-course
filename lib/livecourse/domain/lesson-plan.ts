@@ -45,7 +45,15 @@ export function bindLessonPlanToGeneratedScenes(
   plan: LessonPlan,
   scenes: readonly Scene[],
 ): LessonPlan {
-  if (scenes.length === 0) return plan;
+  const nodes = bindLessonNodesToGeneratedScenes(plan.nodes, scenes);
+  return nodes === plan.nodes ? plan : { ...plan, nodes };
+}
+
+export function bindLessonNodesToGeneratedScenes(
+  nodes: LessonNode[],
+  scenes: readonly Scene[],
+): LessonNode[] {
+  if (scenes.length === 0) return nodes;
 
   const scenesById = new Map<string, Scene>();
   const scenesByOutlineId = new Map<string, Scene>();
@@ -62,7 +70,7 @@ export function bindLessonPlanToGeneratedScenes(
 
   let changed = false;
   const boundSceneIds = new Set<string>();
-  const nodes = plan.nodes.map((node) => {
+  const boundNodes = nodes.map((node) => {
     const boundScene = scenesById.get(node.sceneId) ?? scenesByOutlineId.get(node.sceneId);
     if (!boundScene) return node;
     if (boundSceneIds.has(boundScene.id)) {
@@ -77,7 +85,7 @@ export function bindLessonPlanToGeneratedScenes(
     return { ...node, id: nextId, sceneId: boundScene.id };
   });
 
-  return changed ? { ...plan, nodes } : plan;
+  return changed ? boundNodes : nodes;
 }
 
 export function deriveLessonPlanFromStage(input: {

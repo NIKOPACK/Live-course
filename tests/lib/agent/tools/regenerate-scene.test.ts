@@ -64,44 +64,28 @@ const NEW_SLIDE_JSON = JSON.stringify({
 });
 
 describe('regenerate_scene tool', () => {
-  it('regenerates slide content (with the instruction + baseline) then actions', async () => {
-    const prompts: string[] = [];
-    const stages: string[] = [];
-    const aiCall = vi.fn(async (stage: string, _system: string, user: string) => {
-      stages.push(stage);
-      prompts.push(user);
-      // 1st call = content generation (expects slide JSON); 2nd = actions (array)
-      return prompts.length === 1 ? NEW_SLIDE_JSON : '[]';
-    });
+  it('rejects legacy slide regeneration without calling a model or changing its baseline', async () => {
+    const aiCall = vi.fn(async () => NEW_SLIDE_JSON);
+    const context = slideCtx('s1');
+    const baseline = structuredClone(context);
 
     const tool = makeRegenerateSceneTool({
       aiCall,
-      getSceneContext: (id) => (id === 's1' ? slideCtx('s1') : undefined),
+      getSceneContext: (id) => (id === 's1' ? context : undefined),
     });
 
-    const res = await tool.execute('call-1', {
-      sceneId: 's1',
-      instruction: '<<REGEN-INSTRUCTION-SENTINEL>>',
-    });
-
-    expect((res as { isError?: boolean }).isError).toBeFalsy();
-    expect(res.details.sceneId).toBe('s1');
-    // Black box: content resolves the slide-content stage, actions the actions stage.
-    expect(stages).toEqual(['scene-content:slide', 'scene-actions']);
-    // The content-generation prompt ran in EDIT MODE with the instruction + baseline.
-    expect(prompts[0]).toContain('EDIT MODE');
-    expect(prompts[0]).toContain('<<REGEN-INSTRUCTION-SENTINEL>>');
-    expect(prompts[0]).toContain('OLD-BASELINE-SENTINEL');
-    // The regenerated content is returned for the client to apply.
-    expect(JSON.stringify(res.details.content)).toContain('NEW-CONTENT');
+    await expect(
+      tool.execute('call-1', {
+        sceneId: 's1',
+        instruction: '<<REGEN-INSTRUCTION-SENTINEL>>',
+      }),
+    ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
+    expect(aiCall).not.toHaveBeenCalled();
+    expect(context).toEqual(baseline);
   });
 
-  it('threads existing images as resources (id-ref baseline + non-empty assignedImages)', async () => {
-    const prompts: string[] = [];
-    const aiCall = vi.fn(async (_stage: string, _system: string, user: string) => {
-      prompts.push(user);
-      return prompts.length === 1 ? NEW_SLIDE_JSON : '[]';
-    });
+  it('leaves legacy images intact when the HTML prerequisite rejects regeneration', async () => {
+    const aiCall = vi.fn(async () => NEW_SLIDE_JSON);
 
     const dataSrc = `data:image/png;base64,${'Z'.repeat(2000)}`;
     const imageEl = {
@@ -116,23 +100,18 @@ describe('regenerate_scene tool', () => {
       rotate: 0,
     } as unknown as PPTElement;
 
+    const context = slideCtx('s1', [imageEl]);
+    const baseline = structuredClone(context);
     const tool = makeRegenerateSceneTool({
       aiCall,
-      getSceneContext: (id) => (id === 's1' ? slideCtx('s1', [imageEl]) : undefined),
+      getSceneContext: (id) => (id === 's1' ? context : undefined),
     });
 
-    const res = await tool.execute('call-1', { sceneId: 's1', instruction: 'tweak it' });
-
-    expect((res as { isError?: boolean }).isError).toBeFalsy();
-    const contentPrompt = prompts[0];
-    // The base64 payload never enters the prompt...
-    expect(contentPrompt).not.toContain('Z'.repeat(2000));
-    // ...the baseline references the image by its img_N id instead...
-    expect(contentPrompt).toContain('"src":"img_1"');
-    // ...and the image is offered as a resource (assignedImages → prompt).
-    expect(contentPrompt).toContain('img_1');
-    expect(contentPrompt).toContain('Existing slide image');
-    expect(contentPrompt).toContain('KEEP them');
+    await expect(
+      tool.execute('call-1', { sceneId: 's1', instruction: 'tweak it' }),
+    ).rejects.toMatchObject({ name: 'ClassroomHtmlRequiredError' });
+    expect(aiCall).not.toHaveBeenCalled();
+    expect(context).toEqual(baseline);
   });
 
   it('refuses slides containing a video without generating anything', async () => {

@@ -21,7 +21,6 @@ import type { RuntimeStore } from '@livecourse/storage';
 import { lessonCompletionEventBus, teachingActionBus } from '@/lib/livecourse/actions/bus';
 import {
   bindLessonPlanToGeneratedScenes,
-  deriveLessonPlanFromStage,
   lessonPlanSchema,
   nodeIdForScene,
   sceneIdFromNodeId,
@@ -748,9 +747,8 @@ export function resolveLessonPlan(input: {
   // durability error and must remain visible instead of being replaced by a
   // different source of truth.
   if (input.persistedLessonPlan == null) {
-    return bindResolvedLessonPlan(
-      deriveLessonPlanFromStage({ stage: input.stage, scenes: input.scenes, now: input.now }),
-      input.scenes,
+    throw new LessonPlanResolutionError(
+      `Classroom ${JSON.stringify(input.stage.id)} has no HTML lesson plan`,
     );
   }
 
@@ -768,6 +766,11 @@ export function resolveLessonPlan(input: {
   if (input.courseId !== undefined && parsed.data.courseId !== input.courseId) {
     throw new LessonPlanResolutionError(
       `Persisted lesson plan belongs to course ${JSON.stringify(parsed.data.courseId)}, not ${JSON.stringify(input.courseId)}`,
+    );
+  }
+  if (parsed.data.presentation?.mode !== 'html') {
+    throw new LessonPlanResolutionError(
+      `Classroom ${JSON.stringify(input.stage.id)} is not an HTML classroom`,
     );
   }
   return bindResolvedLessonPlan(parsed.data, input.scenes);
@@ -1211,36 +1214,38 @@ export function LiveCourseSessionProvider({
         lifecycle: {
           classroomSessionId,
           courseState: guardedCourseState,
-          destroyWorkSession: async () => {
+          destroyWorkSession: async (options) => {
             // The action log and the A6 working-memory record are one
             // classroom W lifecycle.  Both are destroyed only after C (and,
             // for finalization, L) has succeeded; each repository's destroy
             // operation is idempotent so a retry can finish the other half.
             assertLifecycleToken(lifecycleToken);
-            const working = await guardedWorkingMemory.load();
-            assertLifecycleToken(lifecycleToken);
-            const composed = await loadCourseLearningMemory({
-              store,
-              scope: { stageId, learnerId: activeLearnerId, courseId },
-              courseState: guardedCourseState,
-              goalRules: Object.fromEntries(
-                activeLessonPlan.goals.map((goal) => [goal.id, goal.rule]),
-              ),
-              assertActive: () => assertLifecycleToken(lifecycleToken),
-            });
-            assertLifecycleToken(lifecycleToken);
-            await archiveWorkingMemoryIntoCourse({
-              courseMemory: guardedCourseMemory,
-              workingMemory: working,
-              goalStates: composed.goalStates,
-            });
-            assertLifecycleToken(lifecycleToken);
+            if (!options?.memoryArchived) {
+              const working = await guardedWorkingMemory.load();
+              assertLifecycleToken(lifecycleToken);
+              const composed = await loadCourseLearningMemory({
+                store,
+                scope: { stageId, learnerId: activeLearnerId, courseId },
+                courseState: guardedCourseState,
+                goalRules: Object.fromEntries(
+                  activeLessonPlan.goals.map((goal) => [goal.id, goal.rule]),
+                ),
+                assertActive: () => assertLifecycleToken(lifecycleToken),
+              });
+              assertLifecycleToken(lifecycleToken);
+              await archiveWorkingMemoryIntoCourse({
+                courseMemory: guardedCourseMemory,
+                workingMemory: working,
+                goalStates: composed.goalStates,
+              });
+              assertLifecycleToken(lifecycleToken);
+            }
             await repository.destroy();
             assertLifecycleToken(lifecycleToken);
             await guardedWorkingMemory.destroy();
             assertLifecycleToken(lifecycleToken);
           },
-          finalizeLearnerMemory: async () => {
+          finalizeLearnerMemory: async (finalization) => {
             // Policy is the sole L writer. Empty/non-long-term candidates are
             // a no-op and must not create an empty learner session.
             assertLifecycleToken(lifecycleToken);
@@ -1264,6 +1269,7 @@ export function LiveCourseSessionProvider({
               explicit: explicitTeacherContextRef.current,
               extraCandidates: learnerMemoryCandidatesRef.current,
               goalStates: composed.goalStates,
+              ...(finalization ? { now: () => finalization.occurredAt } : {}),
             });
             assertLifecycleToken(lifecycleToken);
           },

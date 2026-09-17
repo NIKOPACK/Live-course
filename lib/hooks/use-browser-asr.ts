@@ -9,7 +9,8 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('BrowserASR');
 
-// Note: Window.SpeechRecognition declaration is in components/ai-elements/prompt-input.tsx
+// Window.SpeechRecognition / webkitSpeechRecognition are declared globally by
+// @assistant-ui/core's speech adapter.
 
 export type ASRErrorCode =
   | 'not-supported'

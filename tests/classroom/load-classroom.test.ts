@@ -8,6 +8,7 @@ import {
   rosterNeedsLegacyFallback,
   runClassroomLoad,
 } from '@/lib/classroom/load-classroom';
+import { LEGACY_CLASSROOM_ERROR } from '@/lib/livecourse/lesson/html-classroom';
 import {
   claimStageSceneLoadToken,
   clearStoreForDeletedStage,
@@ -67,25 +68,42 @@ function makeScene(id: string, stageId: string): Scene {
   return {
     id,
     stageId,
-    type: 'slide',
+    type: 'interactive',
     title: id,
     order: 1,
     content: {
-      type: 'slide',
-      canvas: {
-        id: `canvas-${id}`,
-        viewportSize: 1000,
-        viewportRatio: 0.5625,
-        theme: {
-          backgroundColor: '#fff',
-          themeColors: ['#000'],
-          fontColor: '#000',
-          fontName: 'Inter',
-        },
-        elements: [],
-      },
+      type: 'interactive',
+      url: '',
+      html: `<html><body><main id="${id}">${id}</main></body></html>`,
     },
   };
+}
+
+function htmlLessonPlan(stageId: string) {
+  return {
+    schemaVersion: 1 as const,
+    id: `lesson-plan:${stageId}`,
+    courseId: stageId,
+    stageId,
+    title: stageId,
+    version: 1,
+    status: 'approved' as const,
+    createdAt: '2026-09-14T00:00:00.000Z',
+    goals: [],
+    nodes: [],
+    presentation: { mode: 'html' as const, visualStyle: 'Test classroom direction.' },
+  };
+}
+
+function applyHtmlClassroom(
+  stage: Stage,
+  scenes: readonly Scene[],
+  options: Parameters<typeof applyClassroomStageAndScenes>[2] = {},
+) {
+  applyClassroomStageAndScenes(stage, scenes, {
+    lessonPlan: htmlLessonPlan(stage.id),
+    ...options,
+  });
 }
 
 function deferred<T>() {
@@ -162,7 +180,7 @@ describe('runClassroomLoad', () => {
     const stage = makeStage('stage-a');
     const scene = makeScene('scene-a', 'stage-a');
 
-    applyClassroomStageAndScenes(stage, [scene], { persist: false });
+    applyHtmlClassroom(stage, [scene], { persist: false });
 
     expect(isCurrentStageSceneLoadToken(loadToken)).toBe(true);
     expect(useStageStore.getState().stage?.id).toBe('stage-a');
@@ -212,7 +230,7 @@ describe('runClassroomLoad', () => {
       ],
     };
 
-    applyClassroomStageAndScenes(makeStage('stage-a'), [makeScene('scene-a', 'stage-a')], {
+    applyHtmlClassroom(makeStage('stage-a'), [makeScene('scene-a', 'stage-a')], {
       persist: false,
       lessonPlan,
     });
@@ -230,11 +248,9 @@ describe('runClassroomLoad', () => {
     vi.mocked(saveStageDataIncremental).mockClear();
     markStageDeleted('stage-revived');
     try {
-      applyClassroomStageAndScenes(
-        makeStage('stage-revived'),
-        [makeScene('scene-r', 'stage-revived')],
-        { persist: false },
-      );
+      applyHtmlClassroom(makeStage('stage-revived'), [makeScene('scene-r', 'stage-revived')], {
+        persist: false,
+      });
       expect(isStageDeleted('stage-revived')).toBe(false);
 
       // An edit after the restore reaches storage again.
@@ -262,7 +278,7 @@ describe('runClassroomLoad', () => {
     useStageStore.getState().clearStore();
     vi.mocked(saveStageDataIncremental).mockClear();
     const warmStage = makeStage('stage-warm-ghost');
-    applyClassroomStageAndScenes(warmStage, [makeScene('scene-w', 'stage-warm-ghost')], {
+    applyHtmlClassroom(warmStage, [makeScene('scene-w', 'stage-warm-ghost')], {
       persist: false,
     });
     // Home-page delete: deletion marked while the store stays warm (the
@@ -278,7 +294,7 @@ describe('runClassroomLoad', () => {
         getCurrentStage: () => useStageStore.getState().stage,
         fetchClassroom: vi.fn().mockResolvedValue({ stage: serverStage, scenes: [serverScene] }),
         applyFallbackScenes: vi.fn().mockImplementation(async ({ stage, scenes }) => {
-          applyClassroomStageAndScenes(stage, scenes, { persist: false });
+          applyHtmlClassroom(stage, scenes, { persist: false });
           return true;
         }),
       });
@@ -318,7 +334,7 @@ describe('runClassroomLoad', () => {
     // fully editable classroom whose every edit is silently dropped.
     useStageStore.getState().clearStore();
     vi.mocked(saveStageDataIncremental).mockClear();
-    applyClassroomStageAndScenes(makeStage('stage-zero-ghost'), [], { persist: false });
+    applyHtmlClassroom(makeStage('stage-zero-ghost'), [], { persist: false });
     // Settled-deleted world with the ghost left warm (eviction skipped by the
     // post-removal cascade failure).
     markStageDeleted('stage-zero-ghost');
@@ -331,7 +347,7 @@ describe('runClassroomLoad', () => {
         getCurrentStage: () => useStageStore.getState().stage,
         fetchClassroom: vi.fn().mockResolvedValue({ stage: serverStage, scenes: [serverScene] }),
         applyFallbackScenes: vi.fn().mockImplementation(async ({ stage, scenes }) => {
-          applyClassroomStageAndScenes(stage, scenes, { persist: false });
+          applyHtmlClassroom(stage, scenes, { persist: false });
           return true;
         }),
       });
@@ -370,11 +386,9 @@ describe('runClassroomLoad', () => {
     useStageStore.getState().clearStore();
     vi.mocked(saveStageDataIncremental).mockClear();
     vi.mocked(loadStageData).mockClear();
-    applyClassroomStageAndScenes(
-      makeStage('stage-mid-delete'),
-      [makeScene('scene-m', 'stage-mid-delete')],
-      { persist: false },
-    );
+    applyHtmlClassroom(makeStage('stage-mid-delete'), [makeScene('scene-m', 'stage-mid-delete')], {
+      persist: false,
+    });
     // A pre-delete edit sitting in the debounce window.
     useStageStore.getState().setCurrentSceneId('scene-m');
     try {
@@ -434,7 +448,7 @@ describe('runClassroomLoad', () => {
     // instead of leaving the user on a blanked classroom nothing reloads.
     useStageStore.getState().clearStore();
     vi.mocked(loadStageData).mockClear();
-    applyClassroomStageAndScenes(
+    applyHtmlClassroom(
       makeStage('stage-del-success'),
       [makeScene('scene-s', 'stage-del-success')],
       { persist: false },
@@ -452,7 +466,7 @@ describe('runClassroomLoad', () => {
         getCurrentStage: () => useStageStore.getState().stage,
         fetchClassroom: vi.fn().mockResolvedValue({ stage: serverStage, scenes: [serverScene] }),
         applyFallbackScenes: vi.fn().mockImplementation(async ({ stage, scenes }) => {
-          applyClassroomStageAndScenes(stage, scenes, { persist: false });
+          applyHtmlClassroom(stage, scenes, { persist: false });
           return true;
         }),
       });
@@ -494,11 +508,9 @@ describe('runClassroomLoad', () => {
     // touching the store the newer navigation now owns.
     useStageStore.getState().clearStore();
     vi.mocked(loadStageData).mockClear();
-    applyClassroomStageAndScenes(
-      makeStage('stage-await-nav'),
-      [makeScene('scene-n', 'stage-await-nav')],
-      { persist: false },
-    );
+    applyHtmlClassroom(makeStage('stage-await-nav'), [makeScene('scene-n', 'stage-await-nav')], {
+      persist: false,
+    });
     markStageDeleted('stage-await-nav');
     beginStageDeletionCascade('stage-await-nav');
     try {
@@ -507,11 +519,9 @@ describe('runClassroomLoad', () => {
 
       // A newer navigation claims the token and owns the store.
       claimStageSceneLoadToken();
-      applyClassroomStageAndScenes(
-        makeStage('stage-other'),
-        [makeScene('scene-o', 'stage-other')],
-        { persist: false },
-      );
+      applyHtmlClassroom(makeStage('stage-other'), [makeScene('scene-o', 'stage-other')], {
+        persist: false,
+      });
 
       // The deletion settles successfully (flag kept) — releasing the parked
       // load, which must now be a no-op.
@@ -540,7 +550,7 @@ describe('runClassroomLoad', () => {
     vi.mocked(loadStageData).mockClear();
     const localStage = makeStage('stage-park-replaced');
     const localScene = makeScene('scene-p', 'stage-park-replaced');
-    applyClassroomStageAndScenes(localStage, [localScene], { persist: false });
+    applyHtmlClassroom(localStage, [localScene], { persist: false });
     markStageDeleted('stage-park-replaced');
     beginStageDeletionCascade('stage-park-replaced');
     try {
@@ -559,11 +569,9 @@ describe('runClassroomLoad', () => {
       expect(loadStageData).not.toHaveBeenCalled();
 
       // An import applies ANOTHER stage mid-park, leaving the token untouched.
-      applyClassroomStageAndScenes(
-        makeStage('stage-imported'),
-        [makeScene('scene-i', 'stage-imported')],
-        { persist: false },
-      );
+      applyHtmlClassroom(makeStage('stage-imported'), [makeScene('scene-i', 'stage-imported')], {
+        persist: false,
+      });
 
       // The deletion fails before removing the document: flag lifted, settled.
       unmarkStageDeleted('stage-park-replaced');
@@ -590,7 +598,7 @@ describe('runClassroomLoad', () => {
     useStageStore.getState().clearStore();
     markStageDeleted('stage-tail-restore');
     try {
-      applyClassroomStageAndScenes(
+      applyHtmlClassroom(
         makeStage('stage-tail-restore'),
         [makeScene('scene-t', 'stage-tail-restore')],
         { persist: false },
@@ -609,13 +617,9 @@ describe('runClassroomLoad', () => {
   it('keeps dropping in-flight writes for a deleted classroom that was NOT restored', async () => {
     useStageStore.getState().clearStore();
     vi.mocked(saveStageDataIncremental).mockClear();
-    applyClassroomStageAndScenes(
-      makeStage('stage-doomed'),
-      [makeScene('scene-d', 'stage-doomed')],
-      {
-        persist: false,
-      },
-    );
+    applyHtmlClassroom(makeStage('stage-doomed'), [makeScene('scene-d', 'stage-doomed')], {
+      persist: false,
+    });
     try {
       markStageDeleted('stage-doomed');
       useStageStore.getState().setCurrentSceneId('scene-d');
@@ -634,7 +638,7 @@ describe('runClassroomLoad', () => {
       chatSnapshot: { sessions: [], restoreMarker: 'chat-restore-marker:stage-old:marker' },
     });
 
-    applyClassroomStageAndScenes(makeStage('stage-new'), [], { persist: false });
+    applyHtmlClassroom(makeStage('stage-new'), [], { persist: false });
 
     expect(useStageStore.getState().chatSnapshot).toEqual({
       sessions: [],
@@ -658,7 +662,7 @@ describe('runClassroomLoad', () => {
     };
     const chatSnapshot = { sessions: [hydratedChat], restoreMarker: null };
 
-    applyClassroomStageAndScenes(makeStage('stage-runtime-chat'), [], {
+    applyHtmlClassroom(makeStage('stage-runtime-chat'), [], {
       persist: false,
       chats: [hydratedChat],
       chatSnapshot,
@@ -1001,6 +1005,62 @@ describe('runClassroomLoad', () => {
     expect(deps.loadFromStorage).toHaveBeenCalledWith('stage-a', 1, { readOnly: true });
     expect(deps.loadLegacyAgentFallbacks).not.toHaveBeenCalled();
     expect(deps.commitMigratedAgentConfigs).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the loaded document is not an HTML classroom', async () => {
+    const stage = makeStage('stage-a');
+    const slide: Scene = {
+      id: 'old',
+      stageId: 'stage-a',
+      type: 'slide',
+      title: 'Old',
+      order: 0,
+      content: {
+        type: 'slide',
+        canvas: {
+          id: 'c',
+          viewportSize: 1000,
+          viewportRatio: 0.5625,
+          theme: {
+            backgroundColor: '#fff',
+            themeColors: ['#000'],
+            fontColor: '#000',
+            fontName: 'Inter',
+          },
+          elements: [],
+        },
+      },
+    };
+    const { deps, setStage } = makeDeps({
+      loadFromStorage: vi.fn().mockImplementation(async () => {
+        setStage(stage);
+        useStageStore.setState({
+          stage,
+          scenes: [slide],
+          lessonPlan: {
+            schemaVersion: 1,
+            id: 'lesson-plan:stage-a',
+            courseId: 'stage-a',
+            stageId: 'stage-a',
+            title: 'Legacy',
+            version: 1,
+            status: 'approved',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            goals: [],
+            nodes: [],
+          },
+        });
+      }),
+    });
+
+    try {
+      await runClassroomLoad(deps);
+
+      expect(deps.setError).toHaveBeenCalledWith(LEGACY_CLASSROOM_ERROR);
+      expect(deps.setLoading).toHaveBeenCalledWith(false);
+    } finally {
+      useStageStore.getState().clearStore();
+    }
   });
 
   it('stops side effects when the component unmounts while loading', async () => {

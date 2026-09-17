@@ -154,11 +154,13 @@ export function collectStageAssetRefs(
       ) {
         for (const reference of htmlMediaReferences(scene.content.html)) {
           const category =
-            reference.kind === 'image-src'
-              ? imageSrc
-              : reference.kind === 'video-poster'
-                ? poster
-                : videoSrc;
+            reference.kind === 'video-poster'
+              ? poster
+              : reference.kind === 'video-src'
+                ? videoSrc
+                : reference.kind === 'script-ref' && /^gen_vid_/i.test(reference.ref)
+                  ? videoSrc
+                  : imageSrc;
           category.add(reference.ref);
           own(
             reference.ref,

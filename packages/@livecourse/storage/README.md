@@ -133,6 +133,14 @@ legacy-schema error rather than corrupting data or operating only partially.
 
 ## Backend equivalence
 
+The PostgreSQL document schema includes `document_course_plans`, with a
+`stage_id` primary key referencing `document_stages` with cascading deletion,
+and a non-null JSONB `data` column. Existing deployments must provision this
+additive table before using the current `PgDocumentStore`: run
+`ensureDocumentSchema()` or reproduce the exported `DOCUMENT_PG_SCHEMA` through
+your migration tooling. Re-running the ensure function does not replace
+existing stage, scene, or outline rows.
+
 Each primitive has one implementation-agnostic contract suite
 (`test/kv-contract.ts`, `test/asset-contract.ts`, `test/document-contract.ts`,
 `test/runtime-contract.ts`).

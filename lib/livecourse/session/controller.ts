@@ -1,3 +1,4 @@
+import { archivedFinalizationKey } from './finalization-recovery';
 import {
   lessonCompletionEventSchema,
   teachingActionSchema,
@@ -388,13 +389,16 @@ export interface ClassroomLifecycleDeps {
   classroomSessionId: string;
   courseState: CourseStateLifecycleStore;
   /** 销毁本课堂 teaching `W` 的唯一边界（幂等）。 */
-  destroyWorkSession: () => Promise<void>;
+  destroyWorkSession: (options?: { memoryArchived?: boolean }) => Promise<void>;
   /**
    * `L` 写入接缝：归档 `C` 成功后、销毁 `W` 前调用，失败则整条 finalize
    * 失败（停在 `finalizing`、保留 `W`）。A6 才实现 learner-only candidate
    * 的确定性白名单 policy；缺省表示没有任何候选，绝不假写 `L`。
    */
-  finalizeLearnerMemory?: () => Promise<void>;
+  finalizeLearnerMemory?: (finalization?: {
+    idempotencyKey: string;
+    occurredAt: string;
+  }) => Promise<void>;
 }
 
 /** 生命周期边界失败（C 缺失、归档冲突等）；保持原状态与恢复点，可重试。 */
@@ -582,6 +586,7 @@ export class ClassroomController {
   // 实例内幂等：生命周期命令成功后重试直接返回首次结果。
   #saveAndLeaveResult: SaveAndLeaveSessionResult | null = null;
   #finalizeResult: FinalizeSessionResult | null = null;
+  #memoryFinalizedKey: string | null = null;
 
   constructor(deps: ClassroomControllerDeps) {
     this.#repository = deps.repository;
@@ -605,6 +610,8 @@ export class ClassroomController {
     return this.#completedNodeIds;
   }
 
+  #completionRecoveryPending = true;
+
   async load(): Promise<TeachingActionSnapshot> {
     // Keep the initial state transition until both the action log and the
     // completion projection have hydrated successfully.  A failed C read is
@@ -617,7 +624,30 @@ export class ClassroomController {
       // still fail; in that case no partially-ready state is exposed.
       const projection = foldClassroomActions(snapshot.actions);
       await this.#hydrateCompletion();
-      this.#applyHydratedProjection(projection, shouldEnterTeaching);
+      const archived = this.#completionRecoveryPending
+        ? await this.#lifecycle?.courseState.load()
+        : undefined;
+      if (archived?.lifecycle?.status === 'archived') {
+        if (
+          archivedFinalizationKey(archived) !== `finalize:${this.#lifecycle!.classroomSessionId}`
+        ) {
+          throw new ClassroomLifecycleError('Archived classroom identity changed');
+        }
+        this.#transition('finalizing', 'classroom_finalization_recovery');
+      } else {
+        this.#applyHydratedProjection(projection, shouldEnterTeaching);
+      }
+      if (this.#completionRecoveryPending) {
+        if (
+          this.#completion?.lessonPlan.nodes.length &&
+          this.#completion.lessonPlan.nodes.every(
+            (node) => node.type === 'checkpoint' || this.#completedNodeIds.includes(node.id),
+          )
+        ) {
+          await this.#evaluateCompletionGate('classroom_load_completion_recovery');
+        }
+        this.#completionRecoveryPending = false;
+      }
       return snapshot;
     } catch (error) {
       // 加载失败：从 loading 进入 failed，保留恢复点可重试，不推进任何节点。
@@ -1364,7 +1394,10 @@ export class ClassroomController {
     }
     const latest = versioned.snapshot;
     const alreadyArchived = latest.lifecycle?.status === 'archived';
-    if (alreadyArchived && latest.idempotencyKey !== idempotencyKey) {
+    if (
+      alreadyArchived &&
+      (latest.lifecycle?.finalization?.idempotencyKey ?? latest.idempotencyKey) !== idempotencyKey
+    ) {
       throw new ClassroomLifecycleError(
         `Course state ${latest.id} is already archived by an unknown writer`,
       );
@@ -1377,7 +1410,7 @@ export class ClassroomController {
 
     let snapshot: CourseStateSnapshot;
     let duplicate = false;
-    if (latest.idempotencyKey === idempotencyKey) {
+    if (alreadyArchived) {
       // 归档快照已确认写入（J4.1：不得再次 finalization）：只补齐 L / 销毁。
       duplicate = true;
       snapshot = latest;
@@ -1398,7 +1431,11 @@ export class ClassroomController {
           coursePlan: latest.coursePlan,
           teachingActions,
           ...(progress ? { progress } : {}),
-          lifecycle: { status: 'archived', updatedAt: this.#now() },
+          lifecycle: {
+            status: 'archived',
+            updatedAt: this.#now(),
+            finalization: { version: 1, idempotencyKey, phase: 'pending' },
+          },
           assistantTasks: latest.assistantTasks,
           evidence: latest.evidence,
           adjustments: latest.adjustments,
@@ -1408,9 +1445,39 @@ export class ClassroomController {
     }
     // L 接缝（A6 policy 才写）：归档 C 成功后、销毁 W 前；失败则 finalize
     // 整体失败，停在 finalizing、保留 W。
-    await deps.finalizeLearnerMemory?.();
+    if (snapshot.lifecycle?.finalization?.phase !== 'memory-finalized') {
+      if (this.#memoryFinalizedKey !== idempotencyKey) {
+        await deps.finalizeLearnerMemory?.({
+          idempotencyKey,
+          occurredAt: snapshot.lifecycle!.updatedAt,
+        });
+        this.#memoryFinalizedKey = idempotencyKey;
+      }
+      const tail = await deps.courseState.loadVersioned();
+      if (!tail || archivedFinalizationKey(tail.snapshot) !== idempotencyKey) {
+        throw new ClassroomLifecycleError('Course archive changed during memory finalization');
+      }
+      if (tail.snapshot.lifecycle?.finalization?.phase === 'memory-finalized') {
+        snapshot = tail.snapshot;
+      } else {
+        snapshot = await deps.courseState.save(
+          {
+            ...tail.snapshot,
+            id: undefined,
+            createdAt: undefined,
+            idempotencyKey: `${idempotencyKey}:memory-finalized`,
+            lifecycle: {
+              status: 'archived',
+              updatedAt: snapshot.lifecycle!.updatedAt,
+              finalization: { version: 1, idempotencyKey, phase: 'memory-finalized' },
+            },
+          },
+          { expectedRevision: tail.revision },
+        );
+      }
+    }
     // 全部成功后才销毁 W。
-    await deps.destroyWorkSession();
+    await deps.destroyWorkSession({ memoryArchived: true });
     this.#finalizeResult = {
       idempotencyKey,
       duplicate,
@@ -1475,6 +1542,7 @@ export class ClassroomController {
           `lesson.complete_node key ${event.idempotencyKey} was already committed with a different completion request`,
         );
       }
+      await this.#evaluateCompletionGate(`lesson.complete_node:retry:${event.nodeId}`);
       return {
         event: prior,
         duplicate: true,
@@ -1491,6 +1559,7 @@ export class ClassroomController {
       // naming an already-completed node.
       await this.#assertSpeechAndActionsEnded(event);
       this.#completionEvents.set(event.idempotencyKey, event);
+      await this.#evaluateCompletionGate(`lesson.complete_node:retry:${event.nodeId}`);
       return {
         event,
         duplicate: true,
@@ -1642,6 +1711,8 @@ export function createClassroomController(deps: ClassroomControllerDeps): Classr
 export type ReplaySessionState = 'loading' | 'playing' | 'paused' | 'failed' | 'ended';
 
 export interface ReplaySessionDeps {
+  /** Read-side scene binding; never mutates the persisted C replay scope. */
+  scenes?: readonly import('@/lib/types/stage').Scene[];
   /**
    * 独立 replay `W` 的仓库：每次重听都必须用全新 replayId 构造
    * （`livecourseReplaySessionId`），绝不恢复旧 `W`。
@@ -1895,7 +1966,10 @@ export class ReplaySessionController {
         'Cannot start a replay before a course state snapshot exists for this partition',
       );
     }
-    const entry = resolveCourseEntry(snapshot);
+    if (snapshot.lifecycle?.finalization?.phase === 'pending') {
+      throw new ClassroomLifecycleError('Classroom finalization must be recovered before replay');
+    }
+    const entry = resolveCourseEntry(snapshot, this.#deps.scenes);
     if (!entry.canReplay) {
       throw new ClassroomLifecycleError('This course has no persisted taught range to replay');
     }

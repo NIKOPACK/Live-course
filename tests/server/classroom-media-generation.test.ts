@@ -55,7 +55,7 @@ describe('classroom media placeholder replacement', () => {
       expect(replaced).toContain(`<video poster='${mediaMap.gen_img_1}'>`);
       expect(replaced).toContain(`<source src=${mediaMap.gen_vid_1}>`);
       expect(replaced).toContain('<p>gen_img_1</p>');
-      expect(replaced).toContain(`const example = '<img src="gen_img_1">'`);
+      expect(replaced).toContain(`const example = '<img src="${mediaMap.gen_img_1}">'`);
       expect(replaced).toContain('<img src="https://source.test/original.png">');
       expect(replaced).toContain('<img src="gen_img_pending">');
       if (scene.content.type === 'quiz') expect(scene.content.questions).toBe(questions);

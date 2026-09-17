@@ -233,6 +233,7 @@ export interface ScientificModel {
  */
 export interface GeneratedInteractiveContent {
   html: string;
+  oralQuestion?: { question: string; guidance: string };
   /** Generation-only marker: use page teaching, not the legacy widget script template. */
   htmlPresentation?: true;
   scientificModel?: ScientificModel;

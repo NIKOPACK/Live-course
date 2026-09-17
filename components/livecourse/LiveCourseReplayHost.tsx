@@ -24,6 +24,7 @@ import {
   retryReplayPlayback,
 } from '@/lib/livecourse/session/replay-playback-control';
 import { createCourseStateRepository } from '@/lib/livecourse/session/course-state-repository';
+import { needsFinalizationRecovery } from '@/lib/livecourse/session/finalization-recovery';
 import {
   createTeachingPresentationApplier,
   resolveLessonPlan,
@@ -540,7 +541,17 @@ export function LiveCourseReplayHost({
         });
         const controller = createReplaySessionController({
           repository,
-          loadCourseState: () => courseState.load(),
+          loadCourseState: async () => {
+            const snapshot = await courseState.load();
+            if (
+              snapshot?.lifecycle?.status === 'archived' &&
+              (await needsFinalizationRecovery(snapshot, store))
+            ) {
+              throw new Error('Classroom finalization must be recovered before replay');
+            }
+            return snapshot;
+          },
+          scenes: useStageStore.getState().scenes,
           applyPresentation,
           courseId,
           lessonId,
@@ -1156,9 +1167,18 @@ export function LiveCourseReplayHost({
         log.error('[LiveCourseReplay] replay completion cleanup failed:', cause);
       });
     };
+    const fail = async () => {
+      const owner = ownerRef.current;
+      if (!owner || !isCurrentOwner(owner)) return;
+      const currentState = owner.controller.getState();
+      if (currentState !== 'playing' && currentState !== 'paused') return;
+      await owner.controller.notifyPlaybackFailure();
+      await syncControllerState(owner);
+    };
     replayBridge.advance = advance;
     replayBridge.navigate = navigate;
     replayBridge.complete = complete;
+    replayBridge.fail = fail;
     replayBridge.pauseReplay = pauseReplay;
     replayBridge.resumeReplay = resumeReplay;
     replayBridge.retryReplay = retryReplay;
@@ -1174,6 +1194,7 @@ export function LiveCourseReplayHost({
       if (replayBridge.advance === advance) delete replayBridge.advance;
       if (replayBridge.navigate === navigate) delete replayBridge.navigate;
       if (replayBridge.complete === complete) delete replayBridge.complete;
+      if (replayBridge.fail === fail) delete replayBridge.fail;
       if (replayBridge.pauseReplay === pauseReplay) delete replayBridge.pauseReplay;
       if (replayBridge.resumeReplay === resumeReplay) delete replayBridge.resumeReplay;
       if (replayBridge.retryReplay === retryReplay) delete replayBridge.retryReplay;

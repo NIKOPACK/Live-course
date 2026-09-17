@@ -183,7 +183,11 @@ export function resolveActionVideoMedia(
 // ==================== ActionEngine ====================
 
 /** Callback for sending messages to widget iframe */
-export type WidgetMessageCallback = (type: string, payload: Record<string, unknown>) => void;
+export type WidgetMessageCallback = (
+  type: string,
+  payload: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
+) => void | Promise<void>;
 
 export interface ActionExecutionOptions {
   silent?: boolean;
@@ -571,13 +575,13 @@ export class ActionEngine {
 
       // Widget actions — post message to iframe
       case 'widget_highlight':
-        return this.executeWidgetHighlight(action as WidgetHighlightAction);
+        return this.executeWidgetHighlight(action as WidgetHighlightAction, options);
       case 'widget_setState':
-        return this.executeWidgetSetState(action as WidgetSetStateAction);
+        return this.executeWidgetSetState(action as WidgetSetStateAction, options);
       case 'widget_annotation':
-        return this.executeWidgetAnnotation(action as WidgetAnnotationAction);
+        return this.executeWidgetAnnotation(action as WidgetAnnotationAction, options);
       case 'widget_reveal':
-        return this.executeWidgetReveal(action as WidgetRevealAction);
+        return this.executeWidgetReveal(action as WidgetRevealAction, options);
     }
   }
 
@@ -1312,43 +1316,69 @@ export class ActionEngine {
   // ==================== Widget Actions ====================
 
   /** Send message to widget iframe */
-  private sendWidgetMessage(type: string, payload: Record<string, unknown>): void {
-    if (this.widgetMessageCallback) {
-      this.widgetMessageCallback(type, payload);
-    } else {
-      log.warn(`Widget message callback not set, cannot send: ${type}`);
+  private async sendWidgetMessage(
+    type: string,
+    payload: Record<string, unknown>,
+    options: ActionExecutionOptions,
+  ): Promise<void> {
+    if (!this.widgetMessageCallback) {
+      throw new Error(`Widget message callback not set, cannot send: ${type}`);
     }
+    await this.widgetMessageCallback(type, payload, { signal: options.signal });
+    await delayWithSignal(WIDGET_MS, options.signal);
   }
 
   /** Execute widget highlight action (quick visual change) */
-  private async executeWidgetHighlight(action: WidgetHighlightAction): Promise<void> {
-    this.sendWidgetMessage('HIGHLIGHT_ELEMENT', {
-      target: action.target,
-      content: action.content,
-    });
-    // Quick delay for visual effect
-    await delay(WIDGET_MS);
+  private async executeWidgetHighlight(
+    action: WidgetHighlightAction,
+    options: ActionExecutionOptions,
+  ): Promise<void> {
+    await this.sendWidgetMessage(
+      'HIGHLIGHT_ELEMENT',
+      {
+        target: action.target,
+        content: action.content,
+      },
+      options,
+    );
   }
 
   /** Execute widget setState action */
-  private async executeWidgetSetState(action: WidgetSetStateAction): Promise<void> {
-    this.sendWidgetMessage('SET_WIDGET_STATE', { state: action.state, content: action.content });
-    // Quick delay for state change to propagate
-    await delay(WIDGET_MS);
+  private async executeWidgetSetState(
+    action: WidgetSetStateAction,
+    options: ActionExecutionOptions,
+  ): Promise<void> {
+    await this.sendWidgetMessage(
+      'SET_WIDGET_STATE',
+      { state: action.state, content: action.content },
+      options,
+    );
   }
 
   /** Execute widget annotation action */
-  private async executeWidgetAnnotation(action: WidgetAnnotationAction): Promise<void> {
-    this.sendWidgetMessage('ANNOTATE_ELEMENT', {
-      target: action.target,
-      content: action.content,
-    });
-    await delay(WIDGET_MS);
+  private async executeWidgetAnnotation(
+    action: WidgetAnnotationAction,
+    options: ActionExecutionOptions,
+  ): Promise<void> {
+    await this.sendWidgetMessage(
+      'ANNOTATE_ELEMENT',
+      {
+        target: action.target,
+        content: action.content,
+      },
+      options,
+    );
   }
 
   /** Execute widget reveal action */
-  private async executeWidgetReveal(action: WidgetRevealAction): Promise<void> {
-    this.sendWidgetMessage('REVEAL_ELEMENT', { target: action.target, content: action.content });
-    await delay(WIDGET_MS);
+  private async executeWidgetReveal(
+    action: WidgetRevealAction,
+    options: ActionExecutionOptions,
+  ): Promise<void> {
+    await this.sendWidgetMessage(
+      'REVEAL_ELEMENT',
+      { target: action.target, content: action.content },
+      options,
+    );
   }
 }

@@ -55,6 +55,15 @@ export const anticipatedQuestionSchema = z
   })
   .strict();
 
+export const oralQuestionSchema = z
+  .object({
+    question: z.string().trim().min(1).max(500),
+    guidance: z.string().trim().min(1).max(1500),
+  })
+  .strict();
+
+export type OralQuestion = z.infer<typeof oralQuestionSchema>;
+
 /**
  * 声明式配图意图（docs/spec/04-detailed-design.md §5，A5）。
  * 教案设计 Agent 只为确有需要静态示意图的讲授节点声明配图；
@@ -86,6 +95,7 @@ export const lessonNodeDesignSchema = z
     explanationPlan: z.string().trim().min(1).max(2000),
     examples: z.array(z.string().trim().min(1).max(500)).optional(),
     anticipatedQuestions: z.array(anticipatedQuestionSchema).optional(),
+    oralQuestion: oralQuestionSchema.optional(),
     /** 易错点 / 常见误解，检查时重点验证 */
     misconceptions: z.array(z.string().trim().min(1).max(500)).optional(),
     /** 声明式配图意图（A5）；不需要配图的节点省略 */

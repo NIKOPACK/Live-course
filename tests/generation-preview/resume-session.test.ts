@@ -10,7 +10,10 @@ import {
   shouldKeepLiveGenerationSession,
   shouldOpenGenerationPreview,
 } from '@/app/generation-preview/resume-session';
-import { allSegmentsCompleted, deriveSegmentProgress } from '@/app/generation-preview/segment-status';
+import {
+  allSegmentsCompleted,
+  deriveSegmentProgress,
+} from '@/app/generation-preview/segment-status';
 import type { LessonPlan } from '@/lib/livecourse/domain/schemas';
 import type { SceneOutline } from '@/lib/types/generation';
 
@@ -49,7 +52,13 @@ describe('outlinesFromClassroomScenes', () => {
     const segments = deriveSegmentProgress({
       outlines,
       scenes: [
-        { id: 'scene-a', outlineId: 'why', title: '为什么需要傅里叶变换', type: 'interactive', order: 0 },
+        {
+          id: 'scene-a',
+          outlineId: 'why',
+          title: '为什么需要傅里叶变换',
+          type: 'interactive',
+          order: 0,
+        },
         { id: 'scene-b', title: '测验', type: 'quiz', order: 1 },
       ] as never,
       failedOutlines: [],

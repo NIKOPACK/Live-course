@@ -67,11 +67,7 @@ export async function withRealtimeSpeechRetry<T>(
     try {
       return await operation(attempt);
     } catch (error) {
-      if (
-        isAbortError(error) ||
-        attempt >= maxAttempts ||
-        !isRetryableRealtimeSpeechError(error)
-      ) {
+      if (isAbortError(error) || attempt >= maxAttempts || !isRetryableRealtimeSpeechError(error)) {
         throw error;
       }
       const exponentialDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));

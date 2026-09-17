@@ -435,9 +435,14 @@ describe('LiveCourse session action runtime', () => {
         id: generatedSceneId,
         outlineId: 'outline-intro',
         title: '认识 Python',
-        type: 'slide' as const,
+        type: 'interactive' as const,
         order: 0,
         stageId: 'stage-1',
+        content: {
+          type: 'interactive' as const,
+          html: '<!DOCTYPE html><html><body>认识 Python</body></html>',
+          url: '',
+        },
       },
     ];
 
@@ -449,7 +454,11 @@ describe('LiveCourse session action runtime', () => {
       ),
     ).toBe(generatedSceneId);
     expect(
-      resolveRecoverySceneId({ currentNodeId: 'node:outline-intro', lastSequence: 0 }, plan, scenes),
+      resolveRecoverySceneId(
+        { currentNodeId: 'node:outline-intro', lastSequence: 0 },
+        plan,
+        scenes,
+      ),
     ).toBe(generatedSceneId);
     expect(() =>
       resolveRecoverySceneId({ currentNodeId: 'node:removed', lastSequence: 1 }, plan, scenes),

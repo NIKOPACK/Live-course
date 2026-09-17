@@ -20,6 +20,7 @@ vi.mock('@/components/slide-renderer/SlideThumbnail', () => ({
 import { ClarifyCard } from '@/components/generation/clarify-card';
 import { ScopePicker } from '@/components/generation/scope-picker';
 import { SegmentList } from '@/app/generation-preview/components/segment-list';
+import type { SegmentProgress } from '@/app/generation-preview/segment-status';
 import { SegmentClassroomPreview } from '@/app/generation-preview/components/segment-classroom-preview';
 import { LessonPlanPanel } from '@/app/generation-preview/components/lesson-plan-panel';
 import { ConfirmationFailurePanel } from '@/app/generation-preview/components/confirmation-failure';
@@ -130,6 +131,35 @@ async function click(element: HTMLButtonElement) {
 function assertReadOnly(root: ParentNode = container) {
   expect(root.querySelector('input, textarea, select, [contenteditable="true"]')).toBeNull();
 }
+
+it('retains automatic segment expansion after completion and respects manual closure on retries', async () => {
+  const first: SegmentProgress = {
+    outlineId: 'first',
+    title: 'First',
+    order: 0,
+    status: 'generating',
+  };
+  const show = (segments: SegmentProgress[]) =>
+    render(createElement(SegmentList, { segments, onRetry: vi.fn(), retryingId: null }));
+  const toggles = () => [
+    ...container.querySelectorAll<HTMLButtonElement>('[data-testid="preview-segment-toggle"]'),
+  ];
+  await show([first]);
+  expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
+  await show([{ ...first, status: 'completed' }]);
+  expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
+  await click(toggles()[0]);
+  await show([first]);
+  expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
+  await show([
+    { ...first, status: 'completed' },
+    { ...first, outlineId: 'second', title: 'Second', order: 1 },
+  ]);
+  expect(toggles().map((toggle) => toggle.getAttribute('aria-expanded'))).toEqual([
+    'false',
+    'true',
+  ]);
+});
 
 // docs/spec/01 J2.0: step-local choices; only the final action crosses the
 // existing onContinue/onSkip boundary. Neither component writes W/C/L.

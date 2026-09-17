@@ -15,7 +15,7 @@ interface CommandBarProps {
   readonly commands?: readonly EditorCommand[];
   /**
    * Right-edge slot owned by Stage. In Pro mode it carries the
-   * HeaderControls (settings pill + Pro Switch + Download) since Stage
+   * HeaderControls (settings pill + Pro Switch) since Stage
    * Header is unmounted to keep top chrome to a single bar.
    */
   readonly trailing?: ReactNode;

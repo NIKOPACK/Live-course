@@ -19,11 +19,15 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
   loadFromStorage: vi.fn(),
+  loadOptions: vi.fn(),
+  getSession: vi.fn(),
+  search: '',
   onReplayEnd: null as (() => void) | null,
 }));
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'stage-1' }),
   useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
+  useSearchParams: () => new URLSearchParams(mocks.search),
 }));
 vi.mock('@/lib/hooks/use-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/hooks/use-theme', () => ({
@@ -80,11 +84,18 @@ vi.mock('@/lib/hooks/use-scene-generator', () => ({
 vi.mock('@/lib/classroom/load-classroom', () => ({
   defaultClassroomLoadDeps: {},
   applyClassroomStageAndScenes: vi.fn(),
-  runClassroomLoad: async ({ setLoading }: { setLoading: (value: boolean) => void }) =>
-    setLoading(false),
+  runClassroomLoad: async (options: {
+    setLoading: (value: boolean) => void;
+    readOnly: boolean;
+  }) => {
+    mocks.loadOptions(options);
+    options.setLoading(false);
+  },
 }));
 vi.mock('@/lib/runtime/learner-key', () => ({ getLearnerKey: async () => 'learner-1' }));
-vi.mock('@/lib/runtime/store', () => ({ getRuntimeStore: () => ({}) }));
+vi.mock('@/lib/runtime/store', () => ({
+  getRuntimeStore: () => ({ getSession: mocks.getSession }),
+}));
 vi.mock('@/lib/livecourse/session/course-state-repository', () => ({
   createCourseStateRepository: () => ({ load: mocks.archiveLoad }),
 }));
@@ -141,8 +152,17 @@ beforeEach(() => {
     }),
   );
   window.history.replaceState({}, '', '/classroom/stage-1');
+  mocks.search = '';
   sessionStorage.clear();
-  mocks.archiveLoad.mockResolvedValue({ lifecycle: { status: 'archived' } });
+  mocks.archiveLoad.mockResolvedValue({
+    stageId: 'stage-1',
+    learnerId: 'learner-1',
+    courseId: 'stage-1',
+    lessonId: 'stage-1',
+    idempotencyKey: 'finalize:livecourse-actions:stage-1:learner-1:stage-1:stage-1',
+    lifecycle: { status: 'archived' },
+  });
+  mocks.getSession.mockResolvedValue(undefined);
   mocks.onReplayEnd = null;
   container = document.createElement('div');
   document.body.append(container);
@@ -167,6 +187,143 @@ function expectPostOnly() {
 }
 
 describe('classroom page post-class ownership', () => {
+  it.each([undefined, 'pending', 'memory-finalized'] as const)(
+    'recovers %s archives with remaining W2 without mounting teaching or replay',
+    async (phase) => {
+      const key = 'finalize:livecourse-actions:stage-1:learner-1:stage-1:stage-1';
+      mocks.archiveLoad.mockResolvedValue({
+        stageId: 'stage-1',
+        learnerId: 'learner-1',
+        courseId: 'stage-1',
+        lessonId: 'stage-1',
+        idempotencyKey: key,
+        lifecycle: {
+          status: 'archived',
+          ...(phase ? { finalization: { version: 1, idempotencyKey: key, phase } } : {}),
+        },
+      });
+      mocks.search = '';
+      mocks.getSession.mockImplementation(async (id: string) =>
+        id.startsWith('livecourse-working-memory:')
+          ? { id, kind: 'livecourseWorkingMemory', stageId: 'stage-1', learnerKey: 'learner-1' }
+          : undefined,
+      );
+      let finish!: () => void;
+      mocks.finalizeSession.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      await renderPage();
+      expect(mocks.finalizeSession).toHaveBeenCalledOnce();
+      expect(container.querySelector('[data-testid="teaching-stage"]')).toBeNull();
+      expect(container.querySelector('[data-testid="replay-stage"]')).toBeNull();
+      expect(mocks.getSession.mock.calls.every(([id]) => !id.includes(':replay:'))).toBe(true);
+      await act(async () => finish());
+      expectPostOnly();
+    },
+  );
+
+  it('fails closed when an old archive cannot identify the original teaching W', async () => {
+    mocks.archiveLoad.mockResolvedValue({
+      stageId: 'stage-1',
+      learnerId: 'learner-1',
+      courseId: 'stage-1',
+      lessonId: 'stage-1',
+      idempotencyKey: 'unidentified-legacy-writer',
+      lifecycle: { status: 'archived' },
+    });
+    await renderPage();
+    expect(container.textContent).toContain('already archived by an unknown writer');
+    expect(mocks.providerRender).not.toHaveBeenCalled();
+    expect(mocks.finalizeSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['home', 'post'])('never turns a %s replay entry into archive recovery', async (from) => {
+    mocks.finalizeSession.mockResolvedValue(undefined);
+    const key = 'finalize:livecourse-actions:stage-1:learner-1:stage-1:stage-1';
+    mocks.search = `replay=1&from=${from}`;
+    mocks.archiveLoad.mockResolvedValue({
+      stageId: 'stage-1',
+      learnerId: 'learner-1',
+      courseId: 'stage-1',
+      lessonId: 'stage-1',
+      idempotencyKey: key,
+      lifecycle: {
+        status: 'archived',
+        finalization: { version: 1, idempotencyKey: key, phase: 'pending' },
+      },
+    });
+    mocks.getSession.mockImplementation(async (id: string) =>
+      id.startsWith('livecourse-working-memory:')
+        ? { id, kind: 'livecourseWorkingMemory', stageId: 'stage-1', learnerKey: 'learner-1' }
+        : undefined,
+    );
+    await renderPage();
+    expect(mocks.providerRender).not.toHaveBeenCalled();
+    expect(mocks.finalizeSession).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="teaching-stage"]')).toBeNull();
+    expect(mocks.loadOptions.mock.calls[0][0].readOnly).toBe(true);
+  });
+
+  it.each(['choices', 'home', 'post'])('completed %s is read-only', async (entry) => {
+    mocks.search = entry === 'choices' ? '' : `replay=1&from=${entry}`;
+    const key = 'finalize:livecourse-actions:stage-1:learner-1:stage-1:stage-1';
+    mocks.archiveLoad.mockResolvedValue({
+      stageId: 'stage-1',
+      learnerId: 'learner-1',
+      courseId: 'stage-1',
+      lessonId: 'stage-1',
+      idempotencyKey: `${key}:memory-finalized`,
+      lifecycle: {
+        status: 'archived',
+        finalization: { version: 1, idempotencyKey: key, phase: 'memory-finalized' },
+      },
+    });
+    await renderPage();
+    if (entry === 'choices') expectPostOnly();
+    else expect(container.querySelector('[data-testid="replay-stage"]')).not.toBeNull();
+    expect(mocks.getSession).toHaveBeenCalledTimes(2);
+    expect(mocks.providerRender).not.toHaveBeenCalled();
+    expect(mocks.finalizeSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps failed W cleanup verification retryable without exposing post', async () => {
+    mocks.getSession.mockRejectedValue(new Error('W read unavailable'));
+    await renderPage();
+    expect(container.textContent).toContain('W read unavailable');
+    expect(mocks.providerRender).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('livecourse.postClassTitle');
+    expect(
+      [...container.querySelectorAll('button')].some((button) =>
+        button.textContent?.includes('retry'),
+      ),
+    ).toBe(true);
+  });
+
+  it('uses reactive router replay parameters even before window history updates', async () => {
+    await renderPage();
+    expectPostOnly();
+    mocks.search = 'replay=1&from=home';
+    await renderPage();
+    expect(container.querySelector('[data-testid="replay-stage"]')).not.toBeNull();
+    expect(mocks.loadOptions.mock.calls.at(-1)?.[0].readOnly).toBe(true);
+    expect(mocks.providerRender).not.toHaveBeenCalled();
+    await act(async () => mocks.onReplayEnd?.());
+    expect(mocks.push).toHaveBeenLastCalledWith('/?course=stage-1');
+  });
+
+  it('loads a direct replay route read-only before the first document request', async () => {
+    mocks.search = 'replay=1&from=post';
+    await renderPage();
+    expect(mocks.loadOptions).toHaveBeenCalledOnce();
+    expect(mocks.loadOptions.mock.calls[0][0].readOnly).toBe(true);
+    expect(container.querySelector('[data-testid="replay-stage"]')).not.toBeNull();
+    await act(async () => mocks.onReplayEnd?.());
+    expectPostOnly();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
   it('waits for the archive read, then mounts post choices without a teaching provider, stage or generation', async () => {
     let resolve!: (value: object) => void;
     mocks.archiveLoad.mockReturnValue(
@@ -178,7 +335,16 @@ describe('classroom page post-class ownership', () => {
     expect(mocks.providerRender).not.toHaveBeenCalled();
     expect(mocks.stageRender).not.toHaveBeenCalled();
     expect(mocks.generateRemaining).not.toHaveBeenCalled();
-    await act(async () => resolve({ lifecycle: { status: 'archived' } }));
+    await act(async () =>
+      resolve({
+        stageId: 'stage-1',
+        learnerId: 'learner-1',
+        courseId: 'stage-1',
+        lessonId: 'stage-1',
+        idempotencyKey: 'finalize:livecourse-actions:stage-1:learner-1:stage-1:stage-1',
+        lifecycle: { status: 'archived' },
+      }),
+    );
     expectPostOnly();
     expect(mocks.providerRender).not.toHaveBeenCalled();
     expect(mocks.readContext).not.toHaveBeenCalled();
@@ -203,7 +369,7 @@ describe('classroom page post-class ownership', () => {
     expect(mocks.finalizeSession).not.toHaveBeenCalled();
   });
 
-  it('unmounts teaching only after finalization succeeds and does not hydrate again in post', async () => {
+  it('keeps the recovery provider without a teaching stage until finalization succeeds', async () => {
     mocks.archiveLoad.mockResolvedValue({ lifecycle: { status: 'in_progress' } });
     let resolve!: () => void;
     mocks.finalizeSession.mockReturnValue(
@@ -212,7 +378,7 @@ describe('classroom page post-class ownership', () => {
       }),
     );
     await renderPage();
-    expect(container.querySelector('[data-testid="teaching-stage"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="teaching-stage"]')).toBeNull();
     expect(mocks.finalizeSession).toHaveBeenCalledOnce();
     expect(mocks.providerUnmount).not.toHaveBeenCalled();
     const providerRenders = mocks.providerRender.mock.calls.length;

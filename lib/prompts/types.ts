@@ -7,7 +7,6 @@
  */
 export type PromptId =
   | 'requirements-to-outlines'
-  | 'interactive-outlines'
   | 'task-engine-outlines'
   | 'web-search-query-rewrite'
   | 'slide-content'

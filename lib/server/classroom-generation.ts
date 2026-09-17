@@ -2,10 +2,7 @@ import { nanoid } from 'nanoid';
 import { callLLM, resolveLlmText } from '@/lib/ai/llm';
 import { createStageAPI } from '@/lib/api/stage-api';
 import type { StageStore } from '@/lib/api/stage-api-types';
-import {
-  applyOutlineFallbacks,
-  generateSceneOutlinesFromRequirements,
-} from '@/lib/generation/outline-generator';
+import { generateSceneOutlinesFromRequirements } from '@/lib/generation/outline-generator';
 import {
   createSceneWithActions,
   generateSceneActions,
@@ -36,6 +33,7 @@ import {
 import { withGenerationRetry } from '@/lib/generation/generation-retry';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
+import { ClassroomHtmlRequiredError } from '@/lib/livecourse/lesson/html-classroom';
 import { applyVisualAidsToOutlines } from '@/lib/livecourse/lesson/visual-aids';
 import {
   deriveCoursePlanFromLessonPlan,
@@ -576,6 +574,9 @@ export async function generateClassroom(
     { languageModel, thinkingConfig: classroomThinking },
     aiCall,
   );
+  if (lessonPlan?.presentation?.mode !== 'html') {
+    throw new ClassroomHtmlRequiredError();
+  }
   if (lessonPlan) {
     log.info(`Lesson plan designed: ${lessonPlan.nodes.length} nodes`);
     // A5 教案配图（docs/spec/04-detailed-design.md §5/§7）：把各节点
@@ -583,8 +584,6 @@ export async function generateClassroom(
     // 生成（prompt 占位符列表）与媒体生成（generateMediaForClassroom）都
     // 读合并后的 outlines，无需改动媒体执行通道。
     outlines = applyVisualAidsToOutlines(lessonPlan, outlines);
-  } else {
-    log.warn('Lesson plan design failed; continuing without lesson design');
   }
 
   // The server-owned classroom file is also the source used by the realtime
@@ -616,11 +615,7 @@ export async function generateClassroom(
   let generatedScenes = 0;
 
   for (const [index, outline] of outlines.entries()) {
-    const safeOutline = lessonPlan?.presentation
-      ? outline
-      : applyOutlineFallbacks(outline, true, {
-          allowProceduralSkill: vocationalActive,
-        });
+    const safeOutline = outline;
     const progressStart = 30 + Math.floor((index / Math.max(outlines.length, 1)) * 60);
 
     await options.onProgress?.({
@@ -688,11 +683,7 @@ export async function generateClassroom(
       }
     })();
     if (!content) {
-      if (lessonPlan?.presentation) {
-        throw new Error(`Failed to generate HTML page "${safeOutline.title}"`);
-      }
-      log.warn(`Skipping scene "${safeOutline.title}" — content generation failed`);
-      continue;
+      throw new Error(`Failed to generate HTML page "${safeOutline.title}"`);
     }
 
     const actionsAiCall = await getSceneActionsAiCall(lessonPlan?.presentation?.mode === 'html');
@@ -722,11 +713,7 @@ export async function generateClassroom(
 
     const sceneId = createSceneWithActions(safeOutline, content, actions, api);
     if (!sceneId) {
-      if (lessonPlan?.presentation) {
-        throw new Error(`Failed to save HTML page "${safeOutline.title}"`);
-      }
-      log.warn(`Skipping scene "${safeOutline.title}" — scene creation failed`);
-      continue;
+      throw new Error(`Failed to save HTML page "${safeOutline.title}"`);
     }
 
     generatedScenes += 1;

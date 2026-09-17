@@ -4,8 +4,8 @@
  * POST { requirements, outlines, courseId?, stageId, lessonId?, courseTitle?, languageDirective? }
  *   → { lessonPlan: LessonPlan | null }
  *
- * 大纲之后由教案设计 Agent（台后 worker）产出详细 LessonPlan。
- * 旧调用设计失败可降级；HTML 新课必须先成功确定视觉方向，失败显式报错。
+ * 大纲之后由教案设计 Agent（台后 worker）产出带 HTML 视觉方向的 LessonPlan。
+ * 视觉方向失败则整课失败，不降级。
  */
 
 import { NextRequest } from 'next/server';
@@ -14,7 +14,6 @@ import { isAbortError } from '@/lib/generation/generation-retry';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
-import { designLessonPlanWithSubagents } from '@/lib/livecourse/lesson/designer';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
 import { llmApiError } from '@/lib/server/llm-error-response';
 import type { SceneOutline, UserRequirements } from '@/lib/types/generation';
@@ -60,10 +59,8 @@ interface RequestBody {
 }
 
 export async function POST(req: NextRequest) {
-  let htmlPresentation = false;
   try {
     const body = (await req.json()) as RequestBody;
-    htmlPresentation = body.htmlPresentation === true;
     const { requirements, outlines, courseId, stageId, lessonId, courseTitle, languageDirective } =
       body;
 
@@ -82,9 +79,7 @@ export async function POST(req: NextRequest) {
 
     const job = takeLessonPlanSignal(stageId.trim(), req.signal);
     try {
-      // HTML lessons commit the main agent's style before the existing node fan-out.
-      const design = htmlPresentation ? designHtmlLessonPlan : designLessonPlanWithSubagents;
-      const lessonPlan = await design(
+      const lessonPlan = await designHtmlLessonPlan(
         {
           stageId,
           courseId,
@@ -117,11 +112,7 @@ export async function POST(req: NextRequest) {
       log.warn('Lesson plan cancelled');
       return apiError('GENERATION_FAILED', 499, 'Lesson plan cancelled');
     }
-    if (htmlPresentation) {
-      log.error('HTML lesson visual direction failed:', error);
-      return llmApiError(error);
-    }
-    log.error('Lesson plan design failed, degrading to null:', error);
-    return apiSuccess({ lessonPlan: null });
+    log.error('HTML lesson visual direction failed:', error);
+    return llmApiError(error);
   }
 }

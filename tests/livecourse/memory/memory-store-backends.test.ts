@@ -1,9 +1,8 @@
 import 'fake-indexeddb/auto';
 
-import { createRequire } from 'node:module';
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
-import { fileURLToPath } from 'node:url';
 
+import { PGlite } from '@electric-sql/pglite';
 import { IDBFactory } from 'fake-indexeddb';
 import { BrowserRuntimeStore, type RuntimeStore } from '@livecourse/storage';
 import { HttpRuntimeStore } from '@livecourse/storage/runtime/http';
@@ -75,10 +74,10 @@ function handlerFetch(
           reject(error ?? new Error('response destroyed'));
           return this;
         },
-      } as unknown as ServerResponse;
+      };
 
       try {
-        handler(fakeRequest, fakeResponse);
+        handler(fakeRequest, fakeResponse as unknown as ServerResponse);
       } catch (error) {
         reject(error);
       }
@@ -173,21 +172,7 @@ describe('unconfigured Postgres does not block the local classroom path', () => 
   });
 });
 
-function loadPglite(): typeof import('@electric-sql/pglite') | undefined {
-  try {
-    const require = createRequire(
-      fileURLToPath(new URL('../../../packages/@livecourse/storage/package.json', import.meta.url)),
-    );
-    return require('@electric-sql/pglite') as typeof import('@electric-sql/pglite');
-  } catch {
-    return undefined;
-  }
-}
-
-const pglite = loadPglite();
-
-describe.skipIf(!pglite)('A6 memory contract: Postgres (PGlite)', () => {
-  const { PGlite } = pglite!;
+describe('A6 memory contract: Postgres (PGlite)', () => {
   let db: InstanceType<typeof PGlite>;
   let store: RuntimeStore;
 

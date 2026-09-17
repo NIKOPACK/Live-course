@@ -20,17 +20,17 @@ describe('server web search config', () => {
         'https://developer.zhihu.com/api/v1/content/global_search',
       ),
     ).toBe('https://developer.zhihu.com/api/v1/content/global_search');
-    expect(() =>
-      resolveSafeClientWebSearchBaseUrl('zhihu', 'https://evil.example.com/v1'),
-    ).toThrow('Unsupported Zhihu Global Search base URL');
+    expect(() => resolveSafeClientWebSearchBaseUrl('zhihu', 'https://evil.example.com/v1')).toThrow(
+      'Unsupported Zhihu Global Search base URL',
+    );
   });
 
   it('rejects SSRF-style Zhihu base URLs', async () => {
     const { resolveSafeClientWebSearchBaseUrl } = await import('@/lib/server/web-search-config');
 
-    expect(() => resolveSafeClientWebSearchBaseUrl('zhihu', 'http://127.0.0.1:3000/internal')).toThrow(
-      'Unsupported Zhihu Global Search base URL',
-    );
+    expect(() =>
+      resolveSafeClientWebSearchBaseUrl('zhihu', 'http://127.0.0.1:3000/internal'),
+    ).toThrow('Unsupported Zhihu Global Search base URL');
     expect(() => resolveSafeClientWebSearchBaseUrl('zhihu', 'not-a-url')).toThrow(
       'Unsupported Zhihu Global Search base URL',
     );

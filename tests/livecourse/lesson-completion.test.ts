@@ -208,7 +208,7 @@ async function setup(
     publish: () => undefined,
     completion,
   });
-  return { actions, controller, courseState, store };
+  return { actions, controller, courseState, store, completion };
 }
 
 /** 把动作日志快照带进 C，使 C 的初始快照与课堂一致。 */
@@ -549,6 +549,46 @@ describe('ClassroomController lesson.complete_node', () => {
     expect(saveProgress).toHaveBeenCalledTimes(2);
     expect((await courseState.load())!.progress!.completedNodeIds).toEqual([NODE_A]);
   });
+
+  it.each(['same controller', 'reloaded controller'] as const)(
+    'recovers a failed completion gate without rewriting progress: %s',
+    async (mode) => {
+      const hasValidEvidence = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('evidence temporarily unavailable'))
+        .mockResolvedValue(true);
+      const h = await setup({ lessonPlan: TEACHING_PLUS_CHECKPOINT, hasValidEvidence });
+      const cycle = await commitSpeechCycle(h.actions, NODE_A, 0);
+      await seedCourseState(h.actions, h.courseState);
+      await h.controller.load();
+      const saveProgress = vi.spyOn(h.courseState, 'saveProgress');
+      const input = {
+        nodeId: NODE_A,
+        idempotencyKey: 'complete:last:retry-gate',
+        speech: { startActionId: cycle.startActionId, endActionId: cycle.endActionId },
+        actionIds: [cycle.actionId],
+      };
+      await expect(h.controller.completeNode(input)).rejects.toThrow('evidence temporarily');
+      const persisted = await h.courseState.loadVersioned();
+      let controller = h.controller;
+      if (mode === 'reloaded controller') {
+        controller = createClassroomController({
+          repository: h.actions,
+          applyPresentation: () => ({ success: true }),
+          publish: () => undefined,
+          completion: h.completion,
+        });
+        await controller.load();
+        expect(controller.getState()).toBe('finalizing');
+      }
+      const retry = await controller.completeNode(input);
+      expect(retry.duplicate).toBe(true);
+      expect(retry.state).toBe('finalizing');
+      expect(saveProgress).toHaveBeenCalledTimes(1);
+      expect(await h.courseState.loadVersioned()).toEqual(persisted);
+      expect(hasValidEvidence).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('migrates completed → finalizing uniquely on the last required action only', async () => {
     const { actions, controller, courseState } = await setup();

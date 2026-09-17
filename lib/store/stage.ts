@@ -1121,8 +1121,7 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         if (latestState.stage?.id === stageId && latestState.scenes.length > 0) {
           log.info('Stage appeared in memory during IndexedDB hydration, skipping load:', stageId);
           const cursor = latestState.currentSceneId;
-          const cursorMissing =
-            !cursor || !latestState.scenes.some((scene) => scene.id === cursor);
+          const cursorMissing = !cursor || !latestState.scenes.some((scene) => scene.id === cursor);
           if (cursorMissing) {
             set({ currentSceneId: latestState.scenes[0].id });
           }

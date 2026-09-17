@@ -5,6 +5,11 @@ import type { InteractiveContent } from '@/lib/types/stage';
 import { useInteractiveIframePool } from '@/lib/store/interactive-iframe-pool';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
 import { useResolvedHtml } from '@/lib/livecourse/html/use-resolved-html';
+import { parentBlobUrlsInHtml } from '@/lib/livecourse/html/media';
+import {
+  attachHtmlTeacherBridge,
+  hasHtmlTeacherBridge,
+} from '@/lib/livecourse/html/teacher-bridge';
 
 interface InteractiveRendererProps {
   readonly content: InteractiveContent;
@@ -39,14 +44,23 @@ export function InteractiveRenderer({
 
   const resolvedHtml = useResolvedHtml(content.html ?? '');
   const patchedHtml = useMemo(
-    () => (resolvedHtml ? patchHtmlForIframe(resolvedHtml) : undefined),
+    () =>
+      resolvedHtml
+        ? patchHtmlForIframe(
+            hasHtmlTeacherBridge(resolvedHtml)
+              ? attachHtmlTeacherBridge(resolvedHtml)
+              : resolvedHtml,
+          )
+        : undefined,
     [resolvedHtml],
   );
 
   // Register / activate / claim visibility while mounted; release (keep-alive) on
   // unmount. A content change re-runs this and rebuilds the iframe — the only
-  // intended reload path.
+  // intended reload path. Parent blob: URLs are origin-locked in the sandbox, so
+  // withhold the first srcDoc until they inline as data: URLs.
   useEffect(() => {
+    if (patchedHtml && parentBlobUrlsInHtml(patchedHtml).length > 0) return;
     mount(sceneId, {
       srcDoc: patchedHtml,
       src: patchedHtml ? undefined : content.url,

@@ -4,7 +4,7 @@
  */
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ChevronDown, RotateCw } from 'lucide-react';
 import { GameLoader } from '@/components/livecourse/GameLoader';
 import { Button } from '@/components/ui/button';
@@ -42,13 +42,9 @@ export function SegmentList({
     segments.find((segment) => segment.status === 'generating')?.outlineId ?? null;
   const [opened, setOpened] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    if (!generatingId) return;
-    setOpened((current) => {
-      if (current[generatingId] === false || current[generatingId] === true) return current;
-      return { ...current, [generatingId]: true };
-    });
-  }, [generatingId]);
+  if (generatingId && opened[generatingId] !== true && opened[generatingId] !== false) {
+    setOpened({ ...opened, [generatingId]: true });
+  }
 
   if (segments.length === 0) return null;
 

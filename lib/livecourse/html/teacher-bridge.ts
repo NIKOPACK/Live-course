@@ -1,3 +1,5 @@
+export const HTML_TEXT_SELECTION_LIMIT = 500;
+
 const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
 (function () {
   var pending = [];
@@ -23,6 +25,7 @@ const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
     }
     if (data.type === 'HIGHLIGHT_ELEMENT') {
       clearHighlight();
+      if (note) { note.remove(); note = null; }
       var original = target.style.getPropertyValue('outline');
       var priority = target.style.getPropertyPriority('outline');
       var offset = target.style.getPropertyValue('outline-offset');
@@ -36,7 +39,7 @@ const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
       restoreHighlight = restore;
       target.style.setProperty('outline', '3px solid currentColor', 'important');
       target.style.setProperty('outline-offset', '5px', 'important');
-      window.setTimeout(function () { if (restoreHighlight === restore) clearHighlight(); }, 3000);
+      if (target.scrollIntoView) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
     if (typeof data.content === 'string' && data.content.trim()) {
       if (note) note.remove();
@@ -53,22 +56,71 @@ const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
       window.setTimeout(function () { label.remove(); if (note === label) note = null; }, 5000);
     }
   }
+  function respond(data, result) {
+    window.parent.postMessage(Object.assign({
+      __livecourseTeacher: true,
+      requestId: data.requestId
+    }, result), '*');
+  }
+  function handle(data) {
+    if (data.type === 'TEACHER_READY_REQUEST') {
+      respond(data, { type: 'TEACHER_READY' });
+      return;
+    }
+    if (data.__livecourseTeacher !== true || typeof data.requestId !== 'string') {
+      apply(data);
+      return;
+    }
+    try {
+      apply(data);
+      respond(data, { type: 'TEACHER_ACTION_RESULT', success: true });
+    } catch (error) {
+      respond(data, { type: 'TEACHER_ACTION_RESULT', success: false, error: String(error.message || error) });
+    }
+  }
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent) return;
     var data = event.data;
-    if (!data || ['HIGHLIGHT_ELEMENT', 'ANNOTATE_ELEMENT', 'REVEAL_ELEMENT'].indexOf(data.type) < 0) return;
+    if (!data || ['TEACHER_READY_REQUEST', 'HIGHLIGHT_ELEMENT', 'ANNOTATE_ELEMENT', 'REVEAL_ELEMENT'].indexOf(data.type) < 0) return;
     if (document.readyState === 'loading') pending.push(data);
-    else apply(data);
+    else handle(data);
   });
   document.addEventListener('DOMContentLoaded', function () {
     var actions = pending;
     pending = [];
-    actions.forEach(apply);
+    actions.forEach(handle);
+  });
+  var selectionTimer = null;
+  document.addEventListener('selectionchange', function () {
+    window.clearTimeout(selectionTimer);
+    selectionTimer = window.setTimeout(function () {
+      var selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+      var node = selection.anchorNode;
+      var element = node && (node.nodeType === 1 ? node : node.parentElement);
+      var editable = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+      if (document.activeElement && document.activeElement.closest(editable)) return;
+      if (!element || element.closest(editable)) return;
+      if (selection.getRangeAt(0).cloneContents().querySelector(editable)) return;
+      var text = selection.toString().replace(/\\s+/g, ' ').trim().slice(0, ${HTML_TEXT_SELECTION_LIMIT});
+      if (!text) return;
+      window.parent.postMessage({
+        __livecourseTeacher: true,
+        type: 'HTML_TEXT_SELECTED',
+        text: text
+      }, '*');
+    }, 200);
   });
 })();
 </script>`;
 
 /** New HTML pages share the existing teacher action protocol, not a layout template. */
 export function attachHtmlTeacherBridge(html: string): string {
-  return html.replace(/<head\b[^>]*>/i, (head) => head + TEACHER_BRIDGE);
+  return html
+    .replace(/<script\b[^>]*\bdata-livecourse-teacher-bridge\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<head\b[^>]*>/i, (head) => head + TEACHER_BRIDGE);
+}
+
+export function hasHtmlTeacherBridge(html: string): boolean {
+  return /<script\b[^>]*\bdata-livecourse-teacher-bridge\b/i.test(html);
 }

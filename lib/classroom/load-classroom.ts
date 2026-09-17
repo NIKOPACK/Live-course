@@ -19,6 +19,11 @@ import type { GeneratedAgentConfig, Scene, Stage } from '@/lib/types/stage';
 import type { SceneOutline } from '@/lib/types/generation';
 import { parseCoursePlan, type CoursePlan } from '@/lib/livecourse/domain/course-plan';
 import { lessonPlanSchema, type LessonPlan } from '@/lib/livecourse/domain/schemas';
+import {
+  assertHtmlClassroom,
+  LEGACY_CLASSROOM_ERROR,
+  LegacyClassroomError,
+} from '@/lib/livecourse/lesson/html-classroom';
 import type { PPTElement } from '@livecourse/dsl';
 import {
   collectDocumentMediaElements,
@@ -254,10 +259,22 @@ export async function runClassroomLoad<TMediaTasks = unknown>({
     if (isUserSet !== settings.agentSelectionIsUserSet) {
       settings.setAgentSelectionIsUserSet(isUserSet);
     }
+
+    if (!isCurrent()) return;
+    const loaded = useStageStore.getState();
+    if (loaded.stage?.id === classroomId) {
+      assertHtmlClassroom({ lessonPlan: loaded.lessonPlan, scenes: loaded.scenes });
+    }
   } catch (error) {
     log.error('Failed to load classroom:', error);
     if (isCurrent()) {
-      setError(error instanceof Error ? error.message : 'Failed to load classroom');
+      setError(
+        error instanceof LegacyClassroomError
+          ? LEGACY_CLASSROOM_ERROR
+          : error instanceof Error
+            ? error.message
+            : 'Failed to load classroom',
+      );
     }
   } finally {
     if (isCurrent()) {

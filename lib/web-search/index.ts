@@ -13,7 +13,15 @@ export async function searchWeb(params: {
   zhihuFilter?: string;
   zhihuSearchDB?: ZhihuSearchDB;
 }): Promise<WebSearchResult> {
-  const { providerId, query, apiKey = '', maxResults, baseUrl, zhihuFilter, zhihuSearchDB } = params;
+  const {
+    providerId,
+    query,
+    apiKey = '',
+    maxResults,
+    baseUrl,
+    zhihuFilter,
+    zhihuSearchDB,
+  } = params;
 
   switch (providerId) {
     case 'zhihu':

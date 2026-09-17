@@ -40,9 +40,9 @@ describe('web search provider constants', () => {
       }),
     ).toEqual(['zhihu']);
     // Unconfigured Zhihu (key required, none set) is not usable.
-    expect(
-      buildWebSearchFallbackOrder({ zhihu: { apiKey: '', requiresApiKey: true } }),
-    ).toEqual([]);
+    expect(buildWebSearchFallbackOrder({ zhihu: { apiKey: '', requiresApiKey: true } })).toEqual(
+      [],
+    );
   });
 
   it('runs generation web search only when the switch is on and the selected provider is configured', () => {

@@ -1,12 +1,11 @@
 import { apiSuccess } from '@/lib/server/api-response';
+import { version } from '@/package.json';
 import {
   getServerWebSearchProviders,
   getServerImageProviders,
   getServerVideoProviders,
   getServerTTSProviders,
 } from '@/lib/server/provider-config';
-
-const version = process.env.npm_package_version || '0.1.0';
 
 export async function GET() {
   return apiSuccess({

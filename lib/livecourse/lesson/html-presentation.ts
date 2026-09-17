@@ -8,6 +8,7 @@ import {
   type LessonPlan,
   type LessonPresentation,
   type LessonNodeDesign,
+  type OralQuestion,
 } from '@/lib/livecourse/domain/schemas';
 import type { SubagentRuntime } from '@/lib/livecourse/outline/subagent';
 import {
@@ -21,6 +22,7 @@ import type { ImageMapping, PdfImage, SceneOutline } from '@/lib/types/generatio
 import type { QuizQuestion } from '@/lib/types/stage';
 import { MAX_VISION_IMAGES } from '@/lib/constants/generation';
 import { attachHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
+import type { Action } from '@/lib/types/action';
 
 const log = createLogger('HtmlPresentation');
 
@@ -74,7 +76,11 @@ Use your full design and coding ability: expressive typography, editorial layout
 examples, diagrams, simulations, progressive reveals, SVG, Canvas, MathML and meaningful animation.
 There is no fixed element inventory, coordinate grid, widget taxonomy, card layout or word quota.
 Teach the supplied content accurately and thoroughly; do not reduce it to generic bullet points.
-Keep the core explanation visible without clicking. Optional exploration can reveal deeper detail.
+Keep the title and an orienting overview visible without clicking. Divide the explanation into
+meaningful teaching regions, each with a unique stable DOM id matching [A-Za-z][A-Za-z0-9_-]*.
+Worked steps or conclusions may start hidden, but only the teacher's reveal actions should expose
+them during narration: do not advance teaching regions using timers, autoplay or learner clicks.
+Optional exploration can reveal deeper detail. Do not hide a teaching region inside a hidden ancestor.
 Make the page responsive to its actual iframe viewport, readable on small screens, accessible to
 keyboard users and respectful of prefers-reduced-motion. Do not add course navigation, a second
 teacher, grading, completion tracking, chat, editors or export controls.
@@ -85,7 +91,6 @@ and fonts are allowed when they materially improve the lesson. No build step or 
 runtime. Keep core teaching content visible while optional resources load, and visibly report
 resource failures instead of leaving a blank page. Use supplied lesson media URLs/placeholder IDs;
 do not invent source images or media-generation endpoints.
-Assign meaningful stable DOM ids to teaching regions so the teacher can highlight them.
 The host supplies highlight, annotation and reveal handlers; do not reimplement that protocol.
 Runtime boundary: sandboxed iframe with scripts but no same-origin privileges. Do not access parent
 DOM, application APIs, credentials or persistent browser storage. Local page interactions are welcome;
@@ -302,6 +307,8 @@ export function generateHtmlClassroomActionOutput(
     agents?: AgentInfo[];
     userProfile?: string;
     languageDirective?: string;
+    elementInventory: string;
+    oralQuestion?: OralQuestion;
   },
 ): Promise<string> {
   return aiCall(
@@ -309,10 +316,17 @@ export function generateHtmlClassroomActionOutput(
 Teach the actual page content fully, with clear explanations, worked examples and natural transitions.
 Do not treat every page as an exploration widget or shorten a lesson to a generic activity introduction.
 Use as many teaching beats as the subject needs. Never voice a second teacher or learner.
-Return ONLY a JSON array of {"type":"text","content":"spoken explanation"} and optional
-{"type":"action","name":"widget_highlight","params":{"target":"#real-id"}}.
+Return ONLY a JSON array interleaving visual actions and spoken explanations.
+Visual synchronization is REQUIRED, not optional. Split narration into short teaching beats.
+BEFORE EVERY {"type":"text","content":"spoken explanation"}, emit
+{"type":"action","name":"widget_highlight","params":{"target":"#real-id"}} for the region being
+explained. The highlight remains until the next highlight. Move focus as the explanation moves;
+do not put all actions at the beginning or end, or narrate the whole page as one long text item.
+For a hidden region emit widget_reveal BEFORE its highlight and explanation. Cover every teaching
+region and reveal all initially hidden teaching steps by the end. Keep the title/overview visible.
 Other supported visual actions: widget_annotation with target/content, widget_reveal with target.
-Use only selectors that exist in this HTML; do not invent state APIs or slide actions.
+Use only #id targets from the supplied real element inventory; do not invent selectors, state APIs
+or slide actions. Finish with narration, not a visual action after the explanation has ended.
 Keep the host in charge of lesson progress. On checkpoints the learner must explicitly submit.
 Respect the requested language and continuity: greet only on the first page, not on every page.`,
     [
@@ -321,9 +335,55 @@ Respect the requested language and continuity: greet only on the first page, not
       formatAgentsForPrompt(options.agents),
       options.userProfile || '',
       `Teaching intent:\n${JSON.stringify(outline)}`,
+      `Real element inventory:\n${options.elementInventory}`,
+      options.oralQuestion
+        ? `The host will ask this oral question after the middle narration beat: ${options.oralQuestion.question}\nUse at least two narration beats. Teach its prerequisites in the first half, leave further explanation for the second half. Do NOT ask or answer the oral question in the script; the live teacher waits for the learner.`
+        : '',
       `Actual HTML page:\n${html}`,
     ]
       .filter(Boolean)
       .join('\n\n'),
   );
+}
+
+export class ClassroomHtmlActionsError extends Error {
+  readonly isRetryable = true;
+  override readonly name = 'ClassroomHtmlActionsError';
+}
+
+export function validateHtmlTeachingActions(actions: Action[], elementInventory: string): void {
+  const targets = new Set(
+    [...elementInventory.matchAll(/^(#[A-Za-z][A-Za-z0-9_-]*) </gm)].map((match) => match[1]),
+  );
+  if (!actions.some((action) => action.type === 'speech')) {
+    throw new ClassroomHtmlActionsError('No teacher narration generated for HTML page');
+  }
+  let focused = false;
+  for (const action of actions) {
+    if (action.type === 'speech') {
+      if (!focused) {
+        throw new ClassroomHtmlActionsError('HTML narration requires a preceding highlight');
+      }
+      focused = false;
+    } else if (
+      action.type === 'widget_highlight' ||
+      action.type === 'widget_annotation' ||
+      action.type === 'widget_reveal'
+    ) {
+      if (!targets.has(action.target)) {
+        throw new ClassroomHtmlActionsError(`Unknown HTML teaching target: ${action.target}`);
+      }
+      if (action.type === 'widget_highlight') {
+        if (focused) {
+          throw new ClassroomHtmlActionsError(
+            'Each HTML teaching focus requires its own narration',
+          );
+        }
+        focused = true;
+      }
+    }
+  }
+  if (actions.at(-1)?.type !== 'speech') {
+    throw new ClassroomHtmlActionsError('HTML teaching actions must precede their narration');
+  }
 }

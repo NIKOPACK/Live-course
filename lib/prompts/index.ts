@@ -25,7 +25,6 @@ export {
 // Prompt IDs constant
 export const PROMPT_IDS = {
   REQUIREMENTS_TO_OUTLINES: 'requirements-to-outlines',
-  INTERACTIVE_OUTLINES: 'interactive-outlines',
   TASK_ENGINE_OUTLINES: 'task-engine-outlines',
   WEB_SEARCH_QUERY_REWRITE: 'web-search-query-rewrite',
   SLIDE_CONTENT: 'slide-content',

@@ -9,6 +9,15 @@ import {
 } from '@/lib/store/interactive-iframe-pool';
 import { useSceneRuntimeErrors } from '@/lib/store/scene-runtime-errors';
 import { useI18n } from '@/lib/hooks/use-i18n';
+import { hasHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
+import { createHtmlTeacherChannel } from '@/lib/livecourse/html/teacher-channel';
+import {
+  htmlTextSelectionSchema,
+  useHtmlQuestionContext,
+} from '@/lib/livecourse/html/question-context';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('InteractiveIframeHost');
 
 /**
  * Stable host for interactive scene iframes (#619).
@@ -101,6 +110,7 @@ interface PooledIframeProps {
 function PooledIframe({ sceneId, entry, visible }: PooledIframeProps) {
   const { t } = useI18n();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const teacherChannelRef = useRef<ReturnType<typeof createHtmlTeacherChannel> | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const runtimeError = useSceneRuntimeErrors((state) => state.errors[sceneId]?.[0]);
   const registerIframe = useWidgetIframeStore((s) => s.registerIframe);
@@ -109,10 +119,17 @@ function PooledIframe({ sceneId, entry, visible }: PooledIframeProps) {
   // placeholder, since the iframe now lives in the host). Stable per scene:
   // the callback reads contentWindow lazily at send time.
   useEffect(() => {
+    if (iframeRef.current && hasHtmlTeacherBridge(entry.srcDoc ?? '')) {
+      const channel = createHtmlTeacherChannel(iframeRef.current);
+      teacherChannelRef.current = channel;
+      registerIframe(sceneId, channel.send);
+      return () => {
+        channel.dispose();
+        teacherChannelRef.current = null;
+        registerIframe(sceneId, null);
+      };
+    }
     if (!entry.interactionEnabled) {
-      // Do not expose a command channel to replayed widgets. This keeps any
-      // presentation-only consumer from sending parent actions even if it
-      // accidentally asks the legacy widget store for a callback.
       registerIframe(sceneId, null);
       return;
     }
@@ -121,7 +138,31 @@ function PooledIframe({ sceneId, entry, visible }: PooledIframeProps) {
     };
     registerIframe(sceneId, send);
     return () => registerIframe(sceneId, null);
-  }, [entry.interactionEnabled, sceneId, registerIframe]);
+  }, [entry.interactionEnabled, entry.srcDoc, entry.src, reloadVersion, sceneId, registerIframe]);
+
+  useEffect(() => {
+    if (!visible || !entry.interactionEnabled || !hasHtmlTeacherBridge(entry.srcDoc ?? '')) return;
+    const onSelection = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.data?.__livecourseTeacher !== true || event.data?.type !== 'HTML_TEXT_SELECTED')
+        return;
+      const pool = useInteractiveIframePool.getState();
+      const current = pool.entries[sceneId];
+      if (pool.activeSceneId !== sceneId || !current?.owner || !current.interactionEnabled) return;
+      const selection = htmlTextSelectionSchema.safeParse(event.data);
+      if (!selection.success) {
+        log.warn('Ignored invalid HTML text selection');
+        return;
+      }
+      useHtmlQuestionContext.getState().setQuote({ sceneId, text: selection.data.text });
+    };
+    window.addEventListener('message', onSelection);
+    return () => {
+      window.removeEventListener('message', onSelection);
+      const context = useHtmlQuestionContext.getState();
+      if (context.quote?.sceneId === sceneId) context.clearQuote(context.quote);
+    };
+  }, [visible, entry.interactionEnabled, entry.srcDoc, reloadVersion, sceneId]);
 
   // Capture runtime errors the iframe's error shim posts out (see iframe.ts), so
   // the editor agent can diagnose a blank/broken page. Matched to THIS iframe by
@@ -205,12 +246,13 @@ function PooledIframe({ sceneId, entry, visible }: PooledIframeProps) {
         inert={!entry.interactionEnabled}
         tabIndex={entry.interactionEnabled ? undefined : -1}
         sandbox="allow-scripts"
-        onLoad={() =>
+        onLoad={() => {
+          teacherChannelRef.current?.onLoad();
           iframeRef.current?.contentWindow?.postMessage(
             { __livecourseErrorReplayRequest: true },
             '*',
-          )
-        }
+          );
+        }}
       />
       {shown && runtimeError ? (
         <div

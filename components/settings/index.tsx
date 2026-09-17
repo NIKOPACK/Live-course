@@ -1123,7 +1123,9 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
                         <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                       )}
                       {providerId !== selectedProviderId && (
-                        <span className="shrink-0 opacity-70">{activeModelChip.providerName} /</span>
+                        <span className="shrink-0 opacity-70">
+                          {activeModelChip.providerName} /
+                        </span>
                       )}
                       <span className="max-w-48 truncate font-mono">
                         {activeModelChip.modelName}

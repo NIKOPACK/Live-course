@@ -133,6 +133,13 @@ describe('scene API retry boundary', () => {
     expect(mocks.generateSceneContent).not.toHaveBeenCalled();
   });
 
+  it('rejects a missing HTML direction', async () => {
+    const { POST } = await import('@/app/api/generate/scene-content/route');
+    const response = await POST(mockRequest({ presentation: undefined }));
+    expect(response.status).toBe(400);
+    expect(mocks.generateSceneContent).not.toHaveBeenCalled();
+  });
+
   it('disables AI SDK retries for scene-content model calls', async () => {
     vi.resetModules();
     mocks.generateSceneContent.mockImplementation(async (_outline, aiCall) => {
@@ -141,7 +148,11 @@ describe('scene API retry boundary', () => {
     });
 
     const { POST } = await import('@/app/api/generate/scene-content/route');
-    const response = await POST(mockRequest());
+    const response = await POST(
+      mockRequest({
+        presentation: { mode: 'html', visualStyle: 'Editorial ink and teal diagrams.' },
+      }),
+    );
     const body = await response.json();
 
     expect(body.success).toBe(true);
@@ -443,6 +454,7 @@ function mockRequest(extraBody: Record<string, unknown> = {}) {
       allOutlines: [outline],
       stageId: 'stage-1',
       stageInfo: { name: 'Retry Course' },
+      presentation: { mode: 'html', visualStyle: 'Editorial ink and teal diagrams.' },
       ...extraBody,
     }),
   } as unknown as Parameters<typeof import('@/app/api/generate/scene-content/route').POST>[0];
