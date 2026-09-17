@@ -70,6 +70,38 @@ describe('scene generation primitives', () => {
     });
   });
 
+  it.each(['answer', 'correctAnswer', 'correct_answer'])(
+    'resolves SDK quiz %s labels to option values',
+    async (field) => {
+      const content = await generateSceneContent(quizOutline(), async () =>
+        JSON.stringify([
+          { type: 'single', question: '1 + 1 = ?', options: ['1', '2', '3'], [field]: '2' },
+        ]),
+      );
+      expect(content).toMatchObject({ questions: [{ answer: ['B'], hasAnswer: true }] });
+    },
+  );
+
+  it('preserves numeric zero as an SDK model answer', async () => {
+    const content = await generateSceneContent(quizOutline(), async () =>
+      JSON.stringify([{ type: 'single', question: '0 + 0 = ?', options: ['0', '1'], answer: 0 }]),
+    );
+    expect(content).toMatchObject({ questions: [{ answer: ['A'] }] });
+  });
+
+  it.each([{ answer: undefined }, { answer: [] }, { answer: ['unknown'] }, { answer: ['same'] }])(
+    'rejects unusable SDK quiz answer $answer',
+    async ({ answer }) => {
+      await expect(
+        generateSceneContent(quizOutline(), async () =>
+          JSON.stringify([
+            { type: 'single', question: 'Choose', options: ['same', 'same'], answer },
+          ]),
+        ),
+      ).rejects.toThrow(/answer/i);
+    },
+  );
+
   it('runs one widget kind end-to-end through config extraction and actions', async () => {
     let calls = 0;
     const aiCall: AICallFn = async () => {

@@ -1,3 +1,4 @@
+import { normalizeQuizQuestion } from '@livecourse/dsl';
 import type { QuizQuestion } from '@/lib/types/stage';
 
 export interface QuestionResult {
@@ -40,7 +41,10 @@ export function gradeChoiceQuestions(
     .map((q) => {
       const pts = q.points ?? 1;
       const userAnswer = toArray(answers[q.id]);
-      const correctAnswer = toArray(q.answer);
+      const correctAnswer = normalizeQuizQuestion(q).answer;
+      if (!correctAnswer?.length) {
+        throw new Error(`Quiz question "${q.id}" has no answer key`);
+      }
       const correct = arraysEqual(userAnswer, correctAnswer);
       return {
         questionId: q.id,

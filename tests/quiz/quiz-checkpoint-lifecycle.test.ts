@@ -96,14 +96,14 @@ const question = {
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
-async function renderQuiz(): Promise<void> {
+async function renderQuiz(quizQuestion = question): Promise<void> {
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
     root?.render(
       createElement(QuizView, {
-        questions: [question],
+        questions: [quizQuestion],
         sceneId: 'scene:quiz-1',
         stageId: 'stage-1',
       }),
@@ -166,5 +166,23 @@ describe('quiz checkpoint lifecycle', () => {
 
     expect(container?.textContent).toContain('checkpoint store unavailable');
     expect(container?.textContent).not.toContain('quiz.answering');
+  });
+
+  it('surfaces an invalid local answer key without persisting a review or evidence', async () => {
+    mocks.loadQuizAttemptState.mockResolvedValueOnce({
+      attemptId: 'attempt-1',
+      state: { phase: 'draft', answers: { q1: 'A' } },
+    });
+    await renderQuiz({ ...question, answer: ['unknown'] });
+    await act(async () => {
+      button('quiz.submitAnswers').click();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container?.textContent).toContain('This attempt has not been scored');
+    expect(button('quiz.retry')).toBeDefined();
+    expect(mocks.writer.recordPhase).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ phase: 'submitted' }),
+    );
+    expect(mocks.recordQuizEvidence).not.toHaveBeenCalled();
   });
 });

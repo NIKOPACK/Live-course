@@ -20,6 +20,7 @@
 - 才新写（A2）：`lesson.complete_node` 去重后先更新 `W`，并由同一协调器立即持久化 `C.completedNode / C.progress`。该事件不创建 `EvidenceRecord`、不投影 `GoalState`、不表示掌握。最后一个必需讲授节点提交成功，或最后一个必要检查已有有效 evidence，且它补齐最后尚缺的必需动作时，唯一迁移为 `completed → finalizing → J4.1`
   - 完成事件已持久化而完成门读取失败时，同 key 重试仍重评完成门；新协调器加载持久化完成进度后也恢复该门，不重复写完成事件或进度。暂停 / 重听期间仍沿用原状态门禁。
 - 才新写（A2）：提交答案、重试节点、暂停 / 继续、`saveAndLeaveSession` 与 `finalizeSession` 带稳定 idempotency key。判分重试复用同一次提交，`EvidenceRecord` 只 append 一次；重听和媒体重试永不产生 evidence
+- 选择题答案以选项 `value` 为准；模型或旧文档给出选项文字时，只允许唯一匹配的 `label` 转换为 `value`，合法标识优先，不做语义猜测。生成、文档读取与本地判分共用 DSL 归一化；未知、歧义或无可用答案的生成题目失败并沿用单段重试。判分错误留在可见失败态，不生成分数、review 或 evidence，不改写已提交的历史成绩。
 - 才新写（A2）：未完成课堂只由「暂时离开课堂」调用幂等 `saveAndLeaveSession`：显示保存中，成功时严格先写 `C` 恢复点、再销毁 `W`、最后导航首页；任一步保存失败都留在课堂可重试。浏览器 / 标签卸载只允许 best-effort 保存，不算成功状态迁移
 - 才新写（A2）：唯一 `finalizeSession` 在进入 `finalizing` 后幂等归档 `W → C`、把合法 learner-only candidate 经 policy 写 `L`；全部成功后才销毁 `W` 并进入课后选择。失败停在 `finalizing`、保留 `W` 与待归档状态并显示重试。J4.3「离开」仅导航，不得再次调用保存 / 归档 / 销毁
   - C 的可选 `lifecycle.finalization` 使用 `version: 1`，保存固定归档 key 与 `pending / memory-finalized` 阶段；归档先写 pending，C/L 全部完成后先持久化 memory-finalized，再清理 action W 与 working-memory W。阶段确认版本不算再次归档，销毁 W 后不再尝试必要的 C/L 或阶段写入；阶段确认失败后重试沿用原归档时间，避免重复刷新同一 learner 贡献的时间戳。

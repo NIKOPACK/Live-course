@@ -52,8 +52,8 @@ import type {
   LinePoint,
   LineStyleType,
 } from './slides.js';
-import type { Scene, SceneType, Stage } from './stage.js';
-import { isSlideContent } from './stage.js';
+import type { QuizQuestion, Scene, SceneType, Stage } from './stage.js';
+import { isQuizContent, isSlideContent } from './stage.js';
 import type {
   PBLAssignee,
   PBLMicrotaskStatus,
@@ -647,9 +647,48 @@ export function normalizeSlideWith(
 }
 
 /**
+ * Prefer canonical option values; repair only uniquely matching answer labels.
+ * Missing keys remain ungraded content, not an invented correct answer.
+ */
+export function normalizeQuizQuestion<T extends QuizQuestion>(question: T): T {
+  const answer = question.answer;
+  if (question.type === 'short_answer' || !answer?.length) return question;
+
+  const fail = (reason: string): never => {
+    throw new Error(`@livecourse/dsl: invalid quiz answer for "${question.id}": ${reason}`);
+  };
+  const options = question.options ?? [];
+  const values = new Set(options.map((option) => option.value));
+  if (
+    !options.length ||
+    values.size !== options.length ||
+    options.some((option) => !option.value.trim())
+  ) {
+    fail('option values must be present, nonempty and unique');
+  }
+  const normalized = answer.map((raw) => {
+    if (values.has(raw)) return raw;
+    const token = raw.trim();
+    if (values.has(token)) return token;
+    const matches = options.filter((option) => option.label.trim() === token);
+    if (!token || matches.length !== 1) fail('answer must identify exactly one option');
+    return matches[0].value;
+  });
+  if (
+    (question.type === 'single' && normalized.length !== 1) ||
+    new Set(normalized).size !== normalized.length
+  ) {
+    fail('answer cardinality does not match the question');
+  }
+  return normalized.every((value, index) => value === answer[index])
+    ? question
+    : { ...question, answer: normalized };
+}
+
+/**
  * Normalize a {@link Scene}: fills element defaults on a slide scene's canvas,
- * fills a PBL scene's canonical seeded skeleton, and normalizes any attached
- * whiteboards. Quiz and interactive content pass through untouched. Generic over
+ * repairs quiz answer keys, fills a PBL scene's canonical seeded skeleton, and
+ * normalizes any attached whiteboards. Interactive content passes through. Generic over
  * `TAction` / `TContent` so app-widened scenes (`Scene<AppAction, AppContent>`)
  * can call it too. Pure; returns a fresh Scene.
  */
@@ -666,6 +705,14 @@ export function normalizeScene<TAction, TContent extends { type: SceneType }>(
     next = {
       ...next,
       content: { ...scene.content, canvas: normalizeSlide(scene.content.canvas) },
+    } as Scene<TAction, TContent>;
+  } else if (isQuizContent(scene.content)) {
+    next = {
+      ...next,
+      content: {
+        ...scene.content,
+        questions: scene.content.questions.map(normalizeQuizQuestion),
+      },
     } as Scene<TAction, TContent>;
   } else if (scene.content.type === 'pbl' && 'projectV2' in scene.content) {
     const projectV2 = scene.content.projectV2;

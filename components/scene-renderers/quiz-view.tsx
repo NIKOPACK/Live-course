@@ -42,6 +42,7 @@ import {
   type QuizViewLifetime,
 } from '@/lib/quiz/view-state';
 import { useLiveCourseSessionOptional } from '@/lib/livecourse/session/context';
+import { ClassroomCaptionLayer } from '@/components/livecourse/LiveCaptionOverlay';
 import { HtmlQuizSurface } from './html-quiz-surface';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -55,6 +56,8 @@ interface QuizViewProps {
   readonly html?: string;
   /** Replay renders the question surface without creating or mutating an attempt. */
   readonly presentationOnly?: boolean;
+  /** Overlay captions on the page surface so host Start/Submit stay clickable. */
+  readonly showCaptions?: boolean;
 }
 
 const QuizMathText = memo(function QuizMathText({
@@ -250,7 +253,7 @@ function QuizCover({
         onClick={onStart}
         disabled={disabled}
         className={cn(
-          'mt-1 px-8 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white rounded-full font-medium shadow-lg shadow-violet-200/50 dark:shadow-violet-900/50 hover:shadow-violet-300/50 transition-shadow z-10 flex items-center gap-2',
+          'relative z-20 mt-1 flex items-center gap-2 rounded-full bg-gradient-to-r from-violet-500 to-purple-500 px-8 py-2.5 font-medium text-white shadow-lg shadow-violet-200/50 transition-shadow hover:shadow-violet-300/50 dark:shadow-violet-900/50',
           disabled && 'cursor-wait opacity-70',
         )}
       >
@@ -739,7 +742,13 @@ function ScoreBanner({
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
-function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProps) {
+function InteractiveQuizView({
+  questions,
+  sceneId,
+  stageId,
+  html,
+  showCaptions = false,
+}: QuizViewProps) {
   const { t, locale } = useI18n();
   const liveCourseSession = useLiveCourseSessionOptional();
   const openCheckpoint = liveCourseSession?.openCheckpoint;
@@ -873,24 +882,22 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
     let cancelled = false;
 
     (async () => {
-      // 1. Grade choice questions locally (instant)
-      const choiceResults = gradeChoiceQuestions(questions, answers);
-
-      // 2. Grade short-answer questions via AI API (parallel)
+      let choiceResults: QuestionResult[];
       const shortAnswerQs = questions.filter(isShortAnswer);
       let aiResults: QuestionResult[];
       try {
+        choiceResults = gradeChoiceQuestions(questions, answers);
         aiResults = await Promise.all(
           shortAnswerQs.map((q) =>
             gradeShortAnswerQuestion(q, (answers[q.id] as string) ?? '', locale),
           ),
         );
       } catch (error) {
-        log.error('[quiz-view] AI grading failed:', error);
+        log.error('[quiz-view] Grading failed:', error);
         if (!cancelled) {
           setGradingError(
             locale === 'zh-CN'
-              ? '评分服务暂时不可用，本次答题尚未评分。请重试。'
+              ? '暂时无法评分，本次答题尚未评分。请重试。'
               : 'Grading is temporarily unavailable. This attempt has not been scored. Please retry.',
           );
           setPhase('grading_error');
@@ -1044,9 +1051,11 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
     return map;
   }, [results]);
 
+  const captions = showCaptions ? <ClassroomCaptionLayer /> : null;
+
   if (runtimeGate.status === 'error') {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="relative flex h-full w-full items-center justify-center bg-gray-50 dark:bg-gray-900">
         <button
           type="button"
           onClick={() => setHydrationVersion((version) => version + 1)}
@@ -1055,14 +1064,16 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
           <RotateCcw className="h-4 w-4" />
           {t('quiz.retry')}
         </button>
+        {captions}
       </div>
     );
   }
 
   if (!isQuizRuntimeReady(runtimeGate)) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="relative flex h-full w-full items-center justify-center bg-gray-50 dark:bg-gray-900">
         <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+        {captions}
       </div>
     );
   }
@@ -1070,7 +1081,7 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
   if (html && !useNative) {
     return (
       <div className="flex h-full min-h-0 w-full flex-col">
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1" data-classroom-page-surface>
           <HtmlQuizSurface
             html={html}
             stageId={stageId}
@@ -1088,8 +1099,12 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
             onAnswer={handleSetAnswer}
             onUseNative={() => setUseNative(true)}
           />
+          {captions}
         </div>
-        <div className="shrink-0 space-y-2 border-t bg-background px-4 py-3 text-sm">
+        <div
+          data-quiz-host-chrome
+          className="shrink-0 space-y-2 border-t bg-background px-4 py-3 text-sm"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span role="status" aria-live="polite">
               {phase === 'not_started'
@@ -1167,7 +1182,7 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
   }
 
   return (
-    <div className="w-full h-full bg-gradient-to-b from-gray-50 to-white dark:from-gray-900 dark:to-gray-900 overflow-hidden flex flex-col">
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-gradient-to-b from-gray-50 to-white dark:from-gray-900 dark:to-gray-900">
       <AnimatePresence mode="wait">
         {phase === 'not_started' && (
           <motion.div
@@ -1424,6 +1439,7 @@ function InteractiveQuizView({ questions, sceneId, stageId, html }: QuizViewProp
           </motion.div>
         )}
       </AnimatePresence>
+      {captions}
     </div>
   );
 }
@@ -1491,15 +1507,27 @@ function QuizPresentationView({ questions }: Pick<QuizViewProps, 'questions'>) {
 
 /** Render a quiz either as a teaching assessment or as inert replay content. */
 export function QuizView(props: QuizViewProps) {
+  const captions = props.showCaptions ? <ClassroomCaptionLayer /> : null;
   if (props.presentationOnly) {
     if (props.html) {
       return (
-        <div className="h-full w-full" aria-readonly="true" data-quiz-presentation-only>
+        <div
+          className="relative h-full w-full"
+          aria-readonly="true"
+          data-quiz-presentation-only
+          data-classroom-page-surface
+        >
           <HtmlQuizSurface html={props.html} questions={props.questions} stageId={props.stageId} />
+          {captions}
         </div>
       );
     }
-    return <QuizPresentationView questions={props.questions} />;
+    return (
+      <div className="relative h-full w-full">
+        <QuizPresentationView questions={props.questions} />
+        {captions}
+      </div>
+    );
   }
   return <InteractiveQuizView {...props} />;
 }

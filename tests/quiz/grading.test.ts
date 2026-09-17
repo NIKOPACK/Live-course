@@ -51,6 +51,42 @@ describe('gradeChoiceQuestions', () => {
     const results = gradeChoiceQuestions([q({ points: 5 })], { q1: 'a' });
     expect(results[0].earned).toBe(5);
   });
+
+  it('grades a legacy answer label against its unique option value without rewriting it', () => {
+    const question = q({
+      question: '1 + 1 = ?',
+      options: [
+        { value: 'A', label: '1' },
+        { value: 'B', label: '2' },
+        { value: 'C', label: '3' },
+      ],
+      answer: ['2'],
+      points: 10,
+    });
+    expect(gradeChoiceQuestions([question], { q1: 'B' })[0]).toMatchObject({
+      correct: true,
+      earned: 10,
+    });
+    expect(question.answer).toEqual(['2']);
+  });
+
+  it.each([{ answer: undefined }, { answer: [] }, { answer: ['unknown'] }])(
+    'rejects an unusable key $answer instead of manufacturing a score',
+    ({ answer }) => {
+      expect(() => gradeChoiceQuestions([q({ answer })], {})).toThrow(/answer/i);
+    },
+  );
+
+  it('rejects ambiguous answer labels', () => {
+    const question = q({
+      options: [
+        { value: 'a', label: 'same' },
+        { value: 'b', label: 'same' },
+      ],
+      answer: ['same'],
+    });
+    expect(() => gradeChoiceQuestions([question], { q1: 'a' })).toThrow(/answer/i);
+  });
 });
 
 describe('isShortAnswer', () => {

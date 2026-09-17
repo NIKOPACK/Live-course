@@ -44,7 +44,7 @@ import {
   formatImagePlaceholder,
 } from './prompt-formatters';
 import type { PPTElement, Slide, SlideBackground, SlideTheme } from '@livecourse/dsl';
-import { isWidgetType, normalizeElement } from '@livecourse/dsl';
+import { isWidgetType, normalizeElement, normalizeQuizQuestion } from '@livecourse/dsl';
 import type { QuizQuestion } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type {
@@ -806,13 +806,17 @@ async function generateQuizContent(
   // Ensure each question has an ID and normalize options format
   const questions: QuizQuestion[] = generatedQuestions.map((q) => {
     const isText = q.type === 'short_answer';
-    return {
+    const question = normalizeQuizQuestion({
       ...q,
       id: q.id || `q_${nanoid(8)}`,
       options: isText ? undefined : normalizeQuizOptions(q.options),
-      answer: isText ? undefined : normalizeQuizAnswer(q as unknown as Record<string, unknown>),
+      answer: isText ? undefined : normalizeQuizAnswer(q),
       hasAnswer: isText ? false : true,
-    };
+    });
+    if (!isText && !question.answer?.length) {
+      throw new Error(`Quiz question "${question.id}" has no answer key`);
+    }
+    return question;
   });
 
   return { questions };
@@ -850,15 +854,15 @@ function normalizeQuizOptions(
 /**
  * Normalize quiz answer from AI response.
  * AI may generate correctAnswer as string or string[], under various field names.
- * This normalizes to string[] format matching option values.
+ * Normalize field names and scalar answers before option-value normalization.
  */
-function normalizeQuizAnswer(question: Record<string, unknown>): string[] | undefined {
+function normalizeQuizAnswer(question: QuizQuestion): string[] | undefined {
   // AI might use "correctAnswer", "answer", or "correct_answer"
   const raw =
     question.answer ??
-    question.correctAnswer ??
-    (question as Record<string, unknown>).correct_answer;
-  if (!raw) return undefined;
+    ('correctAnswer' in question ? question.correctAnswer : undefined) ??
+    ('correct_answer' in question ? question.correct_answer : undefined);
+  if (raw == null || raw === '') return undefined;
 
   if (Array.isArray(raw)) {
     return raw.map(String);

@@ -114,6 +114,13 @@ third zero-dependency `normalize*` family repairs a document to satisfy them:
    const scene = normalizeScene(rawScene); //  walks the slide canvas + whiteboards
    ```
 
+   `normalizeQuizQuestion` (also applied by `normalizeScene`) resolves answer
+   labels to option values only when the label uniquely identifies an option.
+   Existing option values take precedence. Unknown or ambiguous keys, duplicate
+   option values, and invalid answer cardinality throw; no semantic guessing is
+   performed. Missing keys and short-answer questions remain unchanged, so grading
+   consumers must reject missing choice keys rather than inventing a score.
+
 ## Version & migration
 
 Two version numbers live in this package and do **not** track each other:

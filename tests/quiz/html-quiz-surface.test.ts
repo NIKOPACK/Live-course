@@ -52,6 +52,7 @@ import { HtmlQuizSurface } from '@/components/scene-renderers/html-quiz-surface'
 import { SegmentClassroomPreview } from '@/app/generation-preview/components/segment-classroom-preview';
 import { SceneThumbnailContent } from '@/components/stage/scene-thumbnail-content';
 import { SceneRenderer } from '@/components/stage/scene-renderer';
+import { useLiveCaptionStore } from '@/lib/store/live-caption';
 
 const html =
   '<!doctype html><html><head></head><body><h1>Real model layout</h1><input></body></html>';
@@ -115,6 +116,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  useLiveCaptionStore.getState().clearCaption();
   vi.unstubAllGlobals();
 });
 
@@ -143,6 +145,34 @@ describe('HTML assessment lifecycle', () => {
     const draftCalls = mocks.draft.mock.calls.length;
     await answer([]);
     expect(mocks.draft).toHaveBeenCalledTimes(draftCalls);
+  });
+
+  it('keeps host start/submit outside the caption overlay so a held intro remains clickable', async () => {
+    useLiveCaptionStore.getState().setCaption({
+      speaker: 'teacher',
+      text: 'Read the checkpoint before you start.',
+    });
+    useLiveCaptionStore.getState().holdCaption();
+    await render(
+      createElement(QuizView, {
+        html,
+        questions,
+        sceneId: 'quiz-1',
+        stageId: 'stage-1',
+        showCaptions: true,
+      }),
+    );
+    const captions = container.querySelector('[data-testid=classroom-captions]');
+    const page = container.querySelector('[data-classroom-page-surface]');
+    const chrome = container.querySelector('[data-quiz-host-chrome]');
+    expect(captions?.textContent).toContain('Read the checkpoint before you start.');
+    expect(page?.contains(captions)).toBe(true);
+    expect(chrome?.contains(captions)).toBe(false);
+    await act(async () => button('quiz.startQuiz').click());
+    expect(mocks.open).toHaveBeenCalledWith({ sceneId: 'quiz-1', attemptId: 'attempt-1' });
+    await answer();
+    await act(async () => button('quiz.submitAnswers').click());
+    expect(mocks.evidence).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates values, synchronizes after load/ready, and preserves drafts on page retry', async () => {

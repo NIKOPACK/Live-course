@@ -13,6 +13,7 @@
  *     guarantee that the field is present.
  */
 
+import { normalizeQuizQuestion } from '@livecourse/dsl';
 import {
   makeScene,
   type InteractiveContent,
@@ -78,7 +79,8 @@ export function migrateInteractiveContent(content: InteractiveContent): Interact
 
 /**
  * Top-level scene migrator — dispatches by scene-content type. SlideContent is
- * versioned; InteractiveContent drops its legacy `teacherActions` field; other
+ * versioned; InteractiveContent drops its legacy `teacherActions` field; quizzes
+ * normalize answer labels to canonical option values; other
  * content types pass through. Future surfaces declare their own migrators and
  * wire them in here.
  */
@@ -96,6 +98,12 @@ function migrateSceneContent(content: SceneContent): SceneContent {
   }
   if (content.type === 'interactive') {
     return migrateInteractiveContent(content);
+  }
+  if (content.type === 'quiz') {
+    const questions = content.questions.map(normalizeQuizQuestion);
+    return questions.every((question, index) => question === content.questions[index])
+      ? content
+      : { ...content, questions };
   }
   return content;
 }
