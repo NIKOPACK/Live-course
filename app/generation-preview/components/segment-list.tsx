@@ -31,10 +31,12 @@ export function SegmentList({
   segments,
   onRetry,
   retryingId,
+  generationBusy = false,
 }: {
   segments: readonly SegmentProgress[];
   onRetry: (outlineId: string) => void;
   retryingId: string | null;
+  generationBusy?: boolean;
 }) {
   const { t } = useI18n();
   const done = segments.filter((segment) => segment.status === 'completed').length;
@@ -50,16 +52,18 @@ export function SegmentList({
 
   return (
     <div className="w-full min-w-0 text-left [overflow-wrap:anywhere]">
-      <p className="mb-3 text-sm font-medium text-foreground" role="status">
-        {t('generation.segmentsProgress', { done, total: segments.length })}
-      </p>
-      <progress
-        value={done}
-        max={segments.length}
-        aria-label={t('generation.segmentsProgress', { done, total: segments.length })}
-        className="mb-4 h-2 w-full overflow-hidden rounded-full accent-primary"
-      />
-      <ol className="divide-y divide-border/60">
+      <div className="mb-4 min-w-0 space-y-2">
+        <p className="text-sm font-medium text-foreground" role="status">
+          {t('generation.segmentsProgress', { done, total: segments.length })}
+        </p>
+        <progress
+          value={done}
+          max={segments.length}
+          aria-label={t('generation.segmentsProgress', { done, total: segments.length })}
+          className="h-1.5 w-full overflow-hidden rounded-full accent-primary"
+        />
+      </div>
+      <ol className="min-w-0">
         {segments.map((segment, index) => {
           const retrying = retryingId === segment.outlineId;
           const open = opened[segment.outlineId] === true;
@@ -69,8 +73,8 @@ export function SegmentList({
               data-testid="preview-segment"
               data-status={segment.status}
               className={cn(
-                'lc-rise min-w-0 py-2',
-                segment.status === 'generating' && 'lc-active-sheen rounded-xl',
+                'lc-rise min-w-0 border-b border-border/50 last:border-b-0',
+                segment.status === 'generating' && 'rounded-xl border-b-0 bg-accent/40',
               )}
               style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
             >
@@ -80,7 +84,7 @@ export function SegmentList({
                   setOpened((current) => ({ ...current, [segment.outlineId]: next }))
                 }
               >
-                <div className="flex min-w-0 items-start gap-3">
+                <div className="flex min-w-0 items-start gap-3 px-1">
                   <StatusMark status={segment.status} />
                   <div className="min-w-0 flex-1">
                     <CollapsibleTrigger
@@ -90,51 +94,49 @@ export function SegmentList({
                         title: segment.title,
                       })}
                       className={cn(
-                        'flex min-h-11 w-full min-w-0 cursor-pointer items-start justify-between gap-3 rounded-xl px-1 py-2 text-start',
+                        'grid min-h-11 w-full min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 rounded-xl py-3 text-start',
                         'hover:bg-muted/60',
                         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
                         'active:translate-y-px',
                         'motion-reduce:transition-none motion-reduce:active:translate-y-0',
                       )}
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                          <h3 className="min-w-0 text-base font-medium leading-relaxed text-foreground">
-                            {index + 1}. {segment.title}
-                          </h3>
-                          <span
-                            role="status"
-                            data-tone={
-                              segment.status === 'failed'
-                                ? 'error'
-                                : segment.status === 'completed'
-                                  ? 'done'
-                                  : segment.status === 'generating'
-                                    ? 'active'
-                                    : 'idle'
-                            }
-                            className="lc-status-pill min-w-0 sm:max-w-40 sm:shrink-0"
-                          >
-                            <span className="sr-only">{segment.title}: </span>
-                            {statusLabel(segment.status, t)}
-                          </span>
-                        </div>
-                        {segment.design?.teachingPoints?.length ? (
-                          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                            {segment.design.teachingPoints[0]}
-                          </p>
-                        ) : null}
-                      </div>
-                      <ChevronDown
-                        aria-hidden
-                        className={cn(
-                          'mt-3 size-4 shrink-0 text-muted-foreground transition-transform',
-                          open && 'rotate-180',
-                        )}
-                      />
+                      <span className="pt-0.5 text-end text-sm tabular-nums text-muted-foreground">
+                        {index + 1}
+                      </span>
+                      <h3 className="min-w-0 text-base font-medium leading-snug text-foreground">
+                        {segment.title}
+                      </h3>
+                      <span className="flex shrink-0 items-center gap-2 pt-0.5">
+                        <span
+                          role="status"
+                          data-tone={
+                            segment.status === 'failed'
+                              ? 'error'
+                              : segment.status === 'completed'
+                                ? 'done'
+                                : segment.status === 'generating'
+                                  ? 'active'
+                                  : 'idle'
+                          }
+                          className="lc-status-pill"
+                        >
+                          <span className="sr-only">{segment.title}: </span>
+                          {statusLabel(segment.status, t)}
+                        </span>
+                        <ChevronDown
+                          aria-hidden
+                          className={cn(
+                            'size-4 shrink-0 text-muted-foreground transition-transform',
+                            open && 'rotate-180',
+                          )}
+                        />
+                      </span>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
-                      <SegmentDetail segment={segment} />
+                      <div className="min-w-0 ps-[2.75rem]">
+                        <SegmentDetail segment={segment} />
+                      </div>
                     </CollapsibleContent>
                     {canRetrySegment(segment.status) ? (
                       <Button
@@ -145,7 +147,7 @@ export function SegmentList({
                         data-testid="retry-segment"
                         aria-label={t('generation.retrySegmentLabel', { title: segment.title })}
                         aria-busy={retrying}
-                        disabled={retryingId !== null}
+                        disabled={generationBusy || retryingId !== null}
                         onClick={() => onRetry(segment.outlineId)}
                       >
                         {retrying ? (
@@ -189,7 +191,7 @@ function SegmentDetail({ segment }: { segment: SegmentProgress }) {
           {phaseCopy}
         </p>
       ) : null}
-      {segment.design?.teachingPoints && segment.design.teachingPoints.length > 1 ? (
+      {segment.design?.teachingPoints?.length ? (
         <div className="min-w-0 space-y-1">
           <p className="text-sm font-medium text-foreground">{t('lessonPlan.teachingPoints')}</p>
           <ul className="space-y-1 text-sm leading-relaxed text-muted-foreground">

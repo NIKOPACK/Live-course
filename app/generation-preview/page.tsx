@@ -86,7 +86,7 @@ import {
   deriveSegmentProgress,
   type GeneratingPhase,
 } from './segment-status';
-import { resolveTaskEngineModeFromOutlineDoneEvent } from './vocational-mode';
+import { readOutlineStream } from './read-outline-stream';
 import {
   SHOWCASE_CLASSROOM_ID,
   isFourierShowcaseSession,
@@ -176,6 +176,8 @@ function GenerationPreviewContent() {
 
   const outlines = useStageStore((state) => state.outlines);
   const scenes = useStageStore((state) => state.scenes);
+  const loadedStageId = useStageStore((state) => state.stage?.id);
+  const generationStatus = useStageStore((state) => state.generationStatus);
   const failedOutlines = useStageStore((state) => state.failedOutlines);
   const generatingOutlines = useStageStore((state) => state.generatingOutlines);
   const [generatingPhase, setGeneratingPhase] = useState<{
@@ -198,8 +200,7 @@ function GenerationPreviewContent() {
   const [pendingEnterFailed, setPendingEnterFailed] = useState(false);
   const [retryingSegmentId, setRetryingSegmentId] = useState<string | null>(null);
   const [streamingOutlines, setStreamingOutlines] = useState<SceneOutline[] | null>(null);
-  // A1: lesson plan generated between outline and content; null keeps the
-  // legacy flow (the classroom derives a plan at runtime).
+  // Content generation waits for the persisted HTML lesson plan.
   const [lessonPlan, setLessonPlan] = useState<LessonPlan | null>(null);
   const [truncationWarnings, setTruncationWarnings] = useState<string[]>([]);
   const [webSearchSources, setWebSearchSources] = useState<Array<{ title: string; url: string }>>(
@@ -212,14 +213,15 @@ function GenerationPreviewContent() {
   const newCourseMemoryContextRef = useRef<NewCourseMemoryContext | null>(null);
   /** Stable timestamp for the current generation command / C intake. */
   const generationStartedAtRef = useRef<string | null>(null);
+  const hasSessionStage = !!session && loadedStageId === session.stageId;
 
   const segments = useMemo(
     () =>
       deriveSegmentProgress({
-        outlines: outlines.length > 0 ? outlines : (streamingOutlines ?? []),
-        scenes,
-        failedOutlines,
-        generatingOutlines,
+        outlines: hasSessionStage && outlines.length > 0 ? outlines : (streamingOutlines ?? []),
+        scenes: hasSessionStage ? scenes : [],
+        failedOutlines: hasSessionStage ? failedOutlines : [],
+        generatingOutlines: hasSessionStage ? generatingOutlines : [],
         lessonPlan,
         generatingPhase,
       }),
@@ -231,12 +233,12 @@ function GenerationPreviewContent() {
       outlines,
       scenes,
       streamingOutlines,
+      hasSessionStage,
     ],
   );
   const deckReady = allSegmentsCompleted(segments);
   const hasFailedSegments = segments.some((segment) => segment.status === 'failed');
-  const showSegmentWorkspace =
-    confirmStep.kind === 'idle' && (outlines.length > 0 || (streamingOutlines?.length ?? 0) > 0);
+  const showSegmentWorkspace = confirmStep.kind === 'idle' && segments.length > 0;
 
   // Compute active steps based on session state
   const activeSteps = getActiveSteps(session);
@@ -517,10 +519,30 @@ function GenerationPreviewContent() {
             setStreamingOutlines(parsed.sceneOutlines);
           }
           if (parsed.currentStep === 'complete' && parsed.stageId) {
-            completeSessionPersistedRef.current = true;
             if (parsed.stageId !== SHOWCASE_CLASSROOM_ID) {
-              void useStageStore.getState().loadFromStorage(parsed.stageId);
+              await useStageStore.getState().loadFromStorage(parsed.stageId);
+              if (cancelled) return;
+              if (useStageStore.getState().stage?.id !== parsed.stageId) {
+                throw new Error('The completed generation document could not be loaded');
+              }
+              // sessionStorage can be newer than the last durable scene save.
+              // Resume missing segments rather than trusting a stale complete flag.
+              const restored = useStageStore.getState();
+              if (
+                !allSegmentsCompleted(
+                  deriveSegmentProgress({
+                    outlines: parsed.sceneOutlines ?? restored.outlines,
+                    scenes: restored.scenes,
+                    failedOutlines: restored.failedOutlines,
+                    generatingOutlines: [],
+                  }),
+                )
+              ) {
+                parsed.currentStep = 'generating';
+                restored.setGenerationComplete(false);
+              }
             }
+            completeSessionPersistedRef.current = parsed.currentStep === 'complete';
           }
           // Write the migration immediately so a refresh or a failed retry uses
           // exactly the same course/stage/lesson identities.
@@ -866,15 +888,18 @@ function GenerationPreviewContent() {
       }
       const { courseId, stageId, lessonId } = identity;
       const learnerId = await getLearnerKey();
+      signal.throwIfAborted();
       // A6/J2.0: load the learner-only profile before any confirmation or
       // generation request. This is read-only; an absent L session is not
       // created. `buildTeacherContext` enforces new-course scope (L only).
-      newCourseMemoryContextRef.current = await loadNewCourseMemoryContext({
+      const memoryContext = await loadNewCourseMemoryContext({
         store: getRuntimeStore(),
         stageId,
         learnerId,
         requirements: currentSession.requirements,
       });
+      signal.throwIfAborted();
+      newCourseMemoryContextRef.current = memoryContext;
       const stage: Stage = {
         id: stageId,
         name: extractTopicFromRequirement(currentSession.requirements.requirement),
@@ -899,6 +924,7 @@ function GenerationPreviewContent() {
         // 学习者在这里与 Agent 老师交互：回答按需追问、勾选范围；答案写进
         // requirements，随后的大纲与教案生成都以此为输入。可全部跳过。
         const confirmation = await runPreLessonConfirmation(currentSession, signal, stage.id);
+        signal.throwIfAborted();
         currentSession = {
           ...currentSession,
           requirements: confirmation.requirements,
@@ -926,120 +952,32 @@ function GenerationPreviewContent() {
         log.debug('=== Generating outlines (SSE) ===');
         setStreamingOutlines([]);
 
-        const outlineResult = await new Promise<{
-          outlines: SceneOutline[];
-          languageDirective: string;
-          courseTitle?: string;
-          taskEngineMode: boolean;
-        }>((resolve, reject) => {
-          const collected: SceneOutline[] = [];
-          let directive: string | undefined;
-          let title: string | undefined;
-
-          fetch('/api/generate/scene-outlines-stream', {
-            method: 'POST',
-            headers: getApiHeaders(),
-            body: JSON.stringify(
-              withThinkingConfig({
-                requirements: currentSession.requirements,
-                pdfText: currentSession.pdfText,
-                pdfImages: currentSession.pdfImages,
-                imageMapping,
-                researchContext: currentSession.researchContext,
-                teacherContext: newCourseMemoryContextRef.current?.teacherContext.text || undefined,
-              }),
-            ),
-            signal,
-          })
-            .then((res) => {
-              if (!res.ok) {
-                return res.json().then((d) => {
-                  reject(new Error(d.error || t('generation.outlineGenerateFailed')));
-                });
-              }
-
-              const reader = res.body?.getReader();
-              if (!reader) {
-                reject(new Error(t('generation.streamNotReadable')));
-                return;
-              }
-
-              const decoder = new TextDecoder();
-              let sseBuffer = '';
-
-              const pump = (): Promise<void> =>
-                reader.read().then(({ done, value }) => {
-                  if (value) {
-                    sseBuffer += decoder.decode(value, { stream: !done });
-                    const lines = sseBuffer.split('\n');
-                    sseBuffer = lines.pop() || '';
-
-                    for (const line of lines) {
-                      if (!line.startsWith('data: ')) continue;
-                      try {
-                        const evt = JSON.parse(line.slice(6));
-                        if (evt.type === 'languageDirective') {
-                          directive = evt.data;
-                        } else if (evt.type === 'courseTitle') {
-                          title = evt.data;
-                        } else if (evt.type === 'outline') {
-                          collected.push(evt.data);
-                          setStreamingOutlines([...collected]);
-                        } else if (evt.type === 'retry') {
-                          collected.length = 0;
-                          // Drop any directive/title latched from the failed
-                          // attempt — the server resets these per attempt, so a
-                          // succeeding attempt that omits them must fall back, not
-                          // inherit the previous attempt's stale values.
-                          directive = undefined;
-                          title = undefined;
-                          setStreamingOutlines([]);
-                          setStatusMessage(t('generation.outlineRetrying'));
-                        } else if (evt.type === 'done') {
-                          directive = evt.languageDirective || directive;
-                          resolve({
-                            outlines: evt.outlines || collected,
-                            languageDirective:
-                              directive ||
-                              'Teach in the language that matches the user requirement.',
-                            courseTitle: evt.courseTitle || title,
-                            taskEngineMode: resolveTaskEngineModeFromOutlineDoneEvent(evt),
-                          });
-                          return;
-                        } else if (evt.type === 'error') {
-                          reject(new Error(evt.error));
-                          return;
-                        }
-                      } catch (e) {
-                        log.error('Failed to parse outline SSE:', line, e);
-                      }
-                    }
-                  }
-                  if (done) {
-                    if (collected.length > 0) {
-                      resolve({
-                        outlines: collected,
-                        languageDirective:
-                          directive || 'Teach in the language that matches the user requirement.',
-                        // Carry any title latched from a streaming `courseTitle`
-                        // event here too — symmetric with languageDirective — so
-                        // a stream that ends without an explicit `done` event
-                        // does not silently drop a valid inferred title.
-                        courseTitle: title,
-                        taskEngineMode: false,
-                      });
-                    } else {
-                      reject(new Error(t('generation.outlineEmptyResponse')));
-                    }
-                    return;
-                  }
-                  return pump();
-                });
-
-              pump().catch(reject);
-            })
-            .catch(reject);
+        const outlineResponse = await fetch('/api/generate/scene-outlines-stream', {
+          method: 'POST',
+          headers: getApiHeaders(),
+          body: JSON.stringify(
+            withThinkingConfig({
+              requirements: currentSession.requirements,
+              pdfText: currentSession.pdfText,
+              pdfImages: currentSession.pdfImages,
+              imageMapping,
+              researchContext: currentSession.researchContext,
+              teacherContext: newCourseMemoryContextRef.current?.teacherContext.text || undefined,
+            }),
+          ),
+          signal,
         });
+        const outlineResult = await readOutlineStream(outlineResponse, {
+          signal,
+          onOutlines: setStreamingOutlines,
+          onRetry: () => setStatusMessage(t('generation.outlineRetrying')),
+          messages: {
+            failed: t('generation.outlineGenerateFailed'),
+            empty: t('generation.outlineEmptyResponse'),
+            unreadable: t('generation.streamNotReadable'),
+          },
+        });
+        signal.throwIfAborted();
 
         outlines = outlineResult.outlines;
         languageDirective = outlineResult.languageDirective;
@@ -1133,6 +1071,7 @@ function GenerationPreviewContent() {
       // Persist immediately, before any scene/content request. Refreshes and
       // retries therefore reuse this exact plan and timestamp, and C
       // initialization can safely use its stable `course:init:<courseId>` key.
+      signal.throwIfAborted();
       currentSession = {
         ...currentSession,
         lessonPlan: generatedLessonPlan,
@@ -1180,6 +1119,7 @@ function GenerationPreviewContent() {
       if (store.stage?.id !== stageId) {
         await store.loadFromStorage(stageId);
       }
+      signal.throwIfAborted();
       const hydrated = useStageStore.getState();
       if (hydrated.stage?.id === stageId) {
         useStageStore.setState({
@@ -1220,6 +1160,7 @@ function GenerationPreviewContent() {
         learnerId,
         lessonPlan: generatedLessonPlan,
       });
+      signal.throwIfAborted();
       // Use the repository's returned projection as the single source of
       // truth. This also handles an identical retry that returns the original
       // snapshot rather than appending a second C record.
@@ -1257,6 +1198,7 @@ function GenerationPreviewContent() {
       });
 
       const saved = await store.saveToStorage();
+      signal.throwIfAborted();
       if (!saved) {
         throw new Error(t('generation.generationFailed'));
       }
@@ -1269,6 +1211,7 @@ function GenerationPreviewContent() {
       const abortGeneration = () => stop();
       signal.addEventListener('abort', abortGeneration, { once: true });
       try {
+        signal.throwIfAborted();
         await generateRemaining({
           pdfImages: currentSession.pdfImages,
           imageMapping,
@@ -1346,7 +1289,7 @@ function GenerationPreviewContent() {
   };
 
   const retrySegment = async (outlineId: string) => {
-    if (retryingSegmentId) return;
+    if (retryingSegmentId || generationStatus === 'generating') return;
     const target = segments.find((segment) => segment.outlineId === outlineId);
     if (!target || !canRetrySegment(target.status)) return;
     setRetryingSegmentId(outlineId);
@@ -1577,13 +1520,14 @@ function GenerationPreviewContent() {
                 />
               )}
               {lessonPlan && confirmStep.kind === 'idle' ? (
-                <LessonPlanPanel plan={lessonPlan} />
+                <LessonPlanPanel plan={lessonPlan} compact={showSegmentWorkspace} />
               ) : null}
               {showSegmentWorkspace && (
                 <SegmentList
                   segments={segments}
                   onRetry={(outlineId) => void retrySegment(outlineId)}
                   retryingId={retryingSegmentId}
+                  generationBusy={generationStatus === 'generating'}
                 />
               )}
             </div>

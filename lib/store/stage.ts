@@ -607,18 +607,8 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
     }
     resetPendingChanges(stage.id);
     set((s) => ({
+      ...clearedStageState(s),
       stage,
-      scenes: [],
-      currentSceneId: null,
-      chats: [],
-      chatSnapshot: { sessions: [], restoreMarker: null },
-      // A fresh stage must not inherit the previous stage's persisted lesson
-      // plan; the generation flow re-sets it after outline generation.
-      lessonPlan: null,
-      // A fresh stage must likewise never inherit another course's identity.
-      coursePlan: null,
-      generationComplete: false,
-      generationEpoch: s.generationEpoch + 1,
     }));
     markPendingChanges(stage.id, { kind: 'structure' }, { kind: 'stage' });
   },

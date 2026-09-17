@@ -121,7 +121,7 @@ function extractCourseTitleFromComplete(buffer: string): string | null {
 function extractNewOutlines(
   buffer: string,
   scanFrom: number,
-): { outlines: SceneOutline[]; scanFrom: number } {
+): { outlines: SceneOutline[]; scanFrom: number; complete: boolean } {
   const results: SceneOutline[] = [];
 
   let i: number;
@@ -134,7 +134,7 @@ function extractNewOutlines(
     const outlinesKeyIdx = buffer.indexOf('"outlines"');
     const arrayStart =
       outlinesKeyIdx >= 0 ? buffer.indexOf('[', outlinesKeyIdx) : buffer.indexOf('[');
-    if (arrayStart === -1) return { outlines: results, scanFrom: 0 };
+    if (arrayStart === -1) return { outlines: results, scanFrom: 0, complete: false };
     i = arrayStart + 1;
   }
 
@@ -161,6 +161,10 @@ function extractNewOutlines(
     }
     if (inString) continue;
 
+    if (char === ']' && depth === 0) {
+      return { outlines: results, scanFrom: i + 1, complete: true };
+    }
+
     if (char === '{') {
       if (depth === 0) objectStart = i;
       depth++;
@@ -178,7 +182,7 @@ function extractNewOutlines(
     }
   }
 
-  return { outlines: results, scanFrom: consumed };
+  return { outlines: results, scanFrom: consumed, complete: false };
 }
 
 function normalizeTaskEngineProceduralOutline(
@@ -487,6 +491,7 @@ export async function POST(req: NextRequest) {
             try {
               let fullText = '';
               let scanFrom = 0;
+              let outlineArrayComplete = false;
               parsedOutlines = [];
               languageDirective = null;
               courseTitle = null;
@@ -508,10 +513,9 @@ export async function POST(req: NextRequest) {
                 fullText += chunk;
 
                 if (fullText.length > MAX_OUTLINE_STREAM_BYTES) {
-                  log.warn(
-                    `Outline stream exceeded ${MAX_OUTLINE_STREAM_BYTES} bytes (len=${fullText.length}); stopping read and finalizing with ${parsedOutlines.length} outline(s)`,
+                  throw new Error(
+                    `Outline stream exceeded ${MAX_OUTLINE_STREAM_BYTES} bytes (len=${fullText.length})`,
                   );
-                  break;
                 }
 
                 // Try to extract language directive early
@@ -540,11 +544,14 @@ export async function POST(req: NextRequest) {
 
                 // Try to extract new outlines from the accumulated text,
                 // resuming the scan from where the previous chunk left off.
-                const { outlines: newOutlines, scanFrom: nextScanFrom } = extractNewOutlines(
-                  fullText,
-                  scanFrom,
-                );
+                if (outlineArrayComplete) continue;
+                const {
+                  outlines: newOutlines,
+                  scanFrom: nextScanFrom,
+                  complete,
+                } = extractNewOutlines(fullText, scanFrom);
                 scanFrom = nextScanFrom;
+                outlineArrayComplete = complete;
                 for (const outline of newOutlines) {
                   // Ensure ID and order
                   const enrichedBase = {
@@ -568,6 +575,9 @@ export async function POST(req: NextRequest) {
 
               // Validate: got outlines?
               if (parsedOutlines.length > 0) {
+                if (!outlineArrayComplete) {
+                  throw new Error('LLM outline response ended before closing its outline array');
+                }
                 if (!courseTitle) {
                   // The head-bound streaming scan can miss a title the model
                   // placed after the outlines array or past the 8KB head window;
@@ -598,6 +608,10 @@ export async function POST(req: NextRequest) {
                 controller.enqueue(encoder.encode(`data: ${retryEvent}\n\n`));
               }
             } catch (error) {
+              // A failed attempt is only a draft, including the final retry.
+              parsedOutlines = [];
+              languageDirective = null;
+              courseTitle = null;
               // Client disconnected (AbortError from the now-propagated signal):
               // stop immediately, don't burn retries re-running generation.
               if (req.signal?.aborted) {

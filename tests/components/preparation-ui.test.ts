@@ -161,6 +161,27 @@ it('retains automatic segment expansion after completion and respects manual clo
   ]);
 });
 
+it('disables failed-segment retry while the generation worker is still running', async () => {
+  const onRetry = vi.fn();
+  const segments: SegmentProgress[] = [
+    { outlineId: 'failed', title: 'Failed', order: 0, status: 'failed' },
+    { outlineId: 'active', title: 'Active', order: 1, status: 'generating' },
+  ];
+  await render(
+    createElement(SegmentList, { segments, onRetry, retryingId: null, generationBusy: true }),
+  );
+  const retry = container.querySelector<HTMLButtonElement>('[data-testid="retry-segment"]')!;
+  expect(retry.disabled).toBe(true);
+  await click(retry);
+  expect(onRetry).not.toHaveBeenCalled();
+  await render(
+    createElement(SegmentList, { segments, onRetry, retryingId: null, generationBusy: false }),
+  );
+  expect(retry.disabled).toBe(false);
+  await click(retry);
+  expect(onRetry).toHaveBeenCalledWith('failed');
+});
+
 // docs/spec/01 J2.0: step-local choices; only the final action crosses the
 // existing onContinue/onSkip boundary. Neither component writes W/C/L.
 describe('ClarifyCard sequential answers', () => {
@@ -680,6 +701,17 @@ describe('LessonPlanPanel is read-only', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     await click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('starts collapsed when the working segment list is already on screen', async () => {
+    const plan = {
+      title: '链式法则',
+      nodes: [{ id: 'n1', title: '引入' }],
+    } as LessonPlan;
+    await render(createElement(LessonPlanPanel, { plan, compact: true }));
+    expect(
+      container.querySelector('[data-testid="lesson-plan-toggle"]')?.getAttribute('aria-expanded'),
+    ).toBe('false');
   });
 });
 

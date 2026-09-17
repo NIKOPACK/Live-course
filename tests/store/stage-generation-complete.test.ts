@@ -151,6 +151,28 @@ afterEach(async () => {
 });
 
 describe('generationComplete', () => {
+  it('new stages do not inherit the previous generation queue or failure state', () => {
+    const oldOutline = makeOutline(1);
+    useStageStore.setState({
+      stage: makeStage('old'),
+      outlines: [oldOutline],
+      failedOutlines: [oldOutline],
+      generatingOutlines: [oldOutline],
+      generationStatus: 'generating',
+      currentGeneratingOrder: 1,
+    });
+    useStageStore.getState().setStage(makeStage('new'));
+    expect(useStageStore.getState()).toMatchObject({
+      stage: { id: 'new' },
+      outlines: [],
+      failedOutlines: [],
+      generatingOutlines: [],
+      generationStatus: 'idle',
+      currentGeneratingOrder: -1,
+      generationComplete: false,
+    });
+  });
+
   it('defaults to false', () => {
     expect(useStageStore.getState().generationComplete).toBe(false);
   });

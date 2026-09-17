@@ -535,72 +535,68 @@ export interface GenerationParams {
 }
 
 export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
-  const abortRef = useRef(false);
   const generatingRef = useRef(false);
   const mediaAbortRef = useRef<AbortController | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
+  const activeRunRef = useRef<{ stageId: string; epoch: number } | null>(null);
   const lastParamsRef = useRef<GenerationParams | null>(null);
-  const generateRemainingRef = useRef<((params: GenerationParams) => Promise<void>) | null>(null);
 
   const store = useStageStore;
 
-  const generateRemaining = useCallback(
-    async (params: GenerationParams) => {
+  const runGeneration = useCallback(
+    async (params: GenerationParams, retryOutlineId?: string): Promise<boolean> => {
+      if (generatingRef.current) return false;
+      const state = store.getState();
+      const { outlines, scenes, stage } = state;
+      if (!stage || outlines.length === 0) return false;
+
       lastParamsRef.current = params;
-      if (generatingRef.current) return;
       generatingRef.current = true;
-      abortRef.current = false;
+      const run = { stageId: stage.id, epoch: state.generationEpoch };
+      activeRunRef.current = run;
+      const controller = new AbortController();
+      fetchAbortRef.current = controller;
+      const signal = controller.signal;
+      const ownsStage = () =>
+        activeRunRef.current === run &&
+        store.getState().stage?.id === run.stageId &&
+        store.getState().generationEpoch === run.epoch;
+      const isCurrentRun = () => ownsStage() && !signal.aborted;
       const removeGeneratingOutline = (outlineId: string) => {
         const current = store.getState().generatingOutlines;
         if (!current.some((o) => o.id === outlineId)) return;
         store.getState().setGeneratingOutlines(current.filter((o) => o.id !== outlineId));
       };
-
-      // Create a new AbortController for this generation run
-      fetchAbortRef.current = new AbortController();
-      const signal = fetchAbortRef.current.signal;
-
-      const state = store.getState();
-      const { outlines, scenes, stage } = state;
-      const startEpoch = state.generationEpoch;
-      if (!stage || outlines.length === 0) {
-        generatingRef.current = false;
-        return;
-      }
+      const failOutline = (outline: SceneOutline, error: string) => {
+        log.warn('Scene generation failed:', { outlineId: outline.id, error });
+        store.getState().addFailedOutline(outline);
+        removeGeneratingOutline(outline.id);
+        options.onSceneFailed?.(outline, error);
+      };
 
       store.getState().setGenerationStatus('generating');
 
       // Determine pending outlines
       const completedOrders = new Set(scenes.map((s) => s.order));
+      const failedIds = new Set(state.failedOutlines.map((outline) => outline.id));
       const pending = outlines
-        .filter((o) => !completedOrders.has(o.order))
+        .filter(
+          (outline) =>
+            !completedOrders.has(outline.order) &&
+            (retryOutlineId ? outline.id === retryOutlineId : !failedIds.has(outline.id)),
+        )
         .sort((a, b) => a.order - b.order);
 
-      if (pending.length === 0) {
-        store.getState().setGenerationStatus('completed');
-        store.getState().setGeneratingOutlines([]);
-        store.getState().setGenerationComplete(true);
-        options.onComplete?.();
-        generatingRef.current = false;
-        return;
-      }
-
+      if (retryOutlineId) store.getState().retryFailedOutline(retryOutlineId);
       store.getState().setGeneratingOutlines(pending);
 
       // Launch media generation in parallel — does not block content/action generation
-      mediaAbortRef.current = new AbortController();
-      generateMediaForOutlines(outlines, stage.id, mediaAbortRef.current.signal).catch((err) => {
-        log.warn('Media generation error:', err);
-      });
-
-      // Get previousSpeeches from last completed scene
-      let previousSpeeches: string[] = [];
-      const sortedScenes = [...scenes].sort((a, b) => a.order - b.order);
-      if (sortedScenes.length > 0) {
-        const lastScene = sortedScenes[sortedScenes.length - 1];
-        previousSpeeches = (lastScene.actions || [])
-          .filter((a): a is SpeechAction => a.type === 'speech')
-          .map((a) => a.text);
+      if (pending.length > 0 && !retryOutlineId) {
+        mediaAbortRef.current?.abort();
+        mediaAbortRef.current = new AbortController();
+        generateMediaForOutlines(outlines, stage.id, mediaAbortRef.current.signal).catch((err) => {
+          log.warn('Media generation error:', err);
+        });
       }
 
       // #572: opt-in parallel content fetch. Concurrency is server-configured
@@ -624,6 +620,8 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
       // safe; actions + TTS stay strictly serial to preserve previousSpeeches
       // threading and the pause-on-failure UX. With parallelism off this is exactly
       // the original one-at-a-time loop.
+      let currentOutline: SceneOutline | undefined;
+      let succeeded = true;
       try {
         const fetchContent = (outline: SceneOutline) =>
           fetchSceneContent(
@@ -663,22 +661,16 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
                   }
                 },
                 {
-                  shouldContinue: () =>
-                    !abortRef.current && store.getState().generationEpoch === startEpoch,
+                  shouldContinue: isCurrentRun,
                 },
               ).map((promise, i) => [pending[i].id, promise] as const),
             )
           : null;
 
-        let pausedByFailureOrAbort = false;
-        let hadContentFailure = false;
         for (const outline of pending) {
-          if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-            store.getState().setGenerationStatus('paused');
-            pausedByFailureOrAbort = true;
-            break;
-          }
+          if (!isCurrentRun()) return false;
 
+          currentOutline = outline;
           store.getState().setCurrentGeneratingOrder(outline.order);
 
           // Step 1: content — await this outline's pre-warmed fetch (parallel),
@@ -694,34 +686,28 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             options.onPhaseChange?.('content', outline);
             contentResult = await fetchContent(outline);
           }
+          if (!isCurrentRun()) return false;
 
           if (!contentResult.success || !contentResult.content) {
-            if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-              pausedByFailureOrAbort = true;
-              break;
-            }
-            store.getState().addFailedOutline(outline);
-            options.onSceneFailed?.(outline, contentResult.error || 'Content generation failed');
+            succeeded = false;
+            failOutline(outline, contentResult.error || 'Content generation failed');
             if (contentPromises) {
               // Parallel: surface the failure but keep going with the other scenes
               // (their content is already in flight).
-              hadContentFailure = true;
-              removeGeneratingOutline(outline.id);
               continue;
             }
             // Serial: pause the batch (unchanged behaviour).
-            store.getState().setGenerationStatus('paused');
-            pausedByFailureOrAbort = true;
-            break;
-          }
-
-          if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-            store.getState().setGenerationStatus('paused');
-            pausedByFailureOrAbort = true;
             break;
           }
 
           // Step 2: Generate actions + assemble scene
+          const previousScene = store
+            .getState()
+            .scenes.filter((scene) => scene.order < outline.order)
+            .sort((a, b) => b.order - a.order)[0];
+          const previousSpeeches = (previousScene?.actions ?? [])
+            .filter((action): action is SpeechAction => action.type === 'speech')
+            .map((action) => action.text);
           options.onPhaseChange?.('actions', outline);
           const actionsResult = await fetchSceneActions(
             {
@@ -736,6 +722,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             },
             signal,
           );
+          if (!isCurrentRun()) return false;
 
           if (actionsResult.success && actionsResult.scene) {
             const scene = actionsResult.scene;
@@ -757,76 +744,76 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
                 signal,
               );
               if (!ttsResult.success) {
-                if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-                  pausedByFailureOrAbort = true;
-                  break;
-                }
-                store.getState().addFailedOutline(outline);
-                options.onSceneFailed?.(outline, ttsResult.error || 'TTS generation failed');
-                store.getState().setGenerationStatus('paused');
-                pausedByFailureOrAbort = true;
+                if (!isCurrentRun()) return false;
+                succeeded = false;
+                failOutline(outline, ttsResult.error || 'TTS generation failed');
                 break;
               }
             }
 
             // Epoch changed — stage switched, discard this scene
-            if (store.getState().generationEpoch !== startEpoch) {
+            if (!isCurrentRun()) {
               await removeFreshTtsAllocations(speechAllocationIds(scene));
-              pausedByFailureOrAbort = true;
-              break;
+              return false;
             }
 
             removeGeneratingOutline(outline.id);
             addGeneratedScene(scene);
             options.onSceneGenerated?.(scene, outline.order);
-            previousSpeeches = actionsResult.previousSpeeches || [];
           } else {
-            if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
-              pausedByFailureOrAbort = true;
-              break;
-            }
-            store.getState().addFailedOutline(outline);
-            options.onSceneFailed?.(outline, actionsResult.error || 'Actions generation failed');
-            store.getState().setGenerationStatus('paused');
-            pausedByFailureOrAbort = true;
+            succeeded = false;
+            failOutline(outline, actionsResult.error || 'Actions generation failed');
             break;
           }
         }
-
-        if (!abortRef.current && !pausedByFailureOrAbort) {
-          if (hadContentFailure) {
-            // Parallel content phase left some outlines failed but kept going;
-            // surface them for retry instead of signalling a clean completion.
-            store.getState().setGenerationStatus('paused');
-          } else {
-            store.getState().setGenerationStatus('completed');
-            store.getState().setGeneratingOutlines([]);
-            store.getState().setGenerationComplete(true);
-            options.onComplete?.();
-          }
-        }
+        return succeeded && isCurrentRun();
       } catch (err: unknown) {
         // AbortError is expected when stop() is called — don't treat as failure
         if (isAbortError(err)) {
           log.info('Generation aborted');
-          store.getState().setGenerationStatus('paused');
         } else {
-          throw err;
+          log.error('Generation run failed:', err);
+          if (isCurrentRun() && currentOutline) {
+            failOutline(currentOutline, messageFromError(err, 'Scene generation failed'));
+          }
         }
+        return false;
       } finally {
+        // Cancel unused prefetched content before releasing the run. A stale
+        // run must never clear markers or pause a different course.
+        controller.abort();
+        if (ownsStage()) {
+          const current = store.getState();
+          current.setGeneratingOutlines([]);
+          current.setCurrentGeneratingOrder(-1);
+          current.markGenerationCompleteIfDone();
+          current.setGenerationStatus(store.getState().generationComplete ? 'completed' : 'paused');
+          if (store.getState().generationComplete) options.onComplete?.();
+        }
         generatingRef.current = false;
         fetchAbortRef.current = null;
+        activeRunRef.current = null;
       }
     },
     [options, store],
   );
 
-  // Keep ref in sync so retrySingleOutline can call it
-  generateRemainingRef.current = generateRemaining;
+  const generateRemaining = useCallback(
+    async (params: GenerationParams) => {
+      await runGeneration(params);
+    },
+    [runGeneration],
+  );
 
   const stop = useCallback(() => {
-    abortRef.current = true;
-    store.getState().bumpGenerationEpoch();
+    const run = activeRunRef.current;
+    const state = store.getState();
+    if (run && state.stage?.id === run.stageId && state.generationEpoch === run.epoch) {
+      state.bumpGenerationEpoch();
+      state.setGeneratingOutlines([]);
+      state.setCurrentGeneratingOrder(-1);
+      state.setGenerationStatus('paused');
+    }
     fetchAbortRef.current?.abort();
     mediaAbortRef.current?.abort();
   }, [store]);
@@ -839,7 +826,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
       const state = store.getState();
       const outline = state.failedOutlines.find((o) => o.id === outlineId);
       const params = lastParamsRef.current;
-      if (!outline || !state.stage || !params) return;
+      if (generatingRef.current || !outline || !state.stage || !params) return;
       const retryEpoch = state.generationEpoch;
 
       // Regen-lock (#571): never silently replace a scene that is open in
@@ -858,121 +845,18 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         return;
       }
 
-      const removeGeneratingOutline = () => {
-        const current = store.getState().generatingOutlines;
-        if (!current.some((o) => o.id === outlineId)) return;
-        store.getState().setGeneratingOutlines(current.filter((o) => o.id !== outlineId));
-      };
-
-      // Remove from failed list and mark as generating
-      store.getState().retryFailedOutline(outlineId);
-      store.getState().setGenerationStatus('generating');
-      const currentGenerating = store.getState().generatingOutlines;
-      if (!currentGenerating.some((o) => o.id === outline.id)) {
-        store.getState().setGeneratingOutlines([...currentGenerating, outline]);
-      }
-
-      const abortController = new AbortController();
-      const signal = abortController.signal;
-
-      try {
-        // Step 1: Content
-        const contentResult = await fetchSceneContent(
-          {
-            outline,
-            allOutlines: state.outlines,
-            stageId: state.stage.id,
-            pdfImages: params.pdfImages,
-            imageMapping: params.imageMapping,
-            stageInfo: params.stageInfo,
-            agents: params.agents,
-            languageDirective: params.languageDirective,
-            lessonNodeDesign: lessonNodeDesignForOutline(outline),
-            presentation: state.lessonPlan?.presentation,
-          },
-          signal,
-        );
-
-        if (!contentResult.success || !contentResult.content) {
-          store.getState().addFailedOutline(outline);
-          return;
-        }
-
-        // Step 2: Actions
-        const sortedScenes = [...store.getState().scenes].sort((a, b) => a.order - b.order);
-        const lastScene = sortedScenes[sortedScenes.length - 1];
-        const previousSpeeches = lastScene
-          ? (lastScene.actions || [])
-              .filter((a): a is SpeechAction => a.type === 'speech')
-              .map((a) => a.text)
-          : [];
-
-        const actionsResult = await fetchSceneActions(
-          {
-            outline: contentResult.effectiveOutline || outline,
-            allOutlines: state.outlines,
-            content: contentResult.content,
-            stageId: state.stage.id,
-            agents: params.agents,
-            previousSpeeches,
-            userProfile: params.userProfile,
-            languageDirective: params.languageDirective,
-          },
-          signal,
-        );
-
-        if (!actionsResult.success || !actionsResult.scene) {
-          store.getState().addFailedOutline(outline);
-          return;
-        }
-
-        // Step 3: TTS
-        const settings = useSettingsStore.getState();
-        if (
-          isLiveCourseTTSEnabled() &&
-          settings.ttsEnabled &&
-          settings.ttsProviderId !== 'browser-native-tts' &&
-          isTTSProviderEnabled(
-            settings.ttsProviderId,
-            settings.ttsProvidersConfig?.[settings.ttsProviderId],
-          )
-        ) {
-          const ttsResult = await generateTTSForScene(
-            actionsResult.scene,
-            params.languageDirective || params.stageInfo.language,
-            signal,
-          );
-          if (!ttsResult.success) {
-            store.getState().addFailedOutline(outline);
-            return;
-          }
-        }
-
-        if (store.getState().generationEpoch !== retryEpoch) {
-          await removeFreshTtsAllocations(speechAllocationIds(actionsResult.scene));
-          return;
-        }
-
-        removeGeneratingOutline();
-        addGeneratedScene(actionsResult.scene);
-
-        // Resume remaining generation if there are pending outlines
-        if (store.getState().generatingOutlines.length > 0 && lastParamsRef.current) {
-          generateRemainingRef.current?.(lastParamsRef.current);
-        } else {
-          // This retry may have materialized the final outstanding slide. The
-          // generateRemaining completion path is not reached on the retry flow,
-          // so mark completion here too — otherwise a later delete would treat
-          // the orphaned outline as pending and regenerate it.
-          store.getState().markGenerationCompleteIfDone();
-        }
-      } catch (err) {
-        if (!isAbortError(err)) {
-          store.getState().addFailedOutline(outline);
-        }
+      const succeeded = await runGeneration(params, outlineId);
+      const current = store.getState();
+      if (
+        succeeded &&
+        current.stage?.id === state.stage.id &&
+        current.generationEpoch === retryEpoch &&
+        !current.generationComplete
+      ) {
+        await runGeneration(params);
       }
     },
-    [store],
+    [runGeneration, store],
   );
 
   return { generateRemaining, retrySingleOutline, stop, isGenerating };

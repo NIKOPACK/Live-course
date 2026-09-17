@@ -7,9 +7,16 @@ import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils';
 import type { LessonPlan } from '@/lib/livecourse/domain/schemas';
 
-export function LessonPlanPanel({ plan }: { plan: LessonPlan }) {
+export function LessonPlanPanel({
+  plan,
+  compact = false,
+}: {
+  plan: LessonPlan;
+  /** When the working segment list is on screen, start collapsed so the TOC is not a second copy. */
+  compact?: boolean;
+}) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!compact);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
@@ -41,11 +48,15 @@ export function LessonPlanPanel({ plan }: { plan: LessonPlan }) {
           data-testid="lesson-plan-readonly"
           data-readonly="true"
         >
-          <p className="text-sm leading-relaxed text-muted-foreground">{plan.title}</p>
-          <ol className="space-y-2">
+          <p className="text-base font-medium leading-snug text-foreground">{plan.title}</p>
+          <ol className="grid min-w-0 gap-2">
             {plan.nodes.map((node, index) => (
-              <li key={node.id} className="min-w-0 text-sm leading-relaxed text-foreground">
-                {index + 1}. {node.title}
+              <li
+                key={node.id}
+                className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-2 text-sm leading-relaxed text-muted-foreground"
+              >
+                <span className="tabular-nums text-end text-muted-foreground/80">{index + 1}</span>
+                <span className="min-w-0 text-foreground">{node.title}</span>
               </li>
             ))}
           </ol>
