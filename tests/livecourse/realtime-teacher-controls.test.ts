@@ -5,6 +5,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
 import { useHtmlQuestionContext } from '@/lib/livecourse/html/question-context';
+import { useLiveCaptionStore } from '@/lib/store/live-caption';
+import type { PlaybackSpeechContext } from '@/lib/playback/types';
 
 let currentTeacher: TeacherSpeechPort | null = null;
 
@@ -19,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   ask: vi.fn<(_text: string) => Promise<void>>(async () => undefined),
   connect: vi.fn<() => Promise<void>>(async () => undefined),
   speak: vi.fn(async (_text: string) => undefined),
+  mute: vi.fn((_muted: boolean) => undefined),
   question: vi.fn(async (_question: unknown, _options: unknown) => undefined),
   hintOralQuestion: vi.fn(async () => undefined),
   retryOralQuestion: vi.fn(async () => undefined),
@@ -26,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   sessions: [] as Array<{
     closeCount: number;
     canInterrupt(): boolean;
+    getTeachingContext(): string;
     connect(): Promise<void>;
     close(): Promise<void>;
     emit(event: { type: string; [key: string]: unknown }): void;
@@ -70,6 +74,7 @@ vi.mock('@/lib/livecourse/realtime/client/session', () => ({
     closeCount = 0;
     connected = false;
     readonly canInterrupt: () => boolean;
+    readonly getTeachingContext: () => string;
     readonly #onEvent?: (event: { type: string; [key: string]: unknown }) => void;
     readonly #interruptNode: (nodeId: string) => Promise<void>;
     readonly #resumeNode: (nodeId: string) => Promise<void>;
@@ -80,11 +85,13 @@ vi.mock('@/lib/livecourse/realtime/client/session', () => ({
       interruptNode: (nodeId: string) => Promise<void>;
       resumeNode: (nodeId: string) => Promise<void>;
       canInterrupt: () => boolean;
+      getTeachingContext: () => string;
     }) {
       this.#onEvent = options.onEvent;
       this.#interruptNode = options.interruptNode;
       this.#resumeNode = options.resumeNode;
       this.canInterrupt = options.canInterrupt;
+      this.getTeachingContext = options.getTeachingContext;
       mocks.sessions.push(this);
     }
 
@@ -147,7 +154,10 @@ vi.mock('@/lib/livecourse/realtime/client/session', () => ({
       }
     }
 
-    mute(): void {}
+    mute(muted: boolean): void {
+      mocks.mute(muted);
+      this.#onEvent?.({ type: 'muted', muted });
+    }
 
     interrupt(): void {}
   },
@@ -208,20 +218,28 @@ vi.mock('@/lib/store', () => ({
     }),
 }));
 
-vi.mock('@/lib/hooks/use-i18n', () => ({
-  useI18n: () => ({
-    locale: 'zh-CN',
-    setLocale: vi.fn(),
-    t: (key: string, values?: Record<string, string>) =>
-      key === 'livecourse.quotedQuestion'
-        ? `Quote: ${values?.quote}\nQuestion: ${values?.question}`
-        : key === 'livecourse.realtimeRecognitionFailed'
-          ? '没听清，请再说一次（恢复点已保留）'
-          : key === 'livecourse.realtimeInterruptionPending'
-            ? '插话状态待确认，播放已暂停；请重试或断开以恢复主线'
-            : key,
-  }),
-}));
+vi.mock('@/lib/hooks/use-i18n', async () => {
+  const { default: zh } = await import('@/lib/i18n/locales/zh-CN.json');
+  const voiceLabels = new Map(
+    Object.entries(zh.livecourse)
+      .filter(([key]) => key.startsWith('voice') || key.startsWith('microphone'))
+      .map(([key, value]) => [`livecourse.${key}`, value]),
+  );
+  return {
+    useI18n: () => ({
+      locale: 'zh-CN',
+      setLocale: vi.fn(),
+      t: (key: string, values?: Record<string, string>) =>
+        key === 'livecourse.quotedQuestion'
+          ? `Quote: ${values?.quote}\nQuestion: ${values?.question}`
+          : key === 'livecourse.realtimeRecognitionFailed'
+            ? '没听清，请再说一次（恢复点已保留）'
+            : key === 'livecourse.realtimeInterruptionPending'
+              ? '插话状态待确认，播放已暂停；请重试或断开以恢复主线'
+              : (voiceLabels.get(key) ?? key),
+    }),
+  };
+});
 
 vi.mock('@/components/ui/tooltip', async () => {
   const { Fragment } = await import('react');
@@ -304,6 +322,7 @@ async function render(component: ReactNode): Promise<MountedComponent> {
 
 beforeEach(() => {
   useHtmlQuestionContext.getState().clearQuote();
+  useLiveCaptionStore.getState().clearCaption();
   currentTeacher = null;
   mocks.bridgeAudioElements.length = 0;
   mocks.currentNodeType = 'instruction';
@@ -342,6 +361,152 @@ afterEach(async () => {
 });
 
 describe('Realtime teacher controls lifecycle', () => {
+  it.each([false, true])(
+    'reads the live playback anchor through the avatar host (presence=%s) without leaking another scene',
+    async (presence) => {
+      let context: PlaybackSpeechContext = {
+        sceneId: 'scene-1',
+        lastCompletedText: 'Already played.',
+        resumeText: 'Unfinished passage.',
+        nextText: 'Following passage.',
+      };
+      const { container } = await render(
+        createElement(TeacherAvatarHost, {
+          presence,
+          getPlaybackSpeechContext: () => context,
+        }),
+      );
+      await click(getButton(container, '连接实时语音'));
+      const session = mocks.sessions[0];
+      expect(session.getTeachingContext()).toContain('Already played.');
+      expect(session.getTeachingContext()).toContain('Unfinished passage.');
+      context = { ...context, resumeText: 'Later unfinished passage.' };
+      expect(session.getTeachingContext()).toContain('Later unfinished passage.');
+      expect(session.getTeachingContext()).not.toContain('Unfinished passage.');
+      context = { ...context, sceneId: 'other-scene', resumeText: 'Wrong scene content.' };
+      expect(session.getTeachingContext()).not.toContain('Wrong scene content.');
+      expect(session.getTeachingContext()).toContain('Scene 1');
+    },
+  );
+
+  it('does not overwrite resumed teacher captions with the answered learner question', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls));
+    await click(getButton(container, '连接实时语音'));
+    const session = mocks.sessions[0];
+    mocks.ask.mockImplementationOnce(async (text) => {
+      session.emit({ type: 'transcript', speaker: 'student', text });
+      session.emit({ type: 'transcript', speaker: 'teacher', text: 'The explanation continues.' });
+    });
+    const textarea = container.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'Why?',
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(getButton(container, 'livecourse.sendQuestion'));
+    expect(useLiveCaptionStore.getState().caption).toMatchObject({
+      speaker: 'teacher',
+      text: 'The explanation continues.',
+    });
+    expect(textarea.value).toBe('');
+  });
+
+  it('labels the lectern connection and microphone without starting teaching', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls, { tone: 'lectern' }));
+    expect(container.querySelector('[role=status]')?.textContent).toBe('语音未连接');
+    expect(getButton(container, '连接实时语音').textContent).toContain('连接语音');
+    await click(getButton(container, '连接实时语音'));
+    expect(container.querySelector('[role=status]')?.textContent).toBe('语音已连接');
+    expect(mocks.speak).not.toHaveBeenCalled();
+    expect(mocks.emitAction).not.toHaveBeenCalled();
+    expect(getButton(container, '静音麦克风').textContent).toBe('麦克风已开');
+    await click(getButton(container, '静音麦克风'));
+    expect(mocks.mute).toHaveBeenCalledWith(true);
+    expect(getButton(container, '打开麦克风').getAttribute('aria-pressed')).toBe('true');
+    expect(getButton(container, '打开麦克风').textContent).toBe('麦克风已关');
+    await click(getButton(container, '打开麦克风'));
+    expect(mocks.mute).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps secondary lectern voice actions keyboard-accessible in a menu', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls, { tone: 'lectern' }));
+    await click(getButton(container, '连接实时语音'));
+    const audio = container.querySelector('audio');
+    expect(container.querySelector('[aria-label="断开实时语音"]')).toBeNull();
+    const trigger = getButton(container, '更多语音操作');
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    const items = [...document.querySelectorAll<HTMLElement>('[role=menuitem]')];
+    const interrupt = items.find((item) => item.textContent === '打断教师')!;
+    expect(interrupt.getAttribute('aria-disabled')).toBe('true');
+    expect(container.querySelector('audio')).toBe(audio);
+    expect(mocks.sessions[0].closeCount).toBe(0);
+    const disconnect = items.find((item) => item.textContent === '断开实时语音')!;
+    await act(async () => disconnect.click());
+    expect(mocks.sessions[0].closeCount).toBe(1);
+    expect(getButton(container, '连接实时语音')).toBeDefined();
+  });
+
+  it('grows the lectern input within a limit and preserves drafts while paused', async () => {
+    const view = await render(createElement(RealtimeTeacherControls, { tone: 'lectern' }));
+    const textarea = view.container.querySelector('textarea')!;
+    expect(textarea.rows).toBe(2);
+    expect(textarea.labels?.[0]?.textContent).toBe('livecourse.questionTitle');
+    Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 320 });
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        'A question with several lines.\nPlease explain the second step.',
+      );
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(textarea.style.height).toBe('144px');
+    mocks.classroomState = 'paused';
+    await act(async () =>
+      view.root.render(createElement(RealtimeTeacherControls, { tone: 'lectern' })),
+    );
+    expect(textarea.disabled).toBe(true);
+    expect(textarea.value).toContain('Please explain the second step.');
+    expect(
+      view.container.querySelector(`[id="${textarea.getAttribute('aria-describedby')}"]`)
+        ?.textContent,
+    ).toBe('livecourse.questionPausedHint');
+    mocks.classroomState = 'teaching';
+    await act(async () =>
+      view.root.render(createElement(RealtimeTeacherControls, { tone: 'lectern' })),
+    );
+    expect(textarea.disabled).toBe(false);
+    expect(textarea.value).toContain('Please explain the second step.');
+  });
+
+  it('sends only explicit Enter, not a newline or an IME confirmation', async () => {
+    const { container } = await render(createElement(RealtimeTeacherControls, { tone: 'lectern' }));
+    const quickButton = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'livecourse.questionExample',
+    )!;
+    await click(quickButton);
+    const textarea = container.querySelector('textarea')!;
+    for (const options of [{ shiftKey: true }, { isComposing: true }]) {
+      await act(async () => {
+        textarea.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, ...options }),
+        );
+      });
+      expect(mocks.ask).not.toHaveBeenCalled();
+      expect(mocks.sessions).toHaveLength(0);
+    }
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(mocks.ask).toHaveBeenCalledOnce();
+    expect(mocks.ask).toHaveBeenCalledWith('livecourse.questionExamplePrompt');
+    expect(textarea.value).toBe('');
+  });
+
   it('exposes the oral speech port and keeps ordinary drafts and quotes separate from oral answers', async () => {
     useHtmlQuestionContext.getState().setQuote({ sceneId: 'scene-1', text: 'An unsent quote' });
     const { container } = await render(

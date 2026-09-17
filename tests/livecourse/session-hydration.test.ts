@@ -198,6 +198,45 @@ afterEach(async () => {
 });
 
 describe('real session hydration and recovery boundary', () => {
+  it('persists a chapter position and restores it in a fresh classroom after leaving', async () => {
+    await renderProvider(true, 'resume-same-course');
+    await waitForStatus('ready');
+    const beforeEvidence = [...current.evidence];
+    await act(async () => {
+      await current.emitAction({
+        type: 'lesson.goto_node',
+        nodeId: 'node:lesson-1-b',
+        payload: { targetNodeId: 'node:lesson-1-b' },
+      });
+      await current.savePlaybackPosition!({
+        sceneId: 'lesson-1-b',
+        actionId: null,
+        actionIndex: 0,
+        speechChunkIndex: 0,
+      });
+    });
+    expect(current.playbackPosition).toMatchObject({
+      nodeId: 'node:lesson-1-b',
+      sceneId: 'lesson-1-b',
+      actionIndex: 0,
+      speechChunkIndex: 0,
+    });
+    expect(current.evidence).toEqual(beforeEvidence);
+    await act(async () => {
+      await current.saveAndLeaveSession();
+    });
+    await act(async () => {
+      root.render(null);
+    });
+    useStageStore.setState({ currentSceneId: 'lesson-1-a' });
+    await renderProvider(true, 'resume-same-course');
+    await waitForStatus('ready');
+    expect(current.currentNodeId).toBe('node:lesson-1-b');
+    expect(useStageStore.getState().currentSceneId).toBe('lesson-1-b');
+    expect(current.playbackPosition?.sceneId).toBe('lesson-1-b');
+    expect(current.evidence).toEqual(beforeEvidence);
+  });
+
   it.each(['new-course', 'resume-same-course'] as const)(
     'starts an untaught %s course in lesson order rather than generation completion order',
     async (memoryMode) => {

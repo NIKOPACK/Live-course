@@ -19,6 +19,7 @@ import {
 import { TeacherAvatarPoster } from './TeacherAvatarPoster';
 import type { AiriVrmLookAt } from '@/lib/livecourse/avatar/airi-vrm-element';
 import type { TeacherSpeechPort } from '@/lib/livecourse/realtime/client/teacher-speech';
+import type { PlaybackSpeechContext } from '@/lib/playback/types';
 
 const goalLabels: Record<GoalState['status'], string> = {
   not_started: '待检查',
@@ -55,6 +56,7 @@ interface TeacherAvatarHostProps {
   /** Freeze/resume the independent lesson PlaybackEngine around a natural interruption. */
   readonly onPlaybackInterrupt?: RealtimePlaybackHandler;
   readonly onPlaybackResume?: RealtimePlaybackHandler;
+  readonly getPlaybackSpeechContext?: () => PlaybackSpeechContext | null;
   readonly onTeacherChange?: (teacher: TeacherSpeechPort | null) => void;
 }
 
@@ -69,6 +71,7 @@ export function TeacherAvatarHost({
   presence = false,
   onPlaybackInterrupt,
   onPlaybackResume,
+  getPlaybackSpeechContext,
   onTeacherChange,
 }: TeacherAvatarHostProps) {
   const { t } = useI18n();
@@ -169,7 +172,31 @@ export function TeacherAvatarHost({
           : t('livecourse.teacherReady');
 
     return (
-      <aside data-testid="classroom-teacher" className="lc-teacher-rail relative z-20">
+      <aside
+        data-testid="classroom-teacher"
+        aria-label={t('home.teacherTitle')}
+        className="lc-teacher-rail relative z-20"
+      >
+        <header className="lc-teacher-heading">
+          <div className="relative h-11 w-9 shrink-0 overflow-hidden md:hidden">
+            <TeacherAvatarPoster className="-top-1 h-[5.5rem]" />
+          </div>
+          <h2 className="min-w-0 flex-1 text-sm font-semibold tracking-tight">
+            {t('home.teacherTitle')}
+          </h2>
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              aria-hidden="true"
+              className={cn(
+                'size-1.5 rounded-full transition-colors motion-reduce:transition-none',
+                !isPaused && mode === 'speaking'
+                  ? 'animate-pulse bg-primary motion-reduce:animate-none'
+                  : 'bg-muted-foreground/50',
+              )}
+            />
+            {lecternStatus}
+          </span>
+        </header>
         <div className="lc-teacher-bay relative hidden min-h-0 flex-1 overflow-hidden md:block">
           <TeacherAvatar
             mode={isPaused ? 'idle' : mode}
@@ -180,19 +207,14 @@ export function TeacherAvatarHost({
             className="absolute inset-0 size-full"
           />
         </div>
-        <div className="lc-lectern-plate flex items-start gap-3 px-3 py-2.5 md:flex-col md:gap-0 md:px-4 md:py-3">
-          <div className="relative h-14 w-11 shrink-0 overflow-hidden md:hidden">
-            <TeacherAvatarPoster />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-foreground">{lecternStatus}</p>
-            <RealtimeTeacherControls
-              tone="lectern"
-              onPlaybackInterrupt={onPlaybackInterrupt}
-              onPlaybackResume={onPlaybackResume}
-              onTeacherChange={onTeacherChange}
-            />
-          </div>
+        <div className="lc-lectern-plate">
+          <RealtimeTeacherControls
+            tone="lectern"
+            onPlaybackInterrupt={onPlaybackInterrupt}
+            onPlaybackResume={onPlaybackResume}
+            getPlaybackSpeechContext={getPlaybackSpeechContext}
+            onTeacherChange={onTeacherChange}
+          />
         </div>
       </aside>
     );
@@ -366,6 +388,7 @@ export function TeacherAvatarHost({
           <RealtimeTeacherControls
             onPlaybackInterrupt={onPlaybackInterrupt}
             onPlaybackResume={onPlaybackResume}
+            getPlaybackSpeechContext={getPlaybackSpeechContext}
             onTeacherChange={onTeacherChange}
           />
         </div>

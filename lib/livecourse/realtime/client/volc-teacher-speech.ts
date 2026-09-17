@@ -11,6 +11,7 @@ import { isVolcAudioInputTimeout } from '@/lib/livecourse/realtime/volc/protocol
 import type { GenerationRetryOptions } from '@/lib/generation/generation-retry';
 import { OralQuestionSession, type OralQuestionOptions } from './oral-question';
 import type { OralQuestion } from '@/lib/livecourse/domain/schemas';
+import { buildRealtimeTeacherInstructions } from '@/lib/livecourse/realtime/teacher-instructions';
 
 function speechAbortError(): Error {
   return new DOMException('Realtime speech was cancelled', 'AbortError');
@@ -169,7 +170,7 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
       try {
         if (this.connected && this.#session === session && !this.#closing) {
           await session.cancelNarration();
-          await session.updateInstructions(this.#options.getInstructions());
+          await session.updateInstructions(this.#currentInstructions());
         }
       } finally {
         this.#oralQuestion = null;
@@ -472,10 +473,7 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
   }
 
   #currentInstructions(): string {
-    return (
-      this.#options.getInstructions().trim() ||
-      'You are the live teacher for a single learner. Match the learner language and keep spoken turns concise.'
-    );
+    return buildRealtimeTeacherInstructions(this.#options.getInstructions().trim());
   }
 
   async #syncInstructions(session: VolcRealtimeBrowserSession): Promise<void> {

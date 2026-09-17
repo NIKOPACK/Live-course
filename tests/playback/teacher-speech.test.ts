@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PlaybackEngine } from '@/lib/playback/engine';
 import type { PlaybackEngineCallbacks } from '@/lib/playback/types';
-import type { ActionEngine } from '@/lib/action/engine';
+import { ActionEngine } from '@/lib/action/engine';
+import { useStageStore } from '@/lib/store';
 import type { AudioPlayer } from '@/lib/utils/audio-player';
 import type { Action } from '@/lib/types/action';
 import type { Scene } from '@/lib/types/stage';
@@ -98,6 +99,217 @@ function setup(actions: Action[], callbacks: PlaybackEngineCallbacks = {}) {
 }
 
 describe('PlaybackEngine teaching speech port', () => {
+  it('restores an interrupted chunk in a new engine and rebuilds HTML visuals without replaying speech', async () => {
+    const first = `${'A'.repeat(110)}!`;
+    const second = `${'B'.repeat(110)}!`;
+    const visual: Action = { id: 'widget', type: 'widget_setState', state: { step: 1 } };
+    const actions = [speech('Earlier speech'), visual, speech(first + second)];
+    const state = setup(actions);
+    await state.engine.restoreTeachingPosition({
+      sceneId: 'scene-one',
+      actionId: first + second,
+      actionIndex: 2,
+      speechChunkIndex: 1,
+    });
+    expect(state.execute).toHaveBeenCalledExactlyOnceWith(
+      visual,
+      expect.objectContaining({ silent: false }),
+    );
+    expect(state.speak).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+    state.engine.continuePlayback();
+    expect(state.requests[0].text).toBe(second);
+    expect(state.engine.getTeachingPosition()).toMatchObject({
+      actionIndex: 2,
+      speechChunkIndex: 1,
+    });
+    state.requests[0].resolve();
+    await flush();
+    expect(state.onComplete).toHaveBeenCalledOnce();
+    state.engine.stop();
+  });
+
+  it('actually delivers restored HTML state through the real action engine', async () => {
+    const sendWidget = vi.fn(async () => undefined);
+    const actionEngine = new ActionEngine(useStageStore, null, sendWidget);
+    const visual: Action = { id: 'widget', type: 'widget_setState', state: { step: 2 } };
+    const state = setup([visual, speech('Continue here')]);
+    state.execute.mockImplementation((action, options) => actionEngine.execute(action, options));
+    await state.engine.restoreTeachingPosition({
+      sceneId: 'scene-one',
+      actionId: 'Continue here',
+      actionIndex: 1,
+      speechChunkIndex: 0,
+    });
+    expect(sendWidget).toHaveBeenCalledWith(
+      'SET_WIDGET_STATE',
+      { state: { step: 2 }, content: undefined },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(state.speak).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+    state.engine.stop();
+  });
+
+  it('waits for durable position saving before speech and suppresses a late save after cancellation', async () => {
+    const saving = deferred();
+    const onTeachingPosition = vi.fn(() => saving.promise);
+    const state = setup([speech('First')], { onTeachingPosition });
+    state.engine.start();
+    expect(onTeachingPosition).toHaveBeenCalledWith({
+      sceneId: 'scene-one',
+      actionId: 'First',
+      actionIndex: 0,
+      speechChunkIndex: 0,
+    });
+    expect(state.speak).not.toHaveBeenCalled();
+    state.engine.pause();
+    saving.resolve();
+    await flush();
+    expect(state.speak).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+    state.engine.resume();
+    await flush();
+    expect(state.requests[0].text).toBe('First');
+    state.engine.stop();
+  });
+
+  it('stops on save failure without speaking or completing the node', async () => {
+    const state = setup([speech('First')], {
+      onTeachingPosition: async () => {
+        throw new Error('Could not save learning position');
+      },
+    });
+    state.engine.start();
+    await flush();
+    expect(state.speak).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+    expect(state.engine.getMode()).toBe('paused');
+    expect(state.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Could not save learning position' }),
+    );
+    state.engine.stop();
+  });
+
+  it('rejects stale saved actions and invalid chunk offsets instead of skipping material', async () => {
+    const state = setup([speech('First')]);
+    await expect(
+      state.engine.restoreTeachingPosition({
+        sceneId: 'scene-one',
+        actionId: 'Removed action',
+        actionIndex: 0,
+        speechChunkIndex: 0,
+      }),
+    ).rejects.toThrow('does not match');
+    await expect(
+      state.engine.restoreTeachingPosition({
+        sceneId: 'scene-one',
+        actionId: 'First',
+        actionIndex: 0,
+        speechChunkIndex: 1,
+      }),
+    ).rejects.toThrow('does not match');
+    expect(state.speak).not.toHaveBeenCalled();
+    expect(state.onComplete).not.toHaveBeenCalled();
+  });
+
+  it('resumes only the unfinished chunk and ignores completion of the interrupted attempt', async () => {
+    const chunks = ['A', 'B', 'C'].map((letter) => `${letter.repeat(110)}!`);
+    const state = setup([speech(chunks.join('')), speech('Next action')]);
+    state.engine.start();
+    expect(state.requests[0].text).toBe(chunks[0]);
+    expect(state.engine.getSpeechContext()).toMatchObject({
+      lastCompletedText: null,
+      resumeText: chunks[0],
+      nextText: chunks[1],
+    });
+    state.requests[0].resolve();
+    await flush();
+    expect(state.requests[1].text).toBe(chunks[1]);
+    expect(state.engine.getSpeechContext()).toMatchObject({
+      lastCompletedText: chunks[0],
+      resumeText: chunks[1],
+      nextText: chunks[2],
+    });
+    state.engine.pause();
+    expect(state.requests[1].signal.aborted).toBe(true);
+    expect(state.engine.getSnapshot().actionIndex).toBe(0);
+    state.engine.resume();
+    expect(state.requests[2].text).toBe(chunks[1]);
+    state.requests[1].resolve();
+    await flush();
+    expect(state.engine.getSpeechContext()?.lastCompletedText).toBe(chunks[0]);
+    expect(state.onSpeechEnd).not.toHaveBeenCalled();
+    state.requests[2].resolve();
+    await flush();
+    expect(state.requests[3].text).toBe(chunks[2]);
+    expect(state.engine.getSpeechContext()?.nextText).toBe('Next action');
+    expect(state.onSpeechEnd).not.toHaveBeenCalled();
+    state.requests[3].resolve();
+    await flush();
+    expect(state.onSpeechEnd).toHaveBeenCalledOnce();
+    expect(state.requests[4].text).toBe('Next action');
+    expect(state.onComplete).not.toHaveBeenCalled();
+    state.requests[4].resolve();
+    await flush();
+    expect(state.onComplete).toHaveBeenCalledOnce();
+    expect(state.requests.every((request) => request.text.length <= 200)).toBe(true);
+    expect(state.engine.getSpeechContext()).toMatchObject({
+      lastCompletedText: 'Next action',
+      resumeText: null,
+      nextText: null,
+    });
+    state.engine.stop();
+  });
+
+  it('keeps chunk progress after failure but clears it on explicit restart or navigation', async () => {
+    const first = `${'A'.repeat(110)}!`;
+    const second = `${'B'.repeat(110)}!`;
+    const state = setup([speech(first + second), speech('Next action')]);
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    state.requests[1].reject(new Error('Audio failed'));
+    await flush();
+    expect(state.engine.getMode()).toBe('paused');
+    expect(state.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Audio failed' }),
+    );
+    expect(state.engine.getSpeechContext()?.resumeText).toBe(second);
+    state.engine.resume();
+    expect(state.requests[2].text).toBe(second);
+    state.engine.stop();
+    state.engine.start();
+    expect(state.requests[3].text).toBe(first);
+    expect(state.engine.getSpeechContext()?.lastCompletedText).toBeNull();
+    state.requests[3].resolve();
+    await flush();
+    state.engine.pause();
+    await state.engine.jumpToAction(0, { autoplay: true });
+    expect(state.requests.at(-1)?.text).toBe(first);
+    expect(state.engine.getSpeechContext()?.lastCompletedText).toBeNull();
+    state.engine.stop();
+  });
+
+  it('keeps visual actions outside chunk playback and reports the next authored passage', async () => {
+    const first = `${'A'.repeat(110)}!`;
+    const second = `${'B'.repeat(110)}!`;
+    const visual: Action = { id: 'whiteboard', type: 'wb_open' };
+    const state = setup([speech(first + second), visual, speech('Next explanation')]);
+    state.engine.start();
+    state.requests[0].resolve();
+    await flush();
+    state.engine.pause();
+    expect(state.execute).not.toHaveBeenCalled();
+    expect(state.engine.getSpeechContext()?.nextText).toBe('Next explanation');
+    state.engine.resume();
+    state.requests[2].resolve();
+    await flush();
+    expect(state.execute).toHaveBeenCalledTimes(1);
+    expect(state.requests.at(-1)?.text).toBe('Next explanation');
+    state.engine.stop();
+  });
+
   it('does not begin a dialogue if the speech-end observer synchronously pauses playback', async () => {
     const question = vi.fn();
     const state = setup(

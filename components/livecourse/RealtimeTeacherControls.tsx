@@ -1,9 +1,26 @@
 'use client';
 
 import { useCallback, useEffect, useId, useRef, useState, type ComponentProps } from 'react';
-import { CircleStop, LoaderCircle, Mic, MicOff, Power, Quote, Radio, Send, X } from 'lucide-react';
+import {
+  CircleStop,
+  LoaderCircle,
+  Mic,
+  MicOff,
+  MoreHorizontal,
+  Power,
+  Quote,
+  Radio,
+  Send,
+  X,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { nodeIdForScene, teachingActionSchema } from '@/lib/livecourse/domain';
@@ -37,6 +54,8 @@ import { createBrowserUuid } from '@/lib/utils/random-id';
 import { useHtmlQuestionContext } from '@/lib/livecourse/html/question-context';
 import { hasHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
 import type { OralQuestionState } from '@/lib/livecourse/realtime/client/oral-question';
+import { formatTeacherResumeContext } from '@/lib/livecourse/realtime/teacher-instructions';
+import type { PlaybackSpeechContext } from '@/lib/playback/types';
 
 const MAX_QUESTION_LENGTH = 2000;
 
@@ -74,17 +93,17 @@ function commandToActionInput(command: RealtimeTeachingCommand): TeachingActionI
   } as TeachingActionInput;
 }
 
-function statusLabel(
+function statusLabelKey(
   status: RealtimeTeacherStatus,
   speaking: boolean,
   activeTool: string | null,
 ): string {
-  if (status === 'connecting') return '连接中';
-  if (status === 'unconfigured') return 'Realtime 未配置';
-  if (status === 'error') return '连接失败';
-  if (status !== 'connected') return '实时语音';
-  if (activeTool) return `执行 ${activeTool}`;
-  return speaking ? '实时讲解中' : '实时语音已连接';
+  if (status === 'connecting') return 'livecourse.voiceConnecting';
+  if (status === 'unconfigured') return 'livecourse.voiceUnconfigured';
+  if (status === 'error') return 'livecourse.voiceFailed';
+  if (status !== 'connected') return 'livecourse.voiceDisconnected';
+  if (activeTool) return 'livecourse.voiceActing';
+  return speaking ? 'livecourse.teacherSpeaking' : 'livecourse.voiceConnected';
 }
 
 function IconButton({ label, ...props }: ComponentProps<typeof Button> & { label: string }) {
@@ -113,6 +132,7 @@ export interface RealtimeTeacherControlsProps {
   onPlaybackInterrupt?: RealtimePlaybackHandler;
   /** Release the frozen PlaybackEngine position after the teacher resumes. */
   onPlaybackResume?: RealtimePlaybackHandler;
+  getPlaybackSpeechContext?: () => PlaybackSpeechContext | null;
   onTeacherChange?: (teacher: TeacherSpeechPort | null) => void;
 }
 
@@ -120,6 +140,7 @@ export function RealtimeTeacherControls({
   tone = 'default',
   onPlaybackInterrupt,
   onPlaybackResume,
+  getPlaybackSpeechContext,
   onTeacherChange,
 }: RealtimeTeacherControlsProps) {
   const { t } = useI18n();
@@ -135,6 +156,8 @@ export function RealtimeTeacherControls({
   const emitActionRef = useRef(livecourse?.emitAction);
   const playbackInterruptRef = useRef(onPlaybackInterrupt);
   const playbackResumeRef = useRef(onPlaybackResume);
+  const playbackSpeechContextRef = useRef(getPlaybackSpeechContext);
+  playbackSpeechContextRef.current = getPlaybackSpeechContext;
   const classroomStateRef = useRef(livecourse?.classroomState);
   const interruptionKeyRef = useRef<string | null>(null);
   const interruptionResumeAttemptRef = useRef(0);
@@ -152,6 +175,7 @@ export function RealtimeTeacherControls({
   const oralEpochRef = useRef(0);
   const [oralAnswer, setOralAnswer] = useState('');
   const questionInputRef = useRef<HTMLTextAreaElement>(null);
+  const questionInputId = useId();
   const questionHintId = useId();
   const [sendingQuestion, setSendingQuestion] = useState(false);
   const sendingQuestionRef = useRef(false);
@@ -182,7 +206,7 @@ export function RealtimeTeacherControls({
         `Teaching points: ${nodeDesign.teachingPoints.join(' / ')}`,
         `Explanation plan: ${nodeDesign.explanationPlan}`,
         nodeDesign.anticipatedQuestions?.length
-          ? `Anticipated student questions (preparation only — do NOT recite unless the learner asks):\n${nodeDesign.anticipatedQuestions.map((qa) => `- Q: ${qa.question}\n  A: ${qa.response}`).join('\n')}`
+          ? `Anticipated student questions (background only — never recite the Q/A pair; answer the actual learner directly):\n${nodeDesign.anticipatedQuestions.map((qa) => `- Q: ${qa.question}\n  A: ${qa.response}`).join('\n')}`
           : '',
       ]
         .filter(Boolean)
@@ -202,6 +226,9 @@ export function RealtimeTeacherControls({
     currentNode ? `Current lesson node: ${currentNode.id} (${currentNode.type}).` : '',
     currentScene ? `Current scene: ${currentScene.title || currentScene.id}.` : '',
     currentGoal ? `Current learning goal: ${currentGoal.title}. ${currentGoal.description}` : '',
+    currentNode?.type === 'checkpoint'
+      ? 'This is a checkpoint. After answering an interruption, stay with this same question and wait for the learner submission.'
+      : '',
     nodeDesignContext,
     sceneSpeech ? `Prepared teaching content:\n${sceneSpeech}` : '',
     memoryTeacherContext
@@ -340,6 +367,13 @@ export function RealtimeTeacherControls({
       useSettingsStore.getState().realtimeProvidersConfig?.volc?.isServerConfigured,
     );
     const getLocation = () => locationRef.current;
+    const getTeachingContext = () => {
+      const playback = playbackSpeechContextRef.current?.();
+      const resumeContext = formatTeacherResumeContext(
+        playback?.sceneId === locationRef.current?.sceneId ? (playback ?? null) : null,
+      );
+      return [resumeContext, teachingContextRef.current].filter(Boolean).join('\n');
+    };
     const canInterrupt = () => {
       const state = classroomStateRef.current;
       return state === 'teaching' || state === 'checking' || state === 'interrupted';
@@ -491,7 +525,7 @@ export function RealtimeTeacherControls({
     };
     if (!realtime && preferVolc) {
       realtime = new VolcTeacherSpeechSession({
-        getInstructions: () => teachingContextRef.current,
+        getInstructions: getTeachingContext,
         onEvent: handleEvent,
         getLocation,
         canInterrupt,
@@ -510,7 +544,7 @@ export function RealtimeTeacherControls({
           resolveRealtimeClientApiKey('openai', useSettingsStore.getState()),
         audioBridge,
         getLocation,
-        getTeachingContext: () => teachingContextRef.current,
+        getTeachingContext,
         dispatchCommand: async (command) => {
           const emitAction = emitActionRef.current;
           if (!emitAction) throw new Error('LiveCourse session is not ready');
@@ -607,7 +641,6 @@ export function RealtimeTeacherControls({
       const realtime = realtimeRef.current;
       if (!realtime) throw new Error(t('livecourse.voiceRequired'));
       await realtime.ask(message);
-      useLiveCaptionStore.getState().setCaption({ speaker: 'student', text: message });
       if (oralQuestion) setOralAnswer((current) => (current.trim() === text ? '' : current));
       else {
         setQuestion((current) => (current.trim() === text ? '' : current));
@@ -692,20 +725,49 @@ export function RealtimeTeacherControls({
     (livecourse?.classroomState === 'teaching' ||
       livecourse?.classroomState === 'checking' ||
       livecourse?.classroomState === 'interrupted');
-  const label = statusLabel(status, speaking, activeTool);
+  const label = t(statusLabelKey(status, speaking, activeTool));
+  const draft = oralQuestion ? oralAnswer : question;
+  const questionHint =
+    !canAsk && livecourse?.classroomState === 'paused'
+      ? t('livecourse.questionPausedHint')
+      : oralQuestion
+        ? t('livecourse.oralInputHint')
+        : supportsSelection
+          ? t('livecourse.questionSelectionHint')
+          : t('livecourse.questionDraftHint');
+  const toggleMicrophone = () => {
+    try {
+      realtimeRef.current?.mute(!muted);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  const interruptTeacher = () => {
+    try {
+      realtimeRef.current?.interrupt();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
   const quickQuestions = [
     { label: t('livecourse.questionRephrase'), prompt: t('livecourse.questionRephrasePrompt') },
     { label: t('livecourse.questionExample'), prompt: t('livecourse.questionExamplePrompt') },
     { label: t('livecourse.questionHint'), prompt: t('livecourse.questionHintPrompt') },
   ];
 
+  useEffect(() => {
+    const input = questionInputRef.current;
+    if (!lectern || !input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(144, Math.max(72, input.scrollHeight))}px`;
+  }, [draft, lectern]);
+
   return (
-    <div
-      className={cn(lectern ? 'pt-1' : 'px-0 py-2', lectern && 'text-[var(--lc-classroom-ink)]')}
-    >
+    <div className={cn(lectern ? 'lc-teacher-controls' : 'px-0 py-2')}>
       <audio key={audioElementGeneration} ref={audioRef} className="hidden" autoPlay playsInline />
-      <div className="flex min-h-11 flex-wrap items-center gap-1.5">
+      <div className={cn('flex min-h-11 items-center gap-2', !lectern && 'flex-wrap')}>
         <span
+          aria-hidden="true"
           className={cn(
             'size-2 shrink-0 rounded-full',
             status === 'connected'
@@ -718,8 +780,9 @@ export function RealtimeTeacherControls({
           )}
         />
         <span
+          role="status"
           className={cn(
-            'min-w-20 flex-1 text-xs font-medium leading-5 [overflow-wrap:anywhere]',
+            'min-w-0 flex-1 text-xs font-medium leading-5 [overflow-wrap:anywhere]',
             status === 'error' || status === 'unconfigured'
               ? 'text-destructive'
               : lectern
@@ -736,35 +799,90 @@ export function RealtimeTeacherControls({
             className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none"
             aria-hidden="true"
           />
+        ) : connected && lectern ? (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11 gap-1.5 rounded-lg px-2 text-xs"
+              aria-label={t(muted ? 'livecourse.voiceUnmute' : 'livecourse.voiceMute')}
+              aria-pressed={muted}
+              onClick={toggleMicrophone}
+            >
+              {muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
+              {t(muted ? 'livecourse.microphoneOff' : 'livecourse.microphoneOn')}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-11 rounded-lg"
+                  aria-label={t('livecourse.voiceMore')}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="top" className="min-w-48 rounded-xl p-1.5">
+                <DropdownMenuItem
+                  className="min-h-11 rounded-lg"
+                  disabled={!speaking}
+                  onSelect={interruptTeacher}
+                >
+                  <CircleStop aria-hidden="true" />
+                  {t('livecourse.voiceInterrupt')}
+                </DropdownMenuItem>
+                <DropdownMenuItem className="min-h-11 rounded-lg" onSelect={() => void stop()}>
+                  <Power aria-hidden="true" />
+                  {t('livecourse.voiceDisconnect')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
         ) : connected ? (
           <>
             <IconButton
-              label={muted ? '打开麦克风' : '静音麦克风'}
+              label={t(muted ? 'livecourse.voiceUnmute' : 'livecourse.voiceMute')}
               aria-pressed={muted}
-              onClick={() => {
-                try {
-                  realtimeRef.current?.mute(!muted);
-                } catch (cause) {
-                  setError(cause instanceof Error ? cause.message : String(cause));
-                }
-              }}
+              onClick={toggleMicrophone}
             >
               {muted ? <MicOff /> : <Mic />}
             </IconButton>
             <IconButton
-              label="打断教师"
+              label={t('livecourse.voiceInterrupt')}
               disabled={!speaking}
-              onClick={() => realtimeRef.current?.interrupt()}
+              onClick={interruptTeacher}
             >
               <CircleStop />
             </IconButton>
-            <IconButton label="断开实时语音" onClick={() => void stop()}>
+            <IconButton label={t('livecourse.voiceDisconnect')} onClick={() => void stop()}>
               <Power />
             </IconButton>
           </>
+        ) : lectern ? (
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-11 gap-2 rounded-lg px-3 text-xs"
+            aria-label={t('livecourse.voiceConnect')}
+            disabled={!canStart}
+            onClick={() =>
+              void start().catch((cause) =>
+                setError(cause instanceof Error ? cause.message : String(cause)),
+              )
+            }
+          >
+            <Radio aria-hidden="true" />
+            {t(
+              status === 'error' || status === 'unconfigured'
+                ? 'livecourse.voiceReconnect'
+                : 'livecourse.voiceConnectShort',
+            )}
+          </Button>
         ) : (
           <IconButton
-            label="连接实时语音"
+            label={t('livecourse.voiceConnect')}
             disabled={!canStart}
             onClick={() =>
               void start().catch((cause) =>
@@ -776,12 +894,22 @@ export function RealtimeTeacherControls({
           </IconButton>
         )}
       </div>
+      {lectern && (
+        <label
+          htmlFor={questionInputId}
+          className="mb-2 mt-4 block text-sm font-medium tracking-tight"
+        >
+          {t(oralQuestion ? 'livecourse.oralTitle' : 'livecourse.questionTitle')}
+        </label>
+      )}
       {oralQuestion ? (
         <div
           data-testid="classroom-oral-question"
           className="mt-2 rounded-md border border-primary/30 bg-muted/30 p-3"
         >
-          <p className="text-xs font-medium text-primary">{t('livecourse.oralTitle')}</p>
+          {!lectern && (
+            <p className="text-xs font-medium text-primary">{t('livecourse.oralTitle')}</p>
+          )}
           <p className="mt-1 text-sm leading-6">{oralQuestion.question}</p>
           {oralQuestion.teacherText && oralQuestion.teacherText !== oralQuestion.question ? (
             <p className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap text-sm leading-6">
@@ -842,7 +970,7 @@ export function RealtimeTeacherControls({
         <div
           role="group"
           aria-label={t('livecourse.quickQuestions')}
-          className="mt-2 flex flex-wrap gap-1.5"
+          className={cn(lectern ? 'lc-teacher-quick-questions' : 'mt-2 flex flex-wrap gap-1.5')}
         >
           {quickQuestions.map(({ label, prompt }) => {
             const nextQuestion = question.split('\n').includes(prompt)
@@ -854,9 +982,13 @@ export function RealtimeTeacherControls({
               <Button
                 key={label}
                 type="button"
-                variant="outline"
+                variant={lectern ? 'secondary' : 'outline'}
                 size="sm"
-                className="min-h-9 rounded-full px-3 text-xs"
+                className={cn(
+                  lectern
+                    ? 'min-h-11 min-w-0 rounded-lg px-2 py-2 text-xs whitespace-normal'
+                    : 'min-h-9 rounded-full px-3 text-xs',
+                )}
                 disabled={!canAsk || sendingQuestion || nextQuestion.length > MAX_QUESTION_LENGTH}
                 onClick={() => {
                   setQuestion(nextQuestion);
@@ -895,26 +1027,29 @@ export function RealtimeTeacherControls({
         </div>
       ) : null}
       <form
-        className={cn('mt-2 flex gap-2', lectern ? 'items-center' : 'items-end')}
+        className={cn(lectern ? 'lc-teacher-composer mt-3' : 'mt-2 flex items-end gap-2')}
         onSubmit={(event) => {
           event.preventDefault();
           void sendQuestion();
         }}
       >
         <textarea
+          id={questionInputId}
           ref={questionInputRef}
           data-testid="classroom-question-input"
           aria-label={t(oralQuestion ? 'livecourse.oralAnswer' : 'livecourse.askTeacher')}
           aria-describedby={questionHintId}
           placeholder={t(oralQuestion ? 'livecourse.oralAnswer' : 'livecourse.askTeacher')}
-          value={oralQuestion ? oralAnswer : question}
+          value={draft}
           onChange={(event) => (oralQuestion ? setOralAnswer : setQuestion)(event.target.value)}
-          rows={lectern ? 1 : 2}
+          rows={2}
           maxLength={MAX_QUESTION_LENGTH}
           disabled={!canAsk || sendingQuestion}
           className={cn(
-            'min-w-0 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50',
-            lectern && 'min-h-11',
+            'min-w-0 resize-none text-sm leading-6 disabled:opacity-50',
+            lectern
+              ? 'block w-full border-0 bg-transparent px-3 pb-1 pt-3 outline-none'
+              : 'flex-1 rounded-md border border-input bg-background px-3 py-2',
           )}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -923,31 +1058,43 @@ export function RealtimeTeacherControls({
             }
           }}
         />
-        <Button
-          type="submit"
-          size="icon"
-          variant="outline"
-          aria-label={t('livecourse.sendQuestion')}
-          aria-busy={sendingQuestion}
-          disabled={!canAsk || !(oralQuestion ? oralAnswer : question).trim() || sendingQuestion}
-          className="size-11 shrink-0"
-        >
-          {sendingQuestion ? (
-            <LoaderCircle className="size-4 animate-spin" />
-          ) : (
-            <Send className="size-4" />
+        <div className={cn(lectern && 'flex items-center justify-between gap-2 px-2 pb-2')}>
+          {lectern && (
+            <span className="pl-1 text-[11px] leading-4 text-muted-foreground">
+              {t('livecourse.questionKeyboardHint')}
+            </span>
           )}
-        </Button>
+          <Button
+            type="submit"
+            size="icon"
+            variant={lectern ? 'default' : 'outline'}
+            aria-label={t('livecourse.sendQuestion')}
+            aria-busy={sendingQuestion}
+            disabled={!canAsk || !draft.trim() || sendingQuestion}
+            className={cn('size-11 shrink-0', lectern && 'rounded-lg')}
+          >
+            {sendingQuestion ? (
+              <LoaderCircle
+                aria-hidden="true"
+                className="size-4 animate-spin motion-reduce:animate-none"
+              />
+            ) : (
+              <Send aria-hidden="true" className="size-4" />
+            )}
+          </Button>
+        </div>
       </form>
       <p id={questionHintId} className="mt-1.5 text-xs leading-5 text-muted-foreground">
-        {oralQuestion
-          ? t('livecourse.oralInputHint')
-          : supportsSelection
-            ? t('livecourse.questionSelectionHint')
-            : t('livecourse.questionDraftHint')}
+        {questionHint}
       </p>
       {error ? (
-        <p role="alert" className={cn('mt-1 break-words text-xs leading-5 text-destructive')}>
+        <p
+          role="alert"
+          className={cn(
+            'mt-2 break-words text-xs leading-5 text-destructive',
+            lectern && 'rounded-lg bg-destructive/5 px-3 py-2',
+          )}
+        >
           {error}
         </p>
       ) : null}

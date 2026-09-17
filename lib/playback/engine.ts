@@ -30,6 +30,8 @@ import type {
   TopicState,
   PlaybackEngineCallbacks,
   PlaybackSnapshot,
+  PlaybackSpeechContext,
+  TeachingPlaybackPosition,
   TriggerEvent,
   Effect,
 } from './types';
@@ -48,6 +50,7 @@ import { useSettingsStore } from '@/lib/store/settings';
 import { isTTSProviderEnabled } from '@/lib/audio/provider-enablement';
 import { isLiveCourseTTSEnabled } from '@/lib/config/feature-flags';
 import { createLogger } from '@/lib/logger';
+import { splitLongSpeechText } from '@/lib/audio/tts-utils';
 
 const log = createLogger('PlaybackEngine');
 
@@ -57,6 +60,7 @@ const log = createLogger('PlaybackEngine');
  * numbers, and short Latin fragments (e.g. "AI课堂").
  */
 const CJK_LANG_THRESHOLD = 0.3;
+const TEACHER_SPEECH_CHUNK_LENGTH = 200;
 
 export class PlaybackEngine {
   private scenes: Scene[] = [];
@@ -98,6 +102,15 @@ export class PlaybackEngine {
     sceneIndex: number;
     actionIndex: number;
   } | null = null;
+  private teachingSpeechProgress: {
+    sceneIndex: number;
+    actionIndex: number;
+    text: string;
+    chunks: string[];
+    nextChunkIndex: number;
+  } | null = null;
+  private lastCompletedSpeech: { sceneId: string; text: string } | null = null;
+  private lastStartedPosition: TeachingPlaybackPosition | null = null;
   private activeAction: {
     controller: AbortController;
     sceneIndex: number;
@@ -139,6 +152,113 @@ export class PlaybackEngine {
     return this.scenes[this.sceneIndex]?.id ?? null;
   }
 
+  getSpeechContext(): PlaybackSpeechContext | null {
+    const scene = this.scenes[this.sceneIndex];
+    if (!scene || !this.callbacks.speak) return null;
+    const progress = this.teachingSpeechProgress;
+    const current = progress?.sceneIndex === this.sceneIndex ? progress : null;
+    const upcoming = (scene.actions ?? [])
+      .slice(current ? current.actionIndex + 1 : this.actionIndex)
+      .filter((action): action is SpeechAction => action.type === 'speech')
+      .slice(0, 2)
+      .flatMap((action) => splitLongSpeechText(action.text, TEACHER_SPEECH_CHUNK_LENGTH));
+    const remaining = current ? current.chunks.slice(current.nextChunkIndex) : [];
+    const unplayed = [...remaining, ...upcoming];
+    return {
+      sceneId: scene.id,
+      lastCompletedText:
+        this.lastCompletedSpeech?.sceneId === scene.id ? this.lastCompletedSpeech.text : null,
+      resumeText: unplayed[0] ?? null,
+      nextText: unplayed[1] ?? null,
+    };
+  }
+
+  getTeachingPosition(): TeachingPlaybackPosition | null {
+    const sceneId = this.getCurrentSceneId();
+    if (!sceneId || !this.callbacks.speak) return null;
+    return this.lastStartedPosition?.sceneId === sceneId
+      ? { ...this.lastStartedPosition }
+      : { sceneId, actionId: null, actionIndex: 0, speechChunkIndex: 0 };
+  }
+
+  async restoreTeachingPosition(
+    position: TeachingPlaybackPosition,
+    options: { paused?: boolean } = {},
+  ): Promise<void> {
+    const sceneIndex = this.scenes.findIndex((scene) => scene.id === position.sceneId);
+    const scene = this.scenes[sceneIndex];
+    const action = scene?.actions?.[position.actionIndex];
+    const chunks =
+      action?.type === 'speech'
+        ? splitLongSpeechText(action.text, TEACHER_SPEECH_CHUNK_LENGTH)
+        : [];
+    if (
+      !this.callbacks.speak ||
+      !scene ||
+      !Number.isInteger(position.actionIndex) ||
+      !Number.isInteger(position.speechChunkIndex) ||
+      position.actionIndex < 0 ||
+      position.speechChunkIndex < 0 ||
+      (position.actionId === null
+        ? position.actionIndex !== 0 || position.speechChunkIndex !== 0
+        : action?.id !== position.actionId ||
+          (action.type === 'speech'
+            ? position.speechChunkIndex >= chunks.length
+            : position.speechChunkIndex !== 0))
+    ) {
+      throw new Error('Saved teaching position does not match the current lesson');
+    }
+    const generation = this.invalidatePlaybackGeneration();
+    this.cancelActivePlaybackWork();
+    this.teachingSpeechProgress = null;
+    this.lastCompletedSpeech = null;
+    this.lastStartedPosition = null;
+    this.actionEngine.resetPlaybackVisualState();
+    const restoring = {
+      controller: new AbortController(),
+      sceneIndex,
+      actionIndex: 0,
+      settled: false,
+    };
+    this.activeAction = restoring;
+    try {
+      for (let index = 0; index < position.actionIndex; index++) {
+        if (!this.isCurrentGeneration(generation))
+          throw new Error('Teaching restore was cancelled');
+        const previous = scene.actions![index];
+        if (previous.type === 'speech') continue;
+        if (previous.type === 'discussion' && this.callbacks.skipRoundtableDiscussion) continue;
+        if (previous.type === 'play_video' || previous.type === 'discussion') {
+          throw new Error('This teaching position requires restarting the chapter');
+        }
+        restoring.actionIndex = index;
+        await this.actionEngine.execute(previous, {
+          silent: isWhiteboardPlaybackAction(previous),
+          signal: restoring.controller.signal,
+        });
+      }
+      if (!this.isCurrentGeneration(generation)) throw new Error('Teaching restore was cancelled');
+      this.sceneIndex = sceneIndex;
+      this.actionIndex = position.actionIndex;
+      this.lastStartedPosition = { ...position };
+      if (action?.type === 'speech' && position.actionId !== null) {
+        this.teachingSpeechProgress = {
+          sceneIndex,
+          actionIndex: position.actionIndex,
+          text: action.text,
+          chunks,
+          nextChunkIndex: position.speechChunkIndex,
+        };
+        const previous = chunks[position.speechChunkIndex - 1];
+        if (previous) this.lastCompletedSpeech = { sceneId: scene.id, text: previous };
+      }
+      this.setMode(options.paused ? 'paused' : 'idle');
+    } finally {
+      restoring.settled = true;
+      if (this.activeAction === restoring) this.activeAction = null;
+    }
+  }
+
   /** Export a serializable playback snapshot */
   getSnapshot(): PlaybackSnapshot {
     return {
@@ -151,6 +271,9 @@ export class PlaybackEngine {
 
   /** Restore playback position from a snapshot */
   restoreFromSnapshot(snapshot: PlaybackSnapshot): void {
+    this.lastStartedPosition = null;
+    this.teachingSpeechProgress = null;
+    this.lastCompletedSpeech = null;
     this.sceneIndex = snapshot.sceneIndex;
     this.actionIndex = snapshot.actionIndex;
     this.consumedDiscussions = new Set(snapshot.consumedDiscussions);
@@ -165,7 +288,10 @@ export class PlaybackEngine {
 
     this.sceneIndex = 0;
     this.actionIndex = 0;
+    this.teachingSpeechProgress = null;
+    this.lastCompletedSpeech = null;
     this.invalidatePlaybackGeneration();
+    this.lastStartedPosition = null;
     this.setMode('playing');
     this.processNext();
   }
@@ -196,6 +322,9 @@ export class PlaybackEngine {
     const autoplay = options.autoplay ?? this.mode === 'playing';
     const generation = this.invalidatePlaybackGeneration();
     this.cancelActivePlaybackWork();
+    this.teachingSpeechProgress = null;
+    this.lastCompletedSpeech = null;
+    this.lastStartedPosition = null;
     this.sceneIndex = 0;
     this.actionIndex = 0;
     this.savedSceneIndex = null;
@@ -347,6 +476,9 @@ export class PlaybackEngine {
   /** → idle */
   stop(): void {
     this.invalidatePlaybackGeneration();
+    this.teachingSpeechProgress = null;
+    this.lastCompletedSpeech = null;
+    this.lastStartedPosition = null;
     // Set mode BEFORE stopping audio to prevent spurious processNext from
     // synchronous onend callbacks (see handleUserInterrupt for details).
     this.setMode('idle');
@@ -579,12 +711,50 @@ export class PlaybackEngine {
       return false;
     }
     const activeSpeech = { controller: new AbortController(), ...cursor };
+    let progress = this.teachingSpeechProgress;
+    if (
+      !progress ||
+      progress.sceneIndex !== cursor.sceneIndex ||
+      progress.actionIndex !== cursor.actionIndex ||
+      progress.text !== text
+    ) {
+      progress = {
+        ...cursor,
+        text,
+        chunks: splitLongSpeechText(text, TEACHER_SPEECH_CHUNK_LENGTH),
+        nextChunkIndex: 0,
+      };
+      this.teachingSpeechProgress = progress;
+    }
     this.activeSpeech = activeSpeech;
     this.callbacks.onSpeechStart?.(text);
     try {
       if (!this.isCurrentGeneration(generation)) return false;
-      await speak(text, activeSpeech.controller.signal);
+      while (progress.nextChunkIndex < progress.chunks.length) {
+        const chunk = progress.chunks[progress.nextChunkIndex];
+        const position: TeachingPlaybackPosition = {
+          sceneId: this.scenes[cursor.sceneIndex].id,
+          actionId: this.scenes[cursor.sceneIndex].actions?.[cursor.actionIndex]?.id ?? null,
+          actionIndex: cursor.actionIndex,
+          speechChunkIndex: progress.nextChunkIndex,
+        };
+        this.lastStartedPosition = position;
+        if (this.callbacks.onTeachingPosition) {
+          await this.callbacks.onTeachingPosition({ ...position });
+          if (!this.isCurrentGeneration(generation) || this.activeSpeech !== activeSpeech)
+            return false;
+        }
+        await speak(chunk, activeSpeech.controller.signal);
+        if (!this.isCurrentGeneration(generation) || this.activeSpeech !== activeSpeech)
+          return false;
+        progress.nextChunkIndex += 1;
+        this.lastCompletedSpeech = {
+          sceneId: this.scenes[cursor.sceneIndex].id,
+          text: chunk,
+        };
+      }
       if (!this.isCurrentGeneration(generation) || this.activeSpeech !== activeSpeech) return false;
+      this.teachingSpeechProgress = null;
       this.activeSpeech = null;
       this.callbacks.onSpeechEnd?.();
       if (!this.isCurrentGeneration(generation)) return false;

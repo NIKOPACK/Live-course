@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { POST } from '@/app/api/livecourse/realtime/client-secret/route';
 import { createRealtimeClientSecret } from '@/lib/livecourse/realtime/server/client-secret';
+import { buildRealtimeTeacherInstructions } from '@/lib/livecourse/realtime/teacher-instructions';
 
 const CLIENT_SECRETS_URL = 'https://api.openai.com/v1/realtime/client_secrets';
 const LONG_LIVED_API_KEY = 'sk-long-lived-server-key';
@@ -86,7 +87,9 @@ describe('Realtime client secret service', () => {
         output: { voice: 'marin' },
       },
     });
-    expect(body.session.instructions).toContain('Course id: course-1. Lesson id: lesson-1.');
+    expect(body.session.instructions).toBe(
+      buildRealtimeTeacherInstructions('Course id: course-1. Lesson id: lesson-1.'),
+    );
     expect(result).toEqual({
       value: 'ek_short_lived',
       expiresAt: 1_900_000_000,

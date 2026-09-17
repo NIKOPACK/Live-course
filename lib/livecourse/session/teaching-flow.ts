@@ -25,11 +25,19 @@ export function isCompletedCheckpointEvidence(record: EvidenceRecord): boolean {
   );
 }
 
-export function nextTeachingNode(plan: LessonPlan, nodeId: string): LessonNode | null {
+export function adjacentTeachingNode(
+  plan: LessonPlan,
+  nodeId: string,
+  direction: -1 | 1,
+): LessonNode | null {
   const nodes = [...plan.nodes].sort((left, right) => left.order - right.order);
   const index = nodes.findIndex((node) => node.id === nodeId);
   if (index < 0) throw new Error(`Unknown teaching node: ${nodeId}`);
-  return nodes[index + 1] ?? null;
+  return nodes[index + direction] ?? null;
+}
+
+export function nextTeachingNode(plan: LessonPlan, nodeId: string): LessonNode | null {
+  return adjacentTeachingNode(plan, nodeId, 1);
 }
 
 export function checkpointFeedbackText(input: {

@@ -277,6 +277,7 @@ export class RuntimeCourseStateRepository implements CourseStateRepository {
         coursePlan: latest.coursePlan,
         teachingActions: latest.teachingActions,
         progress,
+        ...(latest.playbackPosition ? { playbackPosition: latest.playbackPosition } : {}),
         ...(latest.lifecycle ? { lifecycle: latest.lifecycle } : {}),
         assistantTasks: latest.assistantTasks,
         evidence: latest.evidence,

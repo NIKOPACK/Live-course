@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { buildRealtimeTeacherInstructions } from '@/lib/livecourse/realtime/teacher-instructions';
 
 import {
   realtimeClientSecretRequestSchema,
@@ -42,15 +43,9 @@ function safetyIdentifier(learnerId: string): string {
 }
 
 function buildInstructions(input: RealtimeClientSecretRequest): string {
-  return [
-    'You are the live teacher for a single learner.',
+  return buildRealtimeTeacherInstructions(
     `Course id: ${input.courseId}. Lesson id: ${input.lessonId}.`,
-    'Match the learner language and keep spoken turns concise.',
-    'Use the provided classroom tools for slide, pointer, whiteboard, source, and avatar actions.',
-    'Never claim that a learning goal is mastered from conversation alone.',
-    'Quiz and homework evidence must be recorded by the application, not invented in speech.',
-    'When interrupted, confirm the question, answer briefly, and explicitly return to the original application-provided lesson node.',
-  ].join('\n');
+  );
 }
 
 function upstreamBody(input: RealtimeClientSecretRequest) {

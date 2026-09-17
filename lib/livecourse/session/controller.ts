@@ -13,7 +13,10 @@ import type {
 } from '@/lib/livecourse/session/action-repository';
 import type { VersionedCourseState } from '@/lib/livecourse/session/course-state-repository';
 import {
+  coursePlaybackPositionSchema,
   resolveCourseEntry,
+  type CoursePlaybackPosition,
+  type CoursePlaybackPositionInput,
   type CourseProgress,
   type CourseStateSnapshot,
   type CourseStateSnapshotInput,
@@ -490,6 +493,12 @@ export function foldClassroomActions(
     currentNodeId = recoveryNodeForAction(action);
 
     switch (action.type) {
+      case 'lesson.goto_node':
+        if (state === 'teaching' || state === 'checking' || state === 'paused') {
+          state = 'teaching';
+          pausedOriginState = null;
+        }
+        break;
       case 'lesson.pause':
         if (state === 'teaching' || state === 'checking') {
           pausedOriginState = state;
@@ -1039,8 +1048,7 @@ export class ClassroomController {
         break;
       }
       case 'lesson.goto_node': {
-        // paused / interrupted / replaying 中改线只能走各自的显式恢复命令。
-        if (this.#state !== 'teaching' && this.#state !== 'checking') {
+        if (this.#state !== 'teaching' && this.#state !== 'checking' && this.#state !== 'paused') {
           throw new ClassroomStateError(
             `lesson.goto_node cannot run while the classroom is ${this.#state}`,
           );
@@ -1108,6 +1116,12 @@ export class ClassroomController {
    */
   #applyActionTransition(action: TeachingAction, staged: StagedDispatchMetadata = {}): void {
     switch (action.type) {
+      case 'lesson.goto_node':
+        this.#pausedOriginState = null;
+        if (this.#state === 'checking' || this.#state === 'paused') {
+          this.#transition('teaching', 'lesson.goto_node');
+        }
+        break;
       case 'lesson.pause':
         if (this.#state === 'teaching' || this.#state === 'checking') {
           this.#pausedOriginState = this.#state;
@@ -1259,13 +1273,72 @@ export class ClassroomController {
     return result;
   }
 
-  /**
-   * J3.7「暂时离开课堂」的唯一边界（A2）。严格顺序：先把可恢复点快照写入
-   * `C`，确认成功后才销毁本次 `W`；任一步失败都抛错、保持原状态与 `W`，
-   * 可整体重试。幂等：同一 `W` 内容的重试复用同一 idempotency key，命中
-   * `C` tail 时跳过写入只补齐销毁；浏览器 / 标签卸载不得调用本方法冒充
-   * 成功迁移（best-effort 保存由调用方另行决定，且不算成功）。
-   */
+  /** Persist a recoverable cursor without completing the node or destroying W. */
+  savePlaybackPosition(input: CoursePlaybackPositionInput): Promise<CoursePlaybackPosition> {
+    const deps = this.#requireLifecycle();
+    const position = coursePlaybackPositionSchema.parse({ ...input, savedAt: this.#now() });
+    const idempotencyKey = `playback-position:${createBrowserUuid()}`;
+    const result = this.#queue.then(async () => {
+      if (
+        !['teaching', 'checking', 'paused', 'interrupted'].includes(this.#state) ||
+        this.#saveAndLeaveResult ||
+        this.#pendingPresentationCommit
+      ) {
+        throw new ClassroomStateError(
+          'Cannot save playback position in the current classroom state',
+        );
+      }
+      const work = await this.#repository.load();
+      if (work.currentNodeId !== null && work.currentNodeId !== position.nodeId) {
+        throw new ClassroomStateError('Playback position no longer belongs to the current node');
+      }
+      if (
+        this.#completion &&
+        !this.#completion.lessonPlan.nodes.some(
+          (node) => node.id === position.nodeId && node.sceneId === position.sceneId,
+        )
+      ) {
+        throw new ClassroomStateError('Playback position is outside the lesson plan');
+      }
+      const versioned = await deps.courseState.loadVersioned();
+      if (!versioned || !resolveCourseEntry(versioned.snapshot).canContinue) {
+        throw new ClassroomLifecycleError('Playback position requires an unfinished course');
+      }
+      const latest = versioned.snapshot;
+      const teachingActions = mergeTeachingActionsForArchive(latest.teachingActions, work);
+      const previous = latest.playbackPosition;
+      if (
+        previous &&
+        previous.nodeId === position.nodeId &&
+        previous.sceneId === position.sceneId &&
+        previous.actionId === position.actionId &&
+        previous.actionIndex === position.actionIndex &&
+        previous.speechChunkIndex === position.speechChunkIndex &&
+        latest.teachingActions.lastSequence === teachingActions.lastSequence
+      ) {
+        return previous;
+      }
+      await deps.courseState.save(
+        {
+          ...latest,
+          id: undefined,
+          createdAt: position.savedAt,
+          idempotencyKey,
+          teachingActions,
+          playbackPosition: position,
+        },
+        { expectedRevision: versioned.revision },
+      );
+      return position;
+    });
+    this.#queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /** J3.7: confirm the C snapshot before destroying W; retries retain the same leave key. */
   saveAndLeaveSession(): Promise<SaveAndLeaveSessionResult> {
     const lifecycle = this.#requireLifecycle();
     const result = this.#queue.then(() => this.#saveAndLeave(lifecycle));
@@ -1361,6 +1434,7 @@ export class ClassroomController {
           coursePlan: latest.coursePlan,
           teachingActions,
           ...(latest.progress ? { progress: latest.progress } : {}),
+          ...(latest.playbackPosition ? { playbackPosition: latest.playbackPosition } : {}),
           ...(latest.lifecycle ? { lifecycle: latest.lifecycle } : {}),
           assistantTasks: latest.assistantTasks,
           evidence: latest.evidence,
@@ -1431,6 +1505,7 @@ export class ClassroomController {
           coursePlan: latest.coursePlan,
           teachingActions,
           ...(progress ? { progress } : {}),
+          ...(latest.playbackPosition ? { playbackPosition: latest.playbackPosition } : {}),
           lifecycle: {
             status: 'archived',
             updatedAt: this.#now(),

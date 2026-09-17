@@ -15,6 +15,7 @@ import {
   type RealtimeToolRequest,
 } from '@/lib/livecourse/realtime/contracts';
 import type { AssistantTask } from '@/lib/livecourse/domain';
+import { buildRealtimeTeacherInstructions } from '@/lib/livecourse/realtime/teacher-instructions';
 
 import { RealtimeAudioBridge } from './audio-bridge';
 import type { TeacherSpeechPort } from './teacher-speech';
@@ -201,19 +202,6 @@ function requireToolCallId(details: unknown): string {
     throw new Error('Realtime tool call is missing a call id');
   }
   return toolCall.callId;
-}
-
-function buildAgentInstructions(teachingContext: string): string {
-  return [
-    'You are the live teacher inside an active classroom.',
-    'Keep spoken responses concise and match the learner language.',
-    'Use classroom tools for navigation, highlighting, pointer, whiteboard, sources, and avatar state. Do not delegate work to another speaker or assistant.',
-    'Do not infer mastery from conversation. Quiz and homework evidence is recorded by the application.',
-    'If the learner interrupts, first confirm the question, answer it briefly, then explicitly say you are returning to the original lesson node. The application restores that node; do not navigate away.',
-    teachingContext,
-  ]
-    .filter(Boolean)
-    .join('\n');
 }
 
 function createRealtimeTools(
@@ -441,7 +429,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
       const agent = new RealtimeAgent({
         name: 'LiveCourse Teacher',
         voice: secret.voice,
-        instructions: buildAgentInstructions(this.#options.getTeachingContext()),
+        instructions: buildRealtimeTeacherInstructions(this.#options.getTeachingContext()),
         tools: this.#options.readOnly
           ? []
           : createRealtimeTools((toolValue, callId) =>
@@ -637,7 +625,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
           session.mute(this.#learnerMuted);
           session.transport.updateSessionConfig({
             ...this.#sessionConfig,
-            instructions: buildAgentInstructions(this.#options.getTeachingContext()),
+            instructions: buildRealtimeTeacherInstructions(this.#options.getTeachingContext()),
           });
         }
       } finally {
@@ -735,7 +723,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
       const oralInstructions =
         kind === 'oral-answer' ? this.#requireOralQuestion().instructions : null;
       const context =
-        oralInstructions ?? buildAgentInstructions(this.#options.getTeachingContext());
+        oralInstructions ?? buildRealtimeTeacherInstructions(this.#options.getTeachingContext());
       // The SDK merges updates with its defaults, not the live session.
       // Retain voice/transcription/manual VAD on every context refresh.
       session.transport.updateSessionConfig({ ...this.#sessionConfig, instructions: context });
@@ -746,12 +734,7 @@ export class LiveCourseRealtimeSession implements TeacherSpeechPort {
               'Read the supplied lesson script faithfully, in its current language. Do not summarize, add commentary, answer it as a question, call tools, or navigate.',
               `Lesson script:\n${text}`,
             ].join('\n')
-          : kind === 'oral-answer'
-            ? (oralInstructions ?? this.#requireOralQuestion().instructions)
-            : [
-                context,
-                `Confirm the learner's question, answer it, then explicitly return to the original node ${this.#resumeNodeId}. Do not advance the lesson.`,
-              ].join('\n');
+          : context;
       if ((kind === 'answer' || kind === 'oral-answer') && !inputRecorded) {
         session.transport.sendMessage(text, {}, { triggerResponse: false });
       }

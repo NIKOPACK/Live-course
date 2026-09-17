@@ -337,6 +337,115 @@ describe('mergeTeachingActionsForArchive（归档合并，A2）', () => {
   });
 });
 
+describe('durable classroom playback position', () => {
+  const position = {
+    nodeId: NODE_A,
+    sceneId: 'scene:lesson-1-a',
+    actionId: 'speech-two',
+    actionIndex: 3,
+    speechChunkIndex: 1,
+  };
+
+  it('preserves the precise position through progress writes, leaving and reopening without evidence', async () => {
+    const h = harness();
+    await commitSpeechCycle(h.actions, NODE_A, 0);
+    await seedCourseState(h);
+    const controller = h.makeController();
+    await controller.load();
+    const before = await h.courseState.load();
+    const saved = await controller.savePlaybackPosition(position);
+    expect(await wExists(h.store)).toBe(true);
+    expect((await h.courseState.load())?.evidence).toEqual(before?.evidence);
+    expect((await h.courseState.load())?.progress).toEqual(before?.progress);
+    await h.courseState.saveProgress({
+      idempotencyKey: 'real-completion',
+      progress: { completedNodeIds: [NODE_A], lastCompletedNodeId: NODE_A, updatedAt: NOW },
+    });
+    expect((await h.courseState.load())?.playbackPosition).toEqual(saved);
+    const left = await controller.saveAndLeaveSession();
+    expect(left.snapshot.playbackPosition).toEqual(saved);
+    expect(await wExists(h.store)).toBe(false);
+    expect(
+      resolveResumeNodeId({
+        work: { actions: [], currentNodeId: null, lastSequence: -1 },
+        courseState: await h.courseState.load(),
+      }),
+    ).toBe(NODE_A);
+    const otherLearner = createCourseStateRepository({
+      store: h.store,
+      stageId: STAGE_ID,
+      learnerId: 'someone-else',
+      courseId: COURSE_ID,
+    });
+    expect(await otherLearner.load()).toBeUndefined();
+  });
+
+  it('keeps the prior position and W on write failure and permits retry', async () => {
+    const h = harness();
+    await commitSpeechCycle(h.actions, NODE_A, 0);
+    await seedCourseState(h);
+    const controller = h.makeController({ failSaveOnce: true });
+    await controller.load();
+    await expect(controller.savePlaybackPosition(position)).rejects.toThrow(
+      'injected C write failure',
+    );
+    expect((await h.courseState.load())?.playbackPosition).toBeUndefined();
+    expect(await wExists(h.store)).toBe(true);
+    await controller.savePlaybackPosition(position);
+    expect((await h.courseState.load())?.playbackPosition).toMatchObject(position);
+    await expect(controller.savePlaybackPosition({ ...position, nodeId: NODE_B })).rejects.toThrow(
+      'current node',
+    );
+  });
+
+  it('does not disturb the committed leave snapshot when position saving is retried after W cleanup fails', async () => {
+    const h = harness();
+    await commitSpeechCycle(h.actions, NODE_A, 0);
+    await seedCourseState(h);
+    const controller = h.makeController({ failDestroy: { current: true } });
+    await controller.load();
+    await controller.savePlaybackPosition(position);
+    await expect(controller.saveAndLeaveSession()).rejects.toThrow('W destroy failure');
+    const before = await cRecordCount(h.store);
+    await controller.savePlaybackPosition(position);
+    expect(await cRecordCount(h.store)).toBe(before);
+    await expect(controller.saveAndLeaveSession()).resolves.toMatchObject({ duplicate: true });
+    expect(await wExists(h.store)).toBe(false);
+  });
+
+  it('allows explicit chapter navigation from paused state without recording completion', async () => {
+    const h = harness();
+    await commitSpeechCycle(h.actions, NODE_A, 0);
+    await seedCourseState(h);
+    const controller = h.makeController();
+    await controller.load();
+    await controller.dispatch(
+      action({
+        id: 'pause',
+        idempotencyKey: 'pause',
+        sequence: 3,
+        type: 'lesson.pause',
+        payload: {},
+      }),
+    );
+    expect(controller.getState()).toBe('paused');
+    await controller.dispatch(
+      action({
+        id: 'navigate',
+        idempotencyKey: 'navigate',
+        sequence: 4,
+        nodeId: NODE_B,
+        type: 'lesson.goto_node',
+        payload: { targetNodeId: NODE_B },
+      }),
+    );
+    expect(controller.getState()).toBe('teaching');
+    expect(controller.getCompletedNodeIds()).toEqual([]);
+    expect((await controller.load()).currentNodeId).toBe(NODE_B);
+    expect((await h.courseState.load())?.progress).toBeUndefined();
+  });
+});
+
 describe('saveAndLeaveSession（J3.7 暂时离开课堂，A2）', () => {
   it('persists the C recovery point first, then destroys W — in that strict order', async () => {
     const h = harness();

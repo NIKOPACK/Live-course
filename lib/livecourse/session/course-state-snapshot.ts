@@ -86,6 +86,25 @@ export const courseProgressSchema = z
 
 export type CourseProgress = z.infer<typeof courseProgressSchema>;
 
+export const coursePlaybackPositionSchema = z
+  .object({
+    nodeId: z.string().trim().min(1).max(240),
+    sceneId: z.string().trim().min(1).max(240),
+    actionId: z.string().trim().min(1).max(240).nullable(),
+    actionIndex: z.number().int().nonnegative(),
+    speechChunkIndex: z.number().int().nonnegative(),
+    savedAt: z.string().datetime({ offset: true }),
+  })
+  .strict()
+  .refine(
+    (position) =>
+      position.actionId !== null || (position.actionIndex === 0 && position.speechChunkIndex === 0),
+    'A chapter-level position must start at its first action',
+  );
+
+export type CoursePlaybackPosition = z.infer<typeof coursePlaybackPositionSchema>;
+export type CoursePlaybackPositionInput = Omit<CoursePlaybackPosition, 'savedAt'>;
+
 /**
  * 课程生命周期（docs/spec/04-detailed-design.md §1/§6，A2）：首页同课选择态
  * 的唯一权威依据——`in_progress` 才允许「继续」（J4.4），`archived` 只能
@@ -137,6 +156,7 @@ export const courseStateSnapshotSchema = z
     coursePlan: coursePlanSchema,
     teachingActions: classroomActionListSchema,
     progress: courseProgressSchema.optional(),
+    playbackPosition: coursePlaybackPositionSchema.optional(),
     lifecycle: courseLifecycleSchema.optional(),
     assistantTasks: assistantTaskSnapshotSchema,
     evidence: z.array(evidenceRecordSchema),
@@ -300,6 +320,7 @@ export interface CourseStateSnapshotInput {
   teachingActions: TeachingActionSnapshot;
   /** `C.completedNode / C.progress` 投影；尚未提交过 `lesson.complete_node` 时省略。 */
   progress?: CourseProgress;
+  playbackPosition?: CoursePlaybackPosition;
   /** 课程生命周期；缺省视为 `in_progress`。仅 `finalizeSession` 写 `archived`。 */
   lifecycle?: CourseLifecycle;
   assistantTasks: AssistantTaskSnapshot;
@@ -450,6 +471,7 @@ export function buildCourseStateSnapshot(
     evidence: input.evidence,
     adjustments: input.adjustments,
     ...(input.progress === undefined ? {} : { progress: input.progress }),
+    ...(input.playbackPosition === undefined ? {} : { playbackPosition: input.playbackPosition }),
     ...(input.lifecycle === undefined ? {} : { lifecycle: input.lifecycle }),
   };
   return parseCourseStateSnapshot(candidate);

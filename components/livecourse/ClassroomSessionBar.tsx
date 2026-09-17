@@ -1,15 +1,16 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
 import { cn } from '@/lib/utils';
-import { Pause, Play, RotateCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw } from 'lucide-react';
 import { useLiveCourseSessionOptional } from '@/lib/livecourse/session/context';
 import { useStageStore } from '@/lib/store';
+import { adjacentTeachingNode } from '@/lib/livecourse/session/teaching-flow';
 
 import { InClassRelistenControl } from './InClassRelistenControl';
 
@@ -27,6 +28,8 @@ export function ClassroomSessionBar({
   playbackIdle = false,
   starting = false,
   feedbackBusy = false,
+  navigatingChapter = false,
+  onChapterChange,
   onStartRelisten,
   onEndRelisten,
   onPrepareLeave,
@@ -38,6 +41,8 @@ export function ClassroomSessionBar({
   playbackIdle?: boolean;
   starting?: boolean;
   feedbackBusy?: boolean;
+  navigatingChapter?: boolean;
+  onChapterChange?: (nodeId: string) => Promise<void>;
   onStartRelisten?: (nodeId: string) => Promise<void>;
   onEndRelisten?: () => Promise<void>;
   onPrepareLeave?: () => Promise<void>;
@@ -49,6 +54,9 @@ export function ClassroomSessionBar({
   const currentSceneId = useStageStore((state) => state.currentSceneId);
   const currentScene = useStageStore((state) => state.getCurrentScene());
   const [leaving, setLeaving] = useState<'idle' | 'saving' | 'failed'>('idle');
+  const [changingChapter, setChangingChapter] = useState(false);
+  const [chapterError, setChapterError] = useState<string | null>(null);
+  const operationRef = useRef<'chapter' | 'leave' | null>(null);
 
   if (!session || session.status === 'loading') return null;
 
@@ -65,10 +73,30 @@ export function ClassroomSessionBar({
     lessonPlan?.nodes.find((node) => node.id === currentNodeId)?.title ??
     currentScene?.title ??
     t('livecourse.teaching');
+  const nodes = [...(lessonPlan?.nodes ?? [])].sort((left, right) => left.order - right.order);
+  const activeNode =
+    nodes.find((node) => node.id === currentNodeId) ??
+    nodes.find((node) => node.sceneId === currentSceneId);
+  const previousNode =
+    lessonPlan && activeNode ? adjacentTeachingNode(lessonPlan, activeNode.id, -1) : null;
+  const nextNode =
+    lessonPlan && activeNode ? adjacentTeachingNode(lessonPlan, activeNode.id, 1) : null;
+  const completedCount = nodes.filter((node) => session.completedNodeIds.includes(node.id)).length;
+  const busy = changingChapter || navigatingChapter || leaving === 'saving';
+  const canNavigate =
+    Boolean(onChapterChange) &&
+    ['teaching', 'checking', 'paused'].includes(classroomState) &&
+    !busy &&
+    !starting &&
+    !feedbackBusy;
   const sceneIndex = currentSceneId ? scenes.findIndex((scene) => scene.id === currentSceneId) : -1;
+  const chapterIndex = activeNode
+    ? nodes.findIndex((node) => node.id === activeNode.id)
+    : sceneIndex;
+  const chapterCount = nodes.length || scenes.length;
   const pageLabel =
-    sceneIndex >= 0 && scenes.length > 0
-      ? t('livecourse.classroomPage', { index: sceneIndex + 1, total: scenes.length })
+    chapterIndex >= 0 && chapterCount > 0
+      ? t('livecourse.classroomPage', { index: chapterIndex + 1, total: chapterCount })
       : null;
   const canPause =
     classroomState === 'teaching' || (classroomState === 'checking' && !playbackIdle);
@@ -82,6 +110,8 @@ export function ClassroomSessionBar({
     classroomState === 'replaying';
 
   const saveAndLeave = async () => {
+    if (operationRef.current || busy) return;
+    operationRef.current = 'leave';
     setLeaving('saving');
     try {
       await onPrepareLeave?.();
@@ -90,6 +120,25 @@ export function ClassroomSessionBar({
     } catch (cause) {
       log.warn('[ClassroomSessionBar] saveAndLeaveSession failed:', cause);
       setLeaving('failed');
+      operationRef.current = null;
+    }
+  };
+
+  const changeChapter = async (nodeId: string) => {
+    if (!canNavigate || !onChapterChange || operationRef.current) return;
+    operationRef.current = 'chapter';
+    setChangingChapter(true);
+    setChapterError(null);
+    try {
+      await onChapterChange(nodeId);
+    } catch (cause) {
+      log.warn('Chapter navigation failed:', cause);
+      setChapterError(
+        cause instanceof Error ? cause.message : t('livecourse.chapterNavigationFailed'),
+      );
+    } finally {
+      operationRef.current = null;
+      setChangingChapter(false);
     }
   };
 
@@ -107,12 +156,26 @@ export function ClassroomSessionBar({
             </span>
           ) : null}
           <h1 className="truncate text-sm font-medium">{nodeTitle}</h1>
+          {nodes.length > 0 ? (
+            <span
+              role="progressbar"
+              aria-label={t('livecourse.learningProgress')}
+              aria-valuemin={0}
+              aria-valuemax={nodes.length}
+              aria-valuenow={completedCount}
+              className="shrink-0 text-xs text-muted-foreground"
+            >
+              {t('livecourse.completedChapters', { count: completedCount, total: nodes.length })}
+            </span>
+          ) : null}
         </div>
         <p
-          role={controlError || playbackError ? 'alert' : 'status'}
+          role={chapterError || controlError || playbackError ? 'alert' : 'status'}
           className={cn(
             'flex min-w-0 items-center gap-2 truncate text-xs leading-5',
-            controlError || playbackError ? 'text-destructive' : 'text-muted-foreground',
+            chapterError || controlError || playbackError
+              ? 'text-destructive'
+              : 'text-muted-foreground',
           )}
         >
           <span
@@ -136,31 +199,62 @@ export function ClassroomSessionBar({
             className="lc-live-dot"
           />
           <span className="truncate">
-            {controlError ??
+            {chapterError ??
+              controlError ??
               playbackError ??
-              (feedbackBusy
-                ? t('livecourse.checkpointFeedback')
-                : classroomState === 'paused'
-                  ? t('livecourse.classroomPaused')
-                  : classroomState === 'interrupted'
-                    ? t('livecourse.teacherListening')
-                    : classroomState === 'checking'
-                      ? t('livecourse.checkpointAwaiting')
-                      : canStart
-                        ? t('livecourse.teacherReady')
-                        : t('livecourse.teaching'))}
+              (changingChapter || navigatingChapter
+                ? t('livecourse.switchingChapter')
+                : feedbackBusy
+                  ? t('livecourse.checkpointFeedback')
+                  : classroomState === 'paused'
+                    ? t('livecourse.classroomPaused')
+                    : classroomState === 'interrupted'
+                      ? t('livecourse.teacherListening')
+                      : classroomState === 'checking'
+                        ? t('livecourse.checkpointAwaiting')
+                        : canStart
+                          ? t('livecourse.teacherReady')
+                          : t('livecourse.teaching'))}
           </span>
         </p>
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
+        {onChapterChange ? (
+          <div role="group" aria-label={t('livecourse.chapterNavigation')} className="flex gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11"
+              aria-label={t('livecourse.previousChapter')}
+              title={previousNode?.title}
+              disabled={!canNavigate || !previousNode}
+              onClick={() => previousNode && void changeChapter(previousNode.id)}
+            >
+              <ChevronLeft className="size-4" aria-hidden="true" />
+              <span className="max-sm:sr-only">{t('livecourse.previousChapter')}</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11"
+              aria-label={t('livecourse.nextChapter')}
+              title={nextNode?.title}
+              disabled={!canNavigate || !nextNode}
+              onClick={() => nextNode && void changeChapter(nextNode.id)}
+            >
+              <span className="max-sm:sr-only">{t('livecourse.nextChapter')}</span>
+              <ChevronRight className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+        ) : null}
         {playbackError ? (
           <Button
             size="sm"
             variant="outline"
             className="min-h-11 border-destructive/40 bg-transparent text-destructive hover:bg-destructive/10"
             onClick={onRetryCurrentNode}
-            disabled={leaving === 'saving'}
+            disabled={busy}
           >
             <RotateCcw className="size-4" aria-hidden="true" />
             {t('livecourse.retryCurrentNode')}
@@ -173,7 +267,7 @@ export function ClassroomSessionBar({
             variant="outline"
             className="min-h-11"
             onClick={onPlayPause}
-            disabled={starting || leaving === 'saving'}
+            disabled={starting || busy}
             aria-busy={starting}
           >
             {canResume || canStart ? (
@@ -193,7 +287,7 @@ export function ClassroomSessionBar({
 
         <InClassRelistenControl
           layout="bar"
-          disabled={feedbackBusy || leaving === 'saving'}
+          disabled={feedbackBusy || busy}
           onStart={onStartRelisten}
           onEnd={onEndRelisten}
         />
@@ -210,7 +304,7 @@ export function ClassroomSessionBar({
               variant="outline"
               className={cn('min-h-11', leaving === 'saving' && 'opacity-70')}
               aria-busy={leaving === 'saving'}
-              disabled={leaving === 'saving'}
+              disabled={busy}
               onClick={() => void saveAndLeave()}
             >
               {leaving === 'saving' ? t('livecourse.leaveSaving') : t('livecourse.leaveClassroom')}

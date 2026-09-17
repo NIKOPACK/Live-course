@@ -11,6 +11,20 @@ export interface PlaybackSnapshot {
   sceneId?: string;
 }
 
+export interface PlaybackSpeechContext {
+  sceneId: string;
+  lastCompletedText: string | null;
+  resumeText: string | null;
+  nextText: string | null;
+}
+
+export interface TeachingPlaybackPosition {
+  sceneId: string;
+  actionId: string | null;
+  actionIndex: number;
+  speechChunkIndex: number;
+}
+
 /** Visual effects (for onEffectFire callback) */
 export type Effect =
   | { kind: 'spotlight'; targetId: string; dimOpacity?: number }
@@ -37,6 +51,7 @@ export interface PlaybackEngineCallbacks {
   onSpeechStart?: (text: string) => void;
   onSpeechEnd?: () => void;
   speak?: (text: string, signal: AbortSignal) => Promise<void>;
+  onTeachingPosition?: (position: TeachingPlaybackPosition) => Promise<void>;
   question?: (
     question: NonNullable<SpeechAction['oralQuestion']>,
     signal: AbortSignal,

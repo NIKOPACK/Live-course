@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildRealtimeTeacherInstructions } from '@/lib/livecourse/realtime/teacher-instructions';
 
 type FakeTool = {
   name: string;
@@ -733,7 +734,7 @@ describe('LiveCourseRealtimeSession', () => {
     expect(interruptNode).toHaveBeenCalledOnce();
     expect(fake.transport.messages).toEqual([]);
     expect(fake.transport.configs.at(-1)).toMatchObject({
-      instructions: expect.stringContaining('Context at the question'),
+      instructions: buildRealtimeTeacherInstructions('Context at the question'),
     });
     const id = startResponse(fake);
     finishResponse(fake, id, { drain: false });
@@ -836,9 +837,7 @@ describe('LiveCourseRealtimeSession', () => {
       fake.transport.events.filter((event) => event.type === 'response.create').at(-1),
     ).toMatchObject({
       response: {
-        instructions: expect.stringContaining(
-          'explicitly return to the original node node:scene-1',
-        ),
+        instructions: buildRealtimeTeacherInstructions('Scene context'),
       },
     });
     finishResponse(fake, retry.id);

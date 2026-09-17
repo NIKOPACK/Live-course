@@ -65,8 +65,11 @@ import {
 } from '@/lib/livecourse/session/course-state-repository';
 import {
   resolveCourseEntry,
+  type CoursePlaybackPosition,
+  type CoursePlaybackPositionInput,
   type CourseStateSnapshot,
 } from '@/lib/livecourse/session/course-state-snapshot';
+import type { TeachingPlaybackPosition } from '@/lib/playback/types';
 import { getLearnerKey } from '@/lib/runtime/learner-key';
 import { getRuntimeStore } from '@/lib/runtime/store';
 import { useStageStore } from '@/lib/store';
@@ -213,6 +216,8 @@ export interface LiveCourseSessionValue {
   classroomState: ClassroomState;
   /** J3.6 课中重听可选范围：已讲（已完成）节点，按完成顺序。 */
   completedNodeIds: readonly string[];
+  playbackPosition?: CoursePlaybackPosition | null;
+  savePlaybackPosition?: (position: TeachingPlaybackPosition) => Promise<void>;
   error: string | null;
   /** Retry failed hydration in the same runtime; never reset the durable session. */
   retryHydration: () => void;
@@ -245,6 +250,7 @@ interface ClassroomActionController {
   getState(): ClassroomState;
   getCompletedNodeIds(): readonly string[];
   saveAndLeaveSession(): Promise<SaveAndLeaveSessionResult>;
+  savePlaybackPosition?: (position: CoursePlaybackPositionInput) => Promise<CoursePlaybackPosition>;
   finalizeSession(): Promise<FinalizeSessionResult>;
 }
 
@@ -541,6 +547,18 @@ export class LiveCourseActionRuntime {
     });
   }
 
+  savePlaybackPosition(position: CoursePlaybackPositionInput): Promise<CoursePlaybackPosition> {
+    return this.#enqueue(async () => {
+      this.#assertActive?.();
+      if (!this.#controller.savePlaybackPosition) {
+        throw new Error('Classroom playback persistence is unavailable');
+      }
+      await this.#controller.load();
+      this.#assertActive?.();
+      return this.#controller.savePlaybackPosition(position);
+    });
+  }
+
   finalize(): Promise<FinalizeSessionResult> {
     return this.#enqueue(() => {
       this.#assertActive?.();
@@ -634,6 +652,7 @@ function projectWorkingMemoryAction(
         ...next,
         currentNodeId: action.payload.targetNodeId,
         resumeNodeId: null,
+        ...(current.currentNodeId !== action.payload.targetNodeId ? { currentAnswer: null } : {}),
       };
       break;
     case 'lesson.interrupt': {
@@ -799,7 +818,7 @@ export function resolveResumeNodeId(input: {
   const snapshot = input.courseState;
   if (!snapshot) return null;
   if (!resolveCourseEntry(snapshot).canContinue) return null;
-  return snapshot.teachingActions.currentNodeId;
+  return snapshot.playbackPosition?.nodeId ?? snapshot.teachingActions.currentNodeId;
 }
 
 export function resolveRecoverySceneId(
@@ -893,6 +912,7 @@ export function LiveCourseSessionProvider({
   const [classroomState, setClassroomState] = useState<ClassroomState>('loading');
   /** J3.6 课中重听可选范围（已讲节点），随水合与 complete_node 更新。 */
   const [completedNodeIds, setCompletedNodeIds] = useState<readonly string[]>([]);
+  const [playbackPosition, setPlaybackPosition] = useState<CoursePlaybackPosition | null>(null);
   const checkpointTeacherRef = useRef<CheckpointTeacherPort | null>(null);
   const checkpointSubmissionsRef = useRef(createCheckpointSubmissionCoordinator<EvidenceRecord>());
   const registerCheckpointTeacher = useCallback((teacher: CheckpointTeacherPort) => {
@@ -1577,6 +1597,7 @@ export function LiveCourseSessionProvider({
     setRecoveryPoint(EMPTY_RECOVERY_POINT);
     setClassroomState('loading');
     setCompletedNodeIds([]);
+    setPlaybackPosition(null);
     setCourseMemory(null);
     setLearnerMemory(null);
     setTeacherContext(
@@ -1646,41 +1667,52 @@ export function LiveCourseSessionProvider({
           recovery,
           hydratedState,
           taughtNodeIds,
+          savedPlaybackPosition: courseSnapshot?.playbackPosition ?? null,
         };
       })
-      .then(({ activeLearnerId, records, recovery, hydratedState, taughtNodeIds }) => {
-        if (cancelled || !isLifecycleTokenCurrent(lifecycleToken)) return;
-        const activeStage = useStageStore.getState();
-        if (activeStage.stage?.id !== stageId) {
-          throw new Error('LiveCourse stage changed while restoring the classroom session');
-        }
-        const activeLessonPlan = resolveLessonPlan({
-          stage: activeStage.stage,
-          scenes: activeStage.scenes,
-          persistedLessonPlan: activeStage.lessonPlan,
-          courseId,
-        });
-        const initialNode = recovery.currentNodeId
-          ? undefined
-          : [...activeLessonPlan.nodes]
-              .sort((left, right) => left.order - right.order)
-              .find((node) => !taughtNodeIds.includes(node.id));
-        const recoverySceneId = resolveRecoverySceneId(
-          { ...recovery, currentNodeId: recovery.currentNodeId ?? initialNode?.id ?? null },
-          activeLessonPlan,
-          activeStage.scenes,
-        );
-        if (recoverySceneId && activeStage.currentSceneId !== recoverySceneId) {
-          // Recovery is a projection of durable history, not a new teaching action.
-          useStageStore.setState({ currentSceneId: recoverySceneId });
-        }
-        setLearnerId(activeLearnerId);
-        setEvidence(records);
-        setRecoveryPoint(recovery);
-        setClassroomState(hydratedState);
-        setCompletedNodeIds(taughtNodeIds);
-        setStatus('ready');
-      })
+      .then(
+        ({
+          activeLearnerId,
+          records,
+          recovery,
+          hydratedState,
+          taughtNodeIds,
+          savedPlaybackPosition,
+        }) => {
+          if (cancelled || !isLifecycleTokenCurrent(lifecycleToken)) return;
+          const activeStage = useStageStore.getState();
+          if (activeStage.stage?.id !== stageId) {
+            throw new Error('LiveCourse stage changed while restoring the classroom session');
+          }
+          const activeLessonPlan = resolveLessonPlan({
+            stage: activeStage.stage,
+            scenes: activeStage.scenes,
+            persistedLessonPlan: activeStage.lessonPlan,
+            courseId,
+          });
+          const initialNode = recovery.currentNodeId
+            ? undefined
+            : [...activeLessonPlan.nodes]
+                .sort((left, right) => left.order - right.order)
+                .find((node) => !taughtNodeIds.includes(node.id));
+          const recoverySceneId = resolveRecoverySceneId(
+            { ...recovery, currentNodeId: recovery.currentNodeId ?? initialNode?.id ?? null },
+            activeLessonPlan,
+            activeStage.scenes,
+          );
+          if (recoverySceneId && activeStage.currentSceneId !== recoverySceneId) {
+            // Recovery is a projection of durable history, not a new teaching action.
+            useStageStore.setState({ currentSceneId: recoverySceneId });
+          }
+          setLearnerId(activeLearnerId);
+          setEvidence(records);
+          setRecoveryPoint(recovery);
+          setClassroomState(hydratedState);
+          setCompletedNodeIds(taughtNodeIds);
+          setPlaybackPosition(savedPlaybackPosition);
+          setStatus('ready');
+        },
+      )
       .catch((cause) => {
         if (cancelled || !isLifecycleTokenCurrent(lifecycleToken)) return;
         hydrationRetryAvailableRef.current = true;
@@ -2053,6 +2085,42 @@ export function LiveCourseSessionProvider({
     ],
   );
 
+  const savePlaybackPosition = useCallback(
+    async (position: TeachingPlaybackPosition): Promise<void> => {
+      const lifecycleToken = assertTeachingCommandsEnabled();
+      try {
+        const bundle = await getActionRuntime();
+        assertLifecycleToken(lifecycleToken);
+        const active = useStageStore.getState();
+        const plan = active.stage
+          ? resolveLessonPlan({
+              stage: active.stage,
+              scenes: active.scenes,
+              persistedLessonPlan: active.lessonPlan,
+              courseId,
+            })
+          : null;
+        const node = plan?.nodes.find((candidate) => candidate.sceneId === position.sceneId);
+        if (!node) throw new Error('Playback position does not belong to the current course');
+        const saved = await bundle.runtime.savePlaybackPosition({ ...position, nodeId: node.id });
+        assertLifecycleToken(lifecycleToken);
+        setPlaybackPosition(saved);
+      } catch (cause) {
+        if (isLifecycleTokenCurrent(lifecycleToken)) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+        throw cause;
+      }
+    },
+    [
+      assertLifecycleToken,
+      assertTeachingCommandsEnabled,
+      courseId,
+      getActionRuntime,
+      isLifecycleTokenCurrent,
+    ],
+  );
+
   const saveAndLeaveSession = useCallback(async (): Promise<SaveAndLeaveSessionResult> => {
     const lifecycleToken = assertTeachingCommandsEnabled();
     try {
@@ -2144,6 +2212,8 @@ export function LiveCourseSessionProvider({
       lastSequence: recoveryPoint.lastSequence,
       classroomState,
       completedNodeIds,
+      playbackPosition,
+      savePlaybackPosition,
       error,
       retryHydration,
       emitAction,
@@ -2159,6 +2229,8 @@ export function LiveCourseSessionProvider({
       classroomState,
       completeTeachingNode,
       completedNodeIds,
+      playbackPosition,
+      savePlaybackPosition,
       courseId,
       currentNodeDesign,
       dispatchAction,

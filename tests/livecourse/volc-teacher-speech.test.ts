@@ -37,6 +37,10 @@ vi.mock('@/lib/livecourse/realtime/volc/client', () => ({
 }));
 
 import { VolcTeacherSpeechSession } from '@/lib/livecourse/realtime/client/volc-teacher-speech';
+import {
+  buildRealtimeTeacherInstructions,
+  formatTeacherResumeContext,
+} from '@/lib/livecourse/realtime/teacher-instructions';
 
 const instantRetry = {
   sleep: async () => undefined,
@@ -90,6 +94,45 @@ describe('VolcTeacherSpeechSession', () => {
       await session.close();
     },
   );
+
+  it('refreshes the non-echoing answer policy and playback anchor before native interruptions', async () => {
+    let resumeText = 'First unplayed passage.';
+    const getInstructions = () =>
+      formatTeacherResumeContext({
+        sceneId: 'scene',
+        lastCompletedText: 'Already heard.',
+        resumeText,
+        nextText: 'Following passage.',
+      });
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi.fn(async () => undefined);
+    const session = new VolcTeacherSpeechSession({
+      getInstructions,
+      getLocation: () => ({ nodeId: 'node:scene', sceneId: 'scene' }),
+      interruptNode,
+      resumeNode,
+    });
+    await session.connect();
+    expect(sessionMocks.connect).toHaveBeenCalledWith(
+      buildRealtimeTeacherInstructions(getInstructions()),
+    );
+    resumeText = 'Second unplayed passage.';
+    await session.speak(resumeText);
+    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith(
+      buildRealtimeTeacherInstructions(getInstructions()),
+    );
+    expect(sessionMocks.updateInstructions.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      sessionMocks.speakText.mock.invocationCallOrder.at(-1)!,
+    );
+    sessionMocks.onEvent?.({ type: 'learner_turn_started' });
+    sessionMocks.onEvent?.({ type: 'learner_answer', text: 'Why?' });
+    await vi.waitFor(() => expect(interruptNode).toHaveBeenCalledOnce());
+    expect(sessionMocks.askQuestion).not.toHaveBeenCalled();
+    expect(resumeNode).not.toHaveBeenCalled();
+    sessionMocks.onEvent?.({ type: 'audio_completed', hasAudio: true });
+    await vi.waitFor(() => expect(resumeNode).toHaveBeenCalledOnce());
+    await session.close();
+  });
 
   it('releases a held interruption before disconnecting, without completing an answer', async () => {
     const interruptNode = vi.fn(async () => undefined);
@@ -373,7 +416,9 @@ describe('VolcTeacherSpeechSession', () => {
     expect(interruptNode).not.toHaveBeenCalled();
     expect(resumeNode).not.toHaveBeenCalled();
     expect(sessionMocks.askQuestion).not.toHaveBeenCalled();
-    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith('Normal lesson instructions.');
+    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith(
+      buildRealtimeTeacherInstructions('Normal lesson instructions.'),
+    );
     expect(sessionMocks.setInputEnabled).toHaveBeenLastCalledWith(true);
     await session.close();
   });
@@ -501,7 +546,9 @@ describe('VolcTeacherSpeechSession', () => {
 
     await session.connect();
     expect(sessionMocks.preparePlayback).toHaveBeenCalledOnce();
-    expect(sessionMocks.connect).toHaveBeenCalledWith('Teach photosynthesis.');
+    expect(sessionMocks.connect).toHaveBeenCalledWith(
+      buildRealtimeTeacherInstructions('Teach photosynthesis.'),
+    );
     expect(session.connected).toBe(true);
 
     await session.speak('叶绿体吸收光能。');
@@ -741,11 +788,15 @@ describe('VolcTeacherSpeechSession', () => {
     await session.connect();
     instructions = 'Node B.';
     await session.speak('Explain B.');
-    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith('Node B.');
+    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith(
+      buildRealtimeTeacherInstructions('Node B.'),
+    );
     expect(sessionMocks.speakText).toHaveBeenLastCalledWith('Explain B.', { requireAudio: true });
     instructions = 'Node C.';
     await session.ask('Why here?');
-    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith('Node C.');
+    expect(sessionMocks.updateInstructions).toHaveBeenLastCalledWith(
+      buildRealtimeTeacherInstructions('Node C.'),
+    );
     expect(sessionMocks.askQuestion).toHaveBeenLastCalledWith('Why here?', { requireAudio: true });
     await session.close();
   });

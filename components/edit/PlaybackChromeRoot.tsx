@@ -91,12 +91,10 @@ import {
   nextTeachingNode,
   type CheckpointFeedbackInput,
 } from '@/lib/livecourse/session/teaching-flow';
-import { splitLongSpeechText } from '@/lib/audio/tts-utils';
 import { createBrowserUuid } from '@/lib/utils/random-id';
+import type { TeachingPlaybackPosition } from '@/lib/playback/types';
 
 const MOBILE_LAYOUT_MEDIA_QUERY = '(max-width: 767px)';
-// Bound even slow Chinese narration below Realtime's per-response audio budget.
-const TEACHER_SPEECH_CHUNK_LENGTH = 200;
 
 type PlaybackSessionIdentity = Pick<LiveCourseSessionValue, 'courseId' | 'lessonId' | 'learnerId'>;
 
@@ -345,6 +343,12 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
       };
     }, [presentationOnly, stage?.id]);
     const [startingTeaching, setStartingTeaching] = useState(false);
+    const [navigatingChapter, setNavigatingChapter] = useState(false);
+    const navigatingChapterRef = useRef(false);
+    const manualChapterTargetRef = useRef<string | null>(null);
+    const chapterNavigationRef = useRef<((sceneId: string) => Promise<boolean>) | null>(null);
+    const [restoringPosition, setRestoringPosition] = useState(false);
+    const restoringPositionRef = useRef(false);
     const startingTeachingRef = useRef(false);
     const [checkpointFeedbackBusy, setCheckpointFeedbackBusy] = useState(false);
     const feedbackAbortRef = useRef<AbortController | null>(null);
@@ -387,12 +391,14 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const speakClassroomText = useCallback(async (text: string, signal: AbortSignal) => {
       const teacher = teacherSpeechRef.current;
       if (!teacher) throw new Error('Classroom teacher is not ready');
-      for (const chunk of splitLongSpeechText(text, TEACHER_SPEECH_CHUNK_LENGTH)) {
-        signal.throwIfAborted();
-        if (teacherSpeechRef.current !== teacher) throw new Error('Classroom teacher changed');
-        await teacher.speak(chunk, { signal });
-      }
+      signal.throwIfAborted();
+      await teacher.speak(text, { signal });
+      if (teacherSpeechRef.current !== teacher) throw new Error('Classroom teacher changed');
     }, []);
+    const getPlaybackSpeechContext = useCallback(
+      () => engineRef.current?.getSpeechContext() ?? null,
+      [],
+    );
     const sessionIdentityKey = liveCourseSession
       ? [
           liveCourseSession.status,
@@ -473,6 +479,10 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           }
         }
         if (presentationOnly) return false;
+        if (liveCourseSessionRef.current) {
+          if (!chapterNavigationRef.current) throw new Error('Chapter navigation is not ready');
+          return chapterNavigationRef.current(targetSceneId);
+        }
         if (presentationOnly || !emitLiveCourseAction || targetSceneId === PENDING_SCENE_ID) {
           if (presentationOnly) {
             playbackStore.setState({ currentSceneId: targetSceneId });
@@ -756,6 +766,25 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         clearActionResumePosition(window.sessionStorage, actionResumeStorageKey, sceneId);
       },
       [actionResumeStorageKey, presentationOnly],
+    );
+
+    const saveTeachingPosition = useCallback(
+      async (position?: TeachingPlaybackPosition) => {
+        if (presentationOnly || relistenRef.current) return;
+        const session = liveCourseSessionRef.current;
+        if (!session?.savePlaybackPosition) {
+          throw new Error('Classroom playback persistence is not ready');
+        }
+        const current = position ?? engineRef.current?.getTeachingPosition();
+        if (!current) throw new Error('Classroom playback position is not ready');
+        const scene = useStageStore.getState().scenes.find((item) => item.id === current.sceneId);
+        await session.savePlaybackPosition(
+          scene?.type === 'quiz'
+            ? { sceneId: current.sceneId, actionId: null, actionIndex: 0, speechChunkIndex: 0 }
+            : current,
+        );
+      },
+      [presentationOnly],
     );
 
     const resetPlaybackAttempt = useCallback(() => {
@@ -1629,17 +1658,32 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         // Stop any in-flight discussion TTS audio on scene switch
         discussionTTS.cleanup();
 
+        const savedCoursePosition =
+          !presentationOnly && !relistenRef.current
+            ? liveCourseSessionRef.current?.playbackPosition
+            : null;
+        const durablePosition =
+          savedCoursePosition?.sceneId === currentScene?.id &&
+          manualChapterTargetRef.current !== currentScene?.id
+            ? savedCoursePosition
+            : null;
         const sessionResumeCursor =
-          currentScene && typeof window !== 'undefined'
+          !liveCourseSessionRef.current && currentScene && typeof window !== 'undefined'
             ? getActionResumeRestoreCursor(
                 readActionResumeState(window.sessionStorage, actionResumeStorageKey),
                 currentScene.id,
                 currentScene.actions ?? [],
               )
             : { actionIndex: 0, position: null };
-        let savedResumeActionIndex = sessionResumeCursor.actionIndex;
+        let savedResumeActionIndex =
+          durablePosition?.actionIndex ?? sessionResumeCursor.actionIndex;
         const playbackStageId = stage?.id ?? currentScene?.stageId;
-        if (currentScene && playbackStageId && !sessionResumeCursor.position) {
+        if (
+          !liveCourseSessionRef.current &&
+          currentScene &&
+          playbackStageId &&
+          !sessionResumeCursor.position
+        ) {
           try {
             const cursor = await loadCursor(playbackStageId);
             if (
@@ -1811,6 +1855,20 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           ...(liveCourseSessionRef.current || (presentationOnly && currentScene.actions?.length)
             ? {
                 speak: speakClassroomText,
+                ...(!presentationOnly
+                  ? {
+                      onTeachingPosition: async (position: TeachingPlaybackPosition) => {
+                        if (
+                          !mountedRef.current ||
+                          engineRef.current !== engine ||
+                          sceneEpochRef.current !== engineEpoch
+                        ) {
+                          throw new Error('Teaching position belongs to a superseded playback');
+                        }
+                        await saveTeachingPosition(position);
+                      },
+                    }
+                  : {}),
                 ...(!presentationOnly &&
                 shouldBindOralQuestionPort({
                   relistening: Boolean(relistenRef.current),
@@ -2596,7 +2654,29 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           replayStartRequestGenerationRef.current = null;
         } else {
           // Load saved playback state and restore position (but never auto-play).
-          if (savedResumeActionIndex > 0 && engine.canJumpToAction(savedResumeActionIndex)) {
+          const teachingPosition =
+            durablePosition ??
+            (!presentationOnly && liveCourseSessionRef.current
+              ? { sceneId: currentScene.id, actionId: null, actionIndex: 0, speechChunkIndex: 0 }
+              : null);
+          if (teachingPosition) {
+            restoringPositionRef.current = true;
+            setRestoringPosition(true);
+            try {
+              await engine.restoreTeachingPosition(teachingPosition, {
+                paused:
+                  manualChapterTargetRef.current !== currentScene.id &&
+                  liveCourseSessionRef.current?.classroomState === 'paused',
+              });
+              if (cancelled || engineRef.current !== engine) return;
+              updateCurrentPlaybackActionIndex(teachingPosition.actionIndex);
+            } finally {
+              if (engineRef.current === engine) {
+                restoringPositionRef.current = false;
+                setRestoringPosition(false);
+              }
+            }
+          } else if (savedResumeActionIndex > 0 && engine.canJumpToAction(savedResumeActionIndex)) {
             void engine
               .jumpToAction(savedResumeActionIndex, { autoplay: false })
               .then((restored) => {
@@ -3395,15 +3475,85 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
       });
     }, [handleRetryCurrentNode]);
 
+    const navigateTeachingChapter = useCallback(
+      async (targetSceneId: string): Promise<boolean> => {
+        const session = liveCourseSessionRef.current;
+        const engine = engineRef.current;
+        const target = session?.lessonPlan?.nodes.find((node) => node.sceneId === targetSceneId);
+        if (
+          !session ||
+          session.status !== 'ready' ||
+          !target ||
+          !engine ||
+          !['teaching', 'checking', 'paused'].includes(session.classroomState) ||
+          relistenRef.current ||
+          startingTeachingRef.current ||
+          restoringPositionRef.current ||
+          navigatingChapterRef.current ||
+          checkpointFeedbackBusy ||
+          teachingControlPromiseRef.current ||
+          teachingRetryPromiseRef.current ||
+          advancePromiseRef.current
+        ) {
+          throw new Error(t('livecourse.chapterNavigationUnavailable'));
+        }
+        navigatingChapterRef.current = true;
+        setNavigatingChapter(true);
+        clearAutoAdvanceTimer();
+        autoStartRef.current = false;
+        try {
+          if (engine.getMode() === 'playing') {
+            await runTeachingControl('pause', engine, session);
+          }
+          await saveTeachingPosition();
+          resetPlaybackAttempt();
+          manualChapterTargetRef.current = target.sceneId;
+          await session.emitAction({
+            type: 'lesson.goto_node',
+            nodeId: target.id,
+            idempotencyKey: `chapter-navigation:${createBrowserUuid()}`,
+            payload: { targetNodeId: target.id },
+          });
+          if (!session.savePlaybackPosition) throw new Error('Playback persistence is unavailable');
+          await session.savePlaybackPosition({
+            sceneId: target.sceneId,
+            actionId: null,
+            actionIndex: 0,
+            speechChunkIndex: 0,
+          });
+          setClassroomControlError(null);
+          setPlaybackError(null);
+          return true;
+        } catch (cause) {
+          setClassroomControlError(
+            cause instanceof Error ? cause.message : t('livecourse.chapterNavigationFailed'),
+          );
+          throw cause;
+        } finally {
+          navigatingChapterRef.current = false;
+          setNavigatingChapter(false);
+        }
+      },
+      [
+        checkpointFeedbackBusy,
+        clearAutoAdvanceTimer,
+        resetPlaybackAttempt,
+        runTeachingControl,
+        saveTeachingPosition,
+        t,
+      ],
+    );
+    chapterNavigationRef.current = navigateTeachingChapter;
+
     // play/pause toggle
     const handlePlayPause = useCallback(async () => {
       const engine = engineRef.current;
-      if (!engine) return;
+      if (!engine || navigatingChapterRef.current || restoringPositionRef.current) return;
 
       const teachingSession = liveCourseSessionRef.current;
       if (teachingSession?.status === 'ready' && !presentationOnly) {
         if (startingTeachingRef.current) return;
-        if (engine.getMode() === 'idle') {
+        if (engine.getMode() === 'idle' || engine.getMode() === 'paused') {
           startingTeachingRef.current = true;
           setStartingTeaching(true);
           try {
@@ -3411,7 +3561,8 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             if (engineRef.current !== engine) return;
             if (
               teachingSession.currentNodeId &&
-              teachingSession.completedNodeIds.includes(teachingSession.currentNodeId)
+              teachingSession.completedNodeIds.includes(teachingSession.currentNodeId) &&
+              playbackCompleted
             ) {
               await advanceTeachingNode(teachingSession.currentNodeId);
               return;
@@ -3837,6 +3988,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
               isPresenting={false}
               onPlaybackInterrupt={handleRealtimePlaybackInterrupt}
               onPlaybackResume={handleRealtimePlaybackResume}
+              getPlaybackSpeechContext={getPlaybackSpeechContext}
               onTeacherChange={handleTeacherChange}
             />
           ) : null}
@@ -3850,6 +4002,14 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
               playbackIdle={engineMode === 'idle'}
               starting={startingTeaching}
               feedbackBusy={checkpointFeedbackBusy}
+              navigatingChapter={navigatingChapter || restoringPosition}
+              onChapterChange={async (nodeId) => {
+                const node = liveCourseSessionRef.current?.lessonPlan?.nodes.find(
+                  (item) => item.id === nodeId,
+                );
+                if (!node) throw new Error(t('livecourse.chapterNavigationUnavailable'));
+                await switchScene(node.sceneId);
+              }}
               onPrepareLeave={async () => {
                 clearAutoAdvanceTimer();
                 const session = liveCourseSessionRef.current;
@@ -3862,6 +4022,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   saveSceneResumePosition(currentScene?.id, currentPlaybackActionIndexRef.current);
                   await runTeachingControl('pause', engine, session);
                 }
+                await saveTeachingPosition();
               }}
               onStartRelisten={startInClassRelisten}
               onEndRelisten={endInClassRelisten}
