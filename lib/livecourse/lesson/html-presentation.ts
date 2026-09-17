@@ -470,7 +470,11 @@ export function repairHtmlTeachingActions(
   for (const action of actions) {
     if (action.type === 'speech') {
       if (!hasFocus) {
-        repaired.push({ type: 'widget_highlight', target: fallback });
+        repaired.push({
+          type: 'widget_highlight',
+          id: `html-focus-${repaired.length}`,
+          target: fallback,
+        });
         hasFocus = true;
       }
       repaired.push(action);
