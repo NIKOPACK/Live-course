@@ -348,11 +348,6 @@ describe('model-authored classroom pages', () => {
     [
       { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
       { type: 'text', content: 'First beat.' },
-      { type: 'text', content: 'Second beat has no cue.' },
-    ],
-    [
-      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
-      { type: 'text', content: 'First beat.' },
       { type: 'action', name: 'widget_reveal', params: { target: '#slope' } },
     ],
     [
@@ -372,6 +367,63 @@ describe('model-authored classroom pages', () => {
       ).rejects.toMatchObject({ name: 'ClassroomHtmlActionsError', isRetryable: true });
     },
   );
+
+  it('keeps a highlight until the next focus so consecutive narration beats stay valid', async () => {
+    const actions = await generateSceneActions(
+      outline,
+      { html, htmlPresentation: true },
+      vi.fn().mockResolvedValue(
+        JSON.stringify([
+          { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+          { type: 'text', content: 'First beat.' },
+          { type: 'text', content: 'The highlight remains on the same region.' },
+        ]),
+      ),
+    );
+    expect(actions.map((action) => action.type)).toEqual(['widget_highlight', 'speech', 'speech']);
+  });
+
+  it('maps class and descendant selectors onto the real teaching id', async () => {
+    const page =
+      '<!DOCTYPE html><html><body><div id="scene-draw" class="wave-frame formula-stage"><span class="label-legend">A</span></div></body></html>';
+    const actions = await generateSceneActions(
+      outline,
+      { html: page, htmlPresentation: true },
+      vi.fn().mockResolvedValue(
+        JSON.stringify([
+          {
+            type: 'action',
+            name: 'widget_highlight',
+            params: { target: '#scene-draw .wave-frame' },
+          },
+          { type: 'text', content: 'Read the waveform.' },
+          { type: 'action', name: 'widget_highlight', params: { target: '.formula-stage' } },
+          { type: 'text', content: 'Then the formula.' },
+        ]),
+      ),
+    );
+    expect(actions.map((action) => ('target' in action ? action.target : action.type))).toEqual([
+      '#scene-draw',
+      'speech',
+      '#scene-draw',
+      'speech',
+    ]);
+  });
+
+  it('drops a visual action with no target instead of failing the page', async () => {
+    const actions = await generateSceneActions(
+      outline,
+      { html, htmlPresentation: true },
+      vi.fn().mockResolvedValue(
+        JSON.stringify([
+          { type: 'action', name: 'widget_highlight', params: {} },
+          { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+          { type: 'text', content: 'Teach the slope.' },
+        ]),
+      ),
+    );
+    expect(actions.map((action) => action.type)).toEqual(['widget_highlight', 'speech']);
+  });
 
   it('does not validate targets found only in scripts or comments', async () => {
     const page = html.replace(

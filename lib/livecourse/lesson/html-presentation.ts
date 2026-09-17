@@ -351,35 +351,111 @@ export class ClassroomHtmlActionsError extends Error {
   override readonly name = 'ClassroomHtmlActionsError';
 }
 
-export function validateHtmlTeachingActions(actions: Action[], elementInventory: string): void {
-  const targets = new Set(
-    [...elementInventory.matchAll(/^(#[A-Za-z][A-Za-z0-9_-]*) </gm)].map((match) => match[1]),
+const HTML_ID_RE = /#[A-Za-z][A-Za-z0-9_-]*/;
+const HTML_CLASS_RE = /\.([A-Za-z][A-Za-z0-9_-]*)/;
+
+function htmlTeachingIds(inventory: string): Set<string> {
+  return new Set([...inventory.matchAll(/^(#[A-Za-z][A-Za-z0-9_-]*) /gm)].map((match) => match[1]));
+}
+
+/** Prompt the action model with real #ids only — class lines invite illegal selectors. */
+export function htmlTeachingIdInventory(inventory: string): string {
+  const section = inventory.split(/\n\n+/).find((part) => part.startsWith('Elements with id:'));
+  return section ?? '';
+}
+
+function htmlClassToUniqueId(inventory: string): Map<string, string> {
+  const unique = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const line of inventory.split('\n')) {
+    const id = line.match(/^(#[A-Za-z][A-Za-z0-9_-]*) /)?.[1];
+    const classAttr = line.match(/\bclass="([^"]*)"/)?.[1];
+    if (!id || !classAttr) continue;
+    for (const className of classAttr.split(/\s+/).filter(Boolean)) {
+      if (ambiguous.has(className)) continue;
+      const existing = unique.get(className);
+      if (existing && existing !== id) {
+        unique.delete(className);
+        ambiguous.add(className);
+      } else unique.set(className, id);
+    }
+  }
+  return unique;
+}
+
+export function canonicalizeHtmlTeachingTarget(
+  raw: unknown,
+  inventory: string,
+): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const ids = htmlTeachingIds(inventory);
+  const idHit = raw.match(HTML_ID_RE)?.[0];
+  if (idHit && ids.has(idHit)) return idHit;
+  const className = raw.match(HTML_CLASS_RE)?.[1];
+  if (className) return htmlClassToUniqueId(inventory).get(className);
+  const bare = raw.trim();
+  if (ids.has(`#${bare}`)) return `#${bare}`;
+  return undefined;
+}
+
+function isHtmlVisualAction(
+  action: Action,
+): action is Extract<Action, { type: 'widget_highlight' | 'widget_annotation' | 'widget_reveal' }> {
+  return (
+    action.type === 'widget_highlight' ||
+    action.type === 'widget_annotation' ||
+    action.type === 'widget_reveal'
   );
+}
+
+/** Map class/descendant selectors onto real #ids; drop visual actions with no target. */
+export function normalizeHtmlTeachingActions(
+  actions: Action[],
+  elementInventory: string,
+): Action[] {
+  const next: Action[] = [];
+  for (const action of actions) {
+    if (!isHtmlVisualAction(action)) {
+      next.push(action);
+      continue;
+    }
+    const target = canonicalizeHtmlTeachingTarget(action.target, elementInventory);
+    if (!target) {
+      if (typeof action.target === 'string' && action.target.trim()) {
+        throw new ClassroomHtmlActionsError(`Unknown HTML teaching target: ${action.target}`);
+      }
+      continue;
+    }
+    next.push({ ...action, target });
+  }
+  return next;
+}
+
+export function validateHtmlTeachingActions(actions: Action[], elementInventory: string): void {
+  const targets = htmlTeachingIds(elementInventory);
   if (!actions.some((action) => action.type === 'speech')) {
     throw new ClassroomHtmlActionsError('No teacher narration generated for HTML page');
   }
-  let focused = false;
+  let hasFocus = false;
+  let pendingFocus = false;
   for (const action of actions) {
     if (action.type === 'speech') {
-      if (!focused) {
+      if (!hasFocus) {
         throw new ClassroomHtmlActionsError('HTML narration requires a preceding highlight');
       }
-      focused = false;
-    } else if (
-      action.type === 'widget_highlight' ||
-      action.type === 'widget_annotation' ||
-      action.type === 'widget_reveal'
-    ) {
+      pendingFocus = false;
+    } else if (isHtmlVisualAction(action)) {
       if (!targets.has(action.target)) {
         throw new ClassroomHtmlActionsError(`Unknown HTML teaching target: ${action.target}`);
       }
       if (action.type === 'widget_highlight') {
-        if (focused) {
+        if (pendingFocus) {
           throw new ClassroomHtmlActionsError(
             'Each HTML teaching focus requires its own narration',
           );
         }
-        focused = true;
+        pendingFocus = true;
+        hasFocus = true;
       }
     }
   }

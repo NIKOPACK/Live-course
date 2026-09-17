@@ -63,6 +63,8 @@ import { formatLessonNodeDesignForPrompt } from '@/lib/livecourse/lesson/designe
 import {
   generateHtmlClassroomPage,
   generateHtmlClassroomActionOutput,
+  htmlTeachingIdInventory,
+  normalizeHtmlTeachingActions,
   validateHtmlTeachingActions,
   ClassroomHtmlActionsError,
 } from '@/lib/livecourse/lesson/html-presentation';
@@ -1551,16 +1553,23 @@ export async function generateSceneActions(
       );
     }
     const elementInventory = extractInteractiveElements(content.html);
+    const teachingInventory = htmlTeachingIdInventory(elementInventory);
+    if (!teachingInventory) {
+      throw new ClassroomHtmlActionsError('HTML page has no teaching region ids');
+    }
     const response = await generateHtmlClassroomActionOutput(outline, content.html, aiCall, {
       ...options,
-      elementInventory,
+      elementInventory: teachingInventory,
       oralQuestion,
     });
-    const actions = parseActionsFromStructuredOutput(response, 'interactive', [
-      'widget_highlight',
-      'widget_annotation',
-      'widget_reveal',
-    ]);
+    const actions = normalizeHtmlTeachingActions(
+      parseActionsFromStructuredOutput(response, 'interactive', [
+        'widget_highlight',
+        'widget_annotation',
+        'widget_reveal',
+      ]),
+      elementInventory,
+    );
     validateHtmlTeachingActions(actions, elementInventory);
     if (oralQuestion) {
       const speeches = actions.filter((action) => action.type === 'speech');
