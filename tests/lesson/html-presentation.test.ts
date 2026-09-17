@@ -66,6 +66,7 @@ describe('main-agent HTML visual direction', () => {
     const plan = await designHtmlLessonPlan(input, runtime, aiCall);
     expect(aiCall).toHaveBeenCalledTimes(2);
     expect(aiCall.mock.calls[0][0]).toContain('main agent');
+    expect(aiCall.mock.calls[0][0]).toContain('coverPrompt');
     expect(aiCall.mock.calls[1][1]).toContain(presentation.visualStyle);
     expect(plan.presentation).toEqual(presentation);
     expect(plan.nodes[0].design).toEqual(plannedDesign);
@@ -92,6 +93,34 @@ describe('main-agent HTML visual direction', () => {
     const aiCall = vi.fn().mockResolvedValue('{}');
     await expect(designHtmlLessonPlan(input, runtime, aiCall)).rejects.toThrow();
     expect(aiCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists a cover prompt from the visual-direction JSON', async () => {
+    const aiCall = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          visualStyle: presentation.visualStyle,
+          coverPrompt: 'A 16:9 teal waveform over warm paper.',
+        }),
+      )
+      .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
+    expect(plan.presentation).toEqual({
+      ...presentation,
+      coverPrompt: 'A 16:9 teal waveform over warm paper.',
+    });
+  });
+
+  it('keeps visual direction when coverPrompt is missing or not a string', async () => {
+    const aiCall = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({ visualStyle: presentation.visualStyle, coverPrompt: 3 }),
+      )
+      .mockResolvedValueOnce('not a lesson plan');
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
+    expect(plan.presentation).toEqual(presentation);
   });
 });
 

@@ -36,6 +36,11 @@ import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { isGeneratedMediaPlaceholder } from '@/lib/media/media-ref';
 import { VOXCPM_AUTO_VOICE_ID, VOXCPM_TTS_PROVIDER_ID } from '@/lib/audio/voxcpm';
 import { replaceHtmlMediaReferences } from '@/lib/livecourse/html/media';
+import {
+  COURSE_COVER_ASPECT_RATIO,
+  COURSE_COVER_ELEMENT_ID,
+  shouldGenerateCourseCover,
+} from '@/lib/livecourse/lesson/course-cover';
 
 const log = createLogger('ClassroomMedia');
 
@@ -168,6 +173,66 @@ export async function generateMediaForClassroom(
   await Promise.all([generateImages(), generateVideos()]);
 
   return mediaMap;
+}
+
+export async function generateClassroomCover(options: {
+  classroomId: string;
+  baseUrl: string;
+  prompt: string;
+  existingCoverAssetId?: string;
+}): Promise<string | undefined> {
+  if (
+    !shouldGenerateCourseCover({
+      imageGenerationEnabled: true,
+      coverAssetId: options.existingCoverAssetId,
+    })
+  ) {
+    return options.existingCoverAssetId;
+  }
+
+  const imageProviderIds = Object.keys(getServerImageProviders());
+  if (imageProviderIds.length === 0) return undefined;
+
+  const providerId = imageProviderIds[0] as ImageProviderId;
+  const apiKey = resolveImageApiKey(providerId);
+  const providerConfig = IMAGE_PROVIDERS[providerId];
+  if (providerConfig?.requiresApiKey && !apiKey) {
+    log.warn(`No API key for image provider "${providerId}", skipping course cover`);
+    return undefined;
+  }
+
+  const mediaDir = path.join(CLASSROOMS_DIR, options.classroomId, 'media');
+  await ensureDir(mediaDir);
+
+  const result = await generateImage(
+    {
+      providerId,
+      apiKey,
+      baseUrl: resolveImageBaseUrl(providerId),
+      model: providerConfig?.models?.[0]?.id,
+    },
+    { prompt: options.prompt, aspectRatio: COURSE_COVER_ASPECT_RATIO },
+  );
+
+  let buf: Buffer;
+  let ext: string;
+  if (result.base64) {
+    buf = Buffer.from(result.base64, 'base64');
+    ext = 'png';
+  } else if (result.url) {
+    buf = await downloadToBuffer(result.url);
+    const urlExt = path.extname(new URL(result.url).pathname).replace('.', '');
+    ext = ['png', 'jpg', 'jpeg', 'webp'].includes(urlExt) ? urlExt : 'png';
+  } else {
+    log.warn('Course cover generation returned no image data');
+    return undefined;
+  }
+
+  const filename = `${COURSE_COVER_ELEMENT_ID}.${ext}`;
+  await fs.writeFile(path.join(mediaDir, filename), buf);
+  const url = mediaServingUrl(options.baseUrl, options.classroomId, `media/${filename}`);
+  log.info(`Generated course cover: ${filename}`);
+  return url;
 }
 
 // ---------------------------------------------------------------------------

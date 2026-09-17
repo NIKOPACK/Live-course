@@ -380,6 +380,7 @@ export class BrowserDocumentStore<
           description: stage.description,
           interactiveMode: stage.interactiveMode,
           taskEngineMode: stage.taskEngineMode,
+          ...(stage.coverAssetId ? { coverAssetId: stage.coverAssetId } : {}),
           createdAt: stage.createdAt,
           updatedAt: stage.updatedAt,
           sceneCount,

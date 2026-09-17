@@ -111,6 +111,8 @@ export interface DocumentSummary {
   description?: string;
   interactiveMode?: boolean;
   taskEngineMode?: boolean;
+  /** Homepage cover media ref from the stage row; absent when the course has none. */
+  coverAssetId?: string;
   createdAt: number;
   updatedAt: number;
   sceneCount: number;

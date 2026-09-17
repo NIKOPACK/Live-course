@@ -18,6 +18,9 @@ vi.mock('@/lib/media/media-orchestrator', () => ({
   generateMediaForOutlines: async () => undefined,
   reconcileCompletedMediaForScene: (scene: Scene, stage: unknown) => ({ scene, stage }),
 }));
+vi.mock('@/lib/livecourse/lesson/course-cover-runtime', () => ({
+  generateAndPersistCourseCover: async () => undefined,
+}));
 vi.mock('@/lib/utils/stage-storage', () => ({
   saveStageData: async () => undefined,
   saveStageDataIncremental: async () => undefined,

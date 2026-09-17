@@ -75,6 +75,7 @@
 - 改角色：首次「开始上课」是课前草稿的唯一提交命令，提交中锁定防重复；提交后直接进入 `generation-preview`，课前确认在预览页内进行（见 §7 改角色 A3）。问题用逐题选项卡和「继续」；范围用推荐默认复选树和「按所选范围备课 / 使用推荐范围」
 - 改角色：问题失败必须保留已答并提供重试或跳过。范围失败区分两类：首次知识树加载失败且没有推荐范围时，只能重试或明确「跳过范围确认，按需求与合理默认备课」；知识树已成功加载后的确认 / 提交失败，必须保留已选项和缓存推荐项，可重试或使用缓存推荐范围。全程只有一个「开始上课」，预览页内不再发第二次 start 命令
 - 待撤产品面：首页「联网」开关。检索保留在设置，默认关；设置使用遮罩字段与显式保存，只写配置存储，不接 W / C / L
+- 改角色（A5.2）：首页最近课堂卡片左侧优先渲染 `coverAssetId` 对应封面（16:9 裁进 88px 槽）；没有封面时保留书本占位。不把第一页 HTML 截图当封面
 
 完成：首页主路径上看不到三种模式；提交只产生一堂可上的课；上传、追问与范围失败均可原地恢复，且全程只有一个「开始上课」。
 
@@ -170,6 +171,7 @@
 - 才新写（A3）：`lib/livecourse/outline/` — 三个 Agent 组成大纲工作流：**课前追问 / 澄清**（只对会改变本课设计、且本次输入与适用记忆不能可靠回答的范围、本主题程度、目标、教学方法、深度、节奏或互动方式产出少量带选项问题）、**知识分解**（仅在范围不明确时列出主题知识点树供学习者勾选）、**审校**（大纲组装后检查范围覆盖与顺序，不合格修复一次）。问题均可跳过；编排沿用 `@langchain/langgraph`，不另选框架
 - 才新写（A4）：`lib/livecourse/outline/subagent.ts` — worker Agent 的 subagent 运行器，沿用 `@earendil-works/pi-agent-core`（课堂 director 在用的 pi 运行时），worker 可派生并行 subagent。**知识分解**改两段：先粗分枝干，再每个枝干派一个 subagent 并行细分解后合并（单次调用列不全「高数」这类大主题）；**教案设计**按节点派并行 subagent，每节点一份详细设计。约束：subagent 同为台后 worker，不在界面出现；并发有上限；任一 subagent 失败降级回单调用路径
 - 才新写（A5）：`lib/livecourse/lesson/visual-aids.ts` —— 逐段内容生成前把教案各节点 `design.visualAids` 合并进对应 outline 的 `mediaGenerations`（幂等，不覆盖既有 elementId）。执行仍走 media-orchestrator / `/api/generate/image` 与 `lib/media` 适配器矩阵，不新增 provider 路径；subagent 保持无工具——配图是声明式意图，不是工具调用
+- 才新写（A5.2）：`lib/livecourse/lesson/course-cover.ts` —— 课程封面是文档级配图，不是教案节点 visualAids，也不进入 outline.mediaGenerations。主 Agent 在视觉方向 JSON 里同时给出可选 `coverPrompt`；缺省时用 `courseTitle + visualStyle` 拼确定性 fallback。执行仍走 `/api/generate/image` 与 `lib/media` 适配器矩阵（浏览器 `course-cover-runtime.ts`，服务端 `classroom-media-generation.ts`），不新增 provider；未配置或关闭图片生成、已有 `coverAssetId`、或生成失败时跳过，不阻塞大纲 / 教案 / 逐段内容。成功后把 `coverAssetId` 写在 `Stage` 上，`listDocuments` 的 `DocumentSummary` 带上该字段供首页卡片读取；asset 回收必须把封面算进引用。封面不写 W / C / L，学习者不能改封面
 - 改角色（A3）：`app/generation-preview/page.tsx` 在开始生成大纲之前按需内嵌课前问题卡片与范围勾选（首页只负责提交草稿）；`app/api/generate/scene-outlines-stream` 接受课前答案与勾选范围作为大纲生成输入。知识树首次加载失败时尚无推荐缓存，只能重试或明确按需求与合理默认跳过范围确认；成功加载后必须缓存已选与推荐项，使确认 / 提交失败可重试或使用缓存推荐范围。主题具体只允许省略范围分解，不代表程度 / 方法信息不足时必然无追问
 - 改角色（A6）：上述输入再接收经过 §6 policy 过滤的 `LearnerMemory`；同课重开可接收同课程摘要，不同课不得接收其他课程摘要
 - 禁止：课前追问不出现在课堂内；不新增首页产品开关；不平行再写一套大纲模型（A1 的 LessonPlan 仍在大纲与内容之间）；不做必填长问卷或重复询问已可靠知道的信息
@@ -183,7 +185,7 @@
 
 ### A5.1 模型原生 HTML 课堂
 
-- 才新写：`lib/livecourse/lesson/html-presentation.ts` 负责主 Agent 的课程级视觉方向与自由 HTML 页面 prompt。教案 schema 增加可选 `presentation: { mode: 'html', visualStyle: string }`；视觉方向以自由文本描述配色、字体、构图、图形语言和动效，不引入另一套模板枚举。先定风格，再让节点 worker 读同一方向。风格失败显式报错；节点设计失败仍可使用真实大纲骨架。
+- 才新写：`lib/livecourse/lesson/html-presentation.ts` 负责主 Agent 的课程级视觉方向与自由 HTML 页面 prompt。教案 schema 增加可选 `presentation: { mode: 'html', visualStyle: string, coverPrompt?: string }`；视觉方向以自由文本描述配色、字体、构图、图形语言和动效，不引入另一套模板枚举。先定风格，再让节点 worker 读同一方向。风格失败显式报错；节点设计失败仍可使用真实大纲骨架。`coverPrompt` 缺失或无效不得让视觉方向失败，生成封面时再 fallback。
 - 改角色：`app/api/generate/lesson-plan/`、`app/generation-preview/`、`lib/hooks/use-scene-generator.ts`、`app/api/generate/scene-content/`、`lib/server/classroom-generation.ts` 只生成 HTML 课；视觉方向失败则整课失败，禁止无 presentation 继续。打开课堂时 `assertHtmlClassroom`：无 `presentation.mode = html`、或含 slide / widget / PBL 场景的文档显式失败，不回退播放。
 - 改角色：`lib/generation/scene-generator.ts`、`scene-builder.ts` 沿用内容与动作两阶段。非检查页用 interactive HTML 存储/动作通道，不要求 widget 分类；检查仍为 quiz，必须带 HTML 字段，结构化题目保留为判分事实。两种场景构造路径必须保存 HTML，不把检查变成无需作答的普通互动。`generateSceneContent` 没有 HTML presentation 时失败。
 - 改角色：`packages/@livecourse/dsl/src/stage.ts`、`lib/types/generation.ts` 增加可选 quiz HTML；存储和媒体处理沿用现有文档/资源通道。不做旧格式迁移。

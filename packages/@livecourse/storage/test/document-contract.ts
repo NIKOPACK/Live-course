@@ -113,6 +113,16 @@ export function runDocumentStoreContract(
       expect(one).toMatchObject({ name: 'Intro Course', createdAt: 1000, sceneCount: 2 });
     });
 
+    test('listDocuments includes coverAssetId from the stage row when present', async () => {
+      const store = makeStore();
+      const doc = makeDocument();
+      doc.stage.coverAssetId = 'asset-cover-1';
+      await store.saveDocument(doc);
+      await expect(store.listDocuments()).resolves.toEqual([
+        expect.objectContaining({ id: 'stage-1', coverAssetId: 'asset-cover-1', sceneCount: 2 }),
+      ]);
+    });
+
     test('deleteDocument removes the stage, its scenes, and its outline', async () => {
       const store = makeStore();
       await store.saveDocument(makeDocument());

@@ -146,6 +146,26 @@ worker Agent 支持派生并行 subagent（`04` §7）：
 
 验收：浏览器与服务端生成都使用同一课程方向；每页 HTML 真实显示在课堂、只读预览与缩略图；失败段重试不改变风格或成功段；无效 HTML 显式失败；检查显式提交、失败恢复及 replay 无证据写入保持不变；无 `presentation.mode = html` 的课打开失败，不回退到幻灯片 / widget / PBL。
 
+## A5.2 课程封面
+
+依据：`01` J2.0c / J4.4、`02` 首页最近课堂、`04` §3 / §7。
+
+加：
+
+- 主 Agent 视觉方向 JSON 增加可选 `coverPrompt`；`lib/livecourse/lesson/course-cover.ts` 解析、fallback 与跳过规则
+- 教案视觉方向落盘后，与逐页内容并行调用现有图片通道生成 16:9 封面；`Stage.coverAssetId` 与 `DocumentSummary.coverAssetId` 供首页卡片读取
+- 两条生成链路（预览 `generation-preview` / `use-scene-generator`，一键 `classroom-generation.ts`）共用同一声明与降级
+
+约束：封面不是教案节点配图，不进 `mediaGenerations`；subagent 无工具；不新增图片 provider；失败或未配置不中断备课；学习者不能改封面。
+
+验收：
+
+- 新课首页最近课堂左侧显示 AI 封面，构图 16:9，风格与该课 `visualStyle` 同源
+- 备课中或封面失败时卡片仍可点，走现有 J2.1 / J4.4
+- 未配置图片 provider 或关闭图片生成时整课生成不中断
+- 封面不进检查、不产 `EvidenceRecord`、不写 W / C / L
+- 预览链与服务端一键链行为一致
+
 ## J3.2a 口头问答增量
 
 依据：`01` J3.2a、`02`「讲授中的口头问答」、`04`「J3.2a 口头问答实现缝」。

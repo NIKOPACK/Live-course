@@ -52,6 +52,25 @@ describe('model HTML media references', () => {
       expect(refs.referenceCounts.get('asset-1')).toBe(1);
     },
   );
+
+  it('treats a stage cover as an owned document image reference', () => {
+    const refs = collectStageAssetRefs(
+      {
+        stage: {
+          id: 'stage',
+          name: 'Test',
+          createdAt: 1,
+          updatedAt: 1,
+          coverAssetId: 'cover-asset',
+        },
+        scenes: [],
+      },
+      { mediaRows: [], audioRows: [] },
+    );
+    expect(refs.referenced.has('cover-asset')).toBe(true);
+    expect(refs.imageSrc.has('cover-asset')).toBe(true);
+    expect(refs.referenceCounts.get('cover-asset')).toBe(1);
+  });
 });
 
 describe('iframeSafeMediaUrl', () => {

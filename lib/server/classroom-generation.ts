@@ -27,9 +27,11 @@ import type { WebSearchProviderId, ZhihuSearchDB } from '@/lib/web-search/types'
 import { persistClassroom } from '@/lib/server/classroom-storage';
 import {
   generateMediaForClassroom,
+  generateClassroomCover,
   replaceMediaPlaceholders,
   generateTTSForClassroom,
 } from '@/lib/server/classroom-media-generation';
+import { resolveCoverPrompt } from '@/lib/livecourse/lesson/course-cover';
 import { withGenerationRetry } from '@/lib/generation/generation-retry';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
@@ -745,8 +747,30 @@ export async function generateClassroom(
     });
 
     try {
-      const mediaMap = await generateMediaForClassroom(outlines, stageId, options.baseUrl);
+      const coverPrompt = resolveCoverPrompt(lessonPlan.presentation?.coverPrompt, {
+        courseTitle: stage.name,
+        visualStyle: lessonPlan.presentation?.visualStyle ?? '',
+        language: languageDirective,
+      });
+      const [mediaMap, coverUrl] = await Promise.all([
+        generateMediaForClassroom(outlines, stageId, options.baseUrl),
+        input.enableImageGeneration
+          ? generateClassroomCover({
+              classroomId: stageId,
+              baseUrl: options.baseUrl,
+              prompt: coverPrompt,
+              existingCoverAssetId: stage.coverAssetId,
+            }).catch((err) => {
+              log.warn('Course cover generation failed, continuing:', err);
+              return undefined;
+            })
+          : Promise.resolve(undefined),
+      ]);
       replaceMediaPlaceholders(scenes, mediaMap);
+      if (coverUrl) {
+        stage.coverAssetId = coverUrl;
+        stage.coverPrompt = coverPrompt;
+      }
       log.info(`Media generation complete: ${Object.keys(mediaMap).length} files`);
     } catch (err) {
       log.warn('Media generation phase failed, continuing:', err);

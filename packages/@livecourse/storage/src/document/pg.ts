@@ -116,6 +116,7 @@ interface SummaryRow extends Record<string, unknown> {
   description: string | null;
   interactive_mode: boolean | null;
   task_engine_mode: boolean | null;
+  cover_asset_id: string | null;
   created_at: number | string;
   updated_at: number | string;
   scene_count: number | string;
@@ -480,6 +481,7 @@ export class PgDocumentStore<
               stages.description,
               stages.interactive_mode,
               stages.task_engine_mode,
+              MAX(NULLIF(stages.data->>'coverAssetId', '')) AS cover_asset_id,
               stages.created_at,
               stages.updated_at,
               COUNT(scenes.id)::text AS scene_count
@@ -494,6 +496,7 @@ export class PgDocumentStore<
       ...(row.description === null ? {} : { description: row.description }),
       ...(row.interactive_mode === null ? {} : { interactiveMode: row.interactive_mode }),
       ...(row.task_engine_mode === null ? {} : { taskEngineMode: row.task_engine_mode }),
+      ...(row.cover_asset_id ? { coverAssetId: row.cover_asset_id } : {}),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
       sceneCount: Number(row.scene_count),

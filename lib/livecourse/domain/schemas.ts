@@ -119,6 +119,8 @@ export const lessonPresentationSchema = z
   .object({
     mode: z.literal('html'),
     visualStyle: z.string().trim().min(1).max(12000),
+    /** Homepage cover illustration prompt; optional so a bad cover cannot fail visual direction. */
+    coverPrompt: z.string().trim().min(1).max(1500).optional(),
   })
   .strict();
 

@@ -183,6 +183,12 @@ export function collectStageAssetRefs(
     for (const ref of Object.keys(document.stage.videoManifest ?? {})) {
       videoManifestKey.add(ref);
     }
+
+    const coverAssetId = document.stage.coverAssetId?.trim();
+    if (coverAssetId) {
+      addValue(imageSrc, coverAssetId);
+      own(coverAssetId, 'stage:cover');
+    }
   }
 
   const stageId = document?.stage.id;

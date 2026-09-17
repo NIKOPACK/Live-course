@@ -168,6 +168,13 @@ export interface Stage {
    * vocational.
    */
   taskEngineMode?: boolean;
+  /**
+   * Generated homepage cover. Asset-pool id on the browser path, or a concrete
+   * media URL on the server-generated classroom path.
+   */
+  coverAssetId?: string;
+  /** Prompt used to generate {@link Stage.coverAssetId}; kept for resume/retry. */
+  coverPrompt?: string;
 }
 
 /**

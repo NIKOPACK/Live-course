@@ -23,6 +23,7 @@ import type { QuizQuestion } from '@/lib/types/stage';
 import { MAX_VISION_IMAGES } from '@/lib/constants/generation';
 import { attachHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
 import type { Action } from '@/lib/types/action';
+import { declaredCoverPrompt } from './course-cover';
 
 const log = createLogger('HtmlPresentation');
 
@@ -36,7 +37,11 @@ Do not prescribe a fixed slide layout, element schema, widget category, or card 
 Prefer legibility, expressive diagrams and meaningful visual hierarchy over decorative chrome.
 Respect accessibility, narrow viewports and reduced motion. Pages can use HTML, CSS, inline SVG,
 Canvas, MathML and JavaScript. They run inside an isolated iframe, not the application DOM.
-Return ONLY JSON: {"visualStyle":"your complete, actionable art direction in the course language"}.`;
+Also return coverPrompt: one image-generation prompt for a 16:9 homepage course-cover illustration.
+The cover must match visualStyle, depict this course's subject, and use the course language for any visible text.
+It is a card thumbnail — not a slide, screenshot, UI chrome, recap strip, or a depiction of HTML / PPT / chalkboard / video as the medium.
+Do not put unreadable micro-text or host classroom chrome on the cover.
+Return ONLY JSON: {"visualStyle":"your complete, actionable art direction in the course language","coverPrompt":"the cover illustration prompt in the course language"}.`;
 
 /** The main agent commits the visual direction before any node workers run. */
 export async function designHtmlLessonPlan(
@@ -55,10 +60,12 @@ export async function designHtmlLessonPlan(
       outlines: input.outlines,
     }),
   );
-  const direction = parseJsonResponse<{ visualStyle?: unknown }>(raw);
+  const direction = parseJsonResponse<{ visualStyle?: unknown; coverPrompt?: unknown }>(raw);
+  const coverPrompt = declaredCoverPrompt(direction?.coverPrompt);
   const presentation = lessonPresentationSchema.parse({
     mode: 'html',
     visualStyle: direction?.visualStyle,
+    ...(coverPrompt ? { coverPrompt } : {}),
   });
   const plan =
     (await designLessonPlanWithSubagents(

@@ -105,6 +105,7 @@ export interface StageListItem {
   updatedAt: number;
   interactiveMode?: boolean;
   taskEngineMode?: boolean;
+  coverAssetId?: string;
 }
 
 function stampStage(stageId: string, stage: Stage, now: number): Stage {
@@ -849,6 +850,26 @@ export function revokeThumbnailSlideMediaUrls(slides: Record<string, ThumbnailSl
       if (slot.kind !== 'video-media-ref') revokeObjectUrl(slot.read());
     }
   }
+}
+
+export function revokeCourseCoverUrls(urls: Record<string, string>) {
+  for (const url of Object.values(urls)) revokeObjectUrl(url);
+}
+
+/** Resolve homepage cover refs without loading scene content. */
+export async function resolveCourseCoverUrls(
+  items: ReadonlyArray<Pick<StageListItem, 'id' | 'coverAssetId'>>,
+): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  await Promise.all(
+    items.map(async (item) => {
+      const ref = item.coverAssetId?.trim();
+      if (!ref) return;
+      const url = await resolveThumbnailMediaValue(ref, undefined, undefined, 'image/png');
+      if (url) result[item.id] = url;
+    }),
+  );
+  return result;
 }
 
 /**

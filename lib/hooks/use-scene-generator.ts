@@ -26,6 +26,7 @@ import {
   generateMediaForOutlines,
   reconcileCompletedMediaForScene,
 } from '@/lib/media/media-orchestrator';
+import { generateAndPersistCourseCover } from '@/lib/livecourse/lesson/course-cover-runtime';
 import { putAsset, removeAsset, replaceAsset } from '@/lib/media/asset-pool';
 import { lazyBoundedMap } from '@/lib/utils/concurrency';
 import { createLogger } from '@/lib/logger';
@@ -591,11 +592,17 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
       store.getState().setGeneratingOutlines(pending);
 
       // Launch media generation in parallel — does not block content/action generation
-      if (pending.length > 0 && !retryOutlineId) {
+      if (!retryOutlineId) {
         mediaAbortRef.current?.abort();
         mediaAbortRef.current = new AbortController();
-        generateMediaForOutlines(outlines, stage.id, mediaAbortRef.current.signal).catch((err) => {
-          log.warn('Media generation error:', err);
+        const mediaSignal = mediaAbortRef.current.signal;
+        if (pending.length > 0) {
+          generateMediaForOutlines(outlines, stage.id, mediaSignal).catch((err) => {
+            log.warn('Media generation error:', err);
+          });
+        }
+        generateAndPersistCourseCover({ stageId: stage.id, signal: mediaSignal }).catch((err) => {
+          log.warn('Course cover generation error:', err);
         });
       }
 
