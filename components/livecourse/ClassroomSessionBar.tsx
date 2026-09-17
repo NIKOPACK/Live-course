@@ -16,8 +16,8 @@ import { InClassRelistenControl } from './InClassRelistenControl';
 const log = createLogger('ClassroomSessionBar');
 
 /**
- * Classroom action bar (docs/spec/02 classroom): pause / continue, relisten
- * taught parts, retry the current node, and leave. Not a playback transport.
+ * Classroom chrome (docs/spec/02 classroom): page status plus pause / continue,
+ * relisten, retry the current node, and leave. Sits in the top header slot.
  */
 export function ClassroomSessionBar({
   onPlayPause,
@@ -96,17 +96,18 @@ export function ClassroomSessionBar({
   return (
     <div
       data-testid="classroom-session-bar"
-      className="lc-control-strip flex shrink-0 items-center gap-3 px-4 py-2 max-md:flex-wrap"
+      className="lc-classroom-session-header lc-control-strip flex shrink-0 items-center gap-3 px-4 py-2 max-md:flex-wrap"
     >
       <div className="min-w-0 flex-1">
-        <p className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="lc-classroom-kicker">LiveCourse</span>
           {pageLabel ? (
             <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--lc-classroom-ink-dim)]">
               {pageLabel}
             </span>
           ) : null}
-          <span className="truncate text-sm font-medium">{nodeTitle}</span>
-        </p>
+          <h1 className="truncate text-sm font-medium">{nodeTitle}</h1>
+        </div>
         <p
           role={controlError || playbackError ? 'alert' : 'status'}
           className={cn(

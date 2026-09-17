@@ -29,6 +29,7 @@ import {
 import { ClassroomSessionBoundary } from '@/components/livecourse/ClassroomSessionBoundary';
 import { COURSE_ID, LESSON_ONE, makeCourseSnapshotInput } from './course-state-fixture';
 import { makeEvidenceRecord } from './evidence-fixture';
+import type { TeacherContextMode } from '@/lib/livecourse/memory/context';
 
 const mocks = vi.hoisted(() => ({
   store: null as RuntimeStore | null,
@@ -78,11 +79,12 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-async function renderProvider(sessionEnabled = true) {
+async function renderProvider(sessionEnabled = true, memoryMode?: TeacherContextMode) {
   const props = {
     courseId: COURSE_ID,
     lessonId: LESSON_ONE,
     sessionEnabled,
+    ...(memoryMode ? { memoryMode } : {}),
     children: sessionEnabled
       ? createElement(
           Fragment,
@@ -196,6 +198,31 @@ afterEach(async () => {
 });
 
 describe('real session hydration and recovery boundary', () => {
+  it.each(['new-course', 'resume-same-course'] as const)(
+    'starts an untaught %s course in lesson order rather than generation completion order',
+    async (memoryMode) => {
+      store = new BrowserRuntimeStore({ dbName: `new-course-entry-${crypto.randomUUID()}` });
+      mocks.store = store;
+      const stage = useStageStore.getState();
+      useStageStore.setState({
+        scenes: [...stage.scenes].reverse(),
+        currentSceneId: 'lesson-1-b',
+        lessonPlan: { ...stage.lessonPlan!, nodes: [...stage.lessonPlan!.nodes].reverse() },
+      });
+      await renderProvider(true, memoryMode);
+      await waitForStatus('ready');
+      expect(useStageStore.getState().currentSceneId).toBe('lesson-1-a');
+      expect(current.currentNodeId).toBeNull();
+      expect(current.completedNodeIds).toEqual([]);
+      expect(current.evidence).toEqual([]);
+      expect((await createTeachingActionRepository({ store, ...scope }).load()).actions).toEqual(
+        [],
+      );
+      expect(await createCourseStateRepository({ store, ...scope }).load()).toBeUndefined();
+      expect(container.querySelector('[data-testid="teaching-child"]')).not.toBeNull();
+    },
+  );
+
   it('shows read failure, coalesces explicit retries, and mounts teaching only after success', async () => {
     const read = evidenceRepository.listEvidenceRecords;
     let failEvidence = true;

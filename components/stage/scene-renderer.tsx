@@ -13,6 +13,8 @@ interface SceneRendererProps {
   readonly presentationOnly?: boolean;
   /** Optional presentation store used by PBL runtime adapters. */
   readonly presentationStore?: StageStore;
+  /** Classroom chrome only: quiz pages host captions on the page surface. */
+  readonly showCaptions?: boolean;
 }
 
 /**
@@ -20,7 +22,11 @@ interface SceneRendererProps {
  * directly as a top-level takeover — SceneRenderer is only on the playback
  * path, so it does not branch on `mode === 'edit'`.
  */
-export function SceneRenderer({ scene, presentationOnly = false }: SceneRendererProps) {
+export function SceneRenderer({
+  scene,
+  presentationOnly = false,
+  showCaptions = false,
+}: SceneRendererProps) {
   const renderer = useMemo(() => {
     switch (scene.type) {
       case 'slide':
@@ -36,6 +42,7 @@ export function SceneRenderer({ scene, presentationOnly = false }: SceneRenderer
             sceneId={scene.id}
             stageId={scene.stageId}
             presentationOnly={presentationOnly}
+            showCaptions={showCaptions}
           />
         );
       case 'interactive':
@@ -50,7 +57,7 @@ export function SceneRenderer({ scene, presentationOnly = false }: SceneRenderer
       default:
         return <div>Unknown scene type</div>;
     }
-  }, [scene, presentationOnly]);
+  }, [scene, presentationOnly, showCaptions]);
 
   return <div className="w-full h-full">{renderer}</div>;
 }

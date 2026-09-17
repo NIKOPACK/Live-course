@@ -11,6 +11,20 @@ import { useLiveCaptionStore } from '@/lib/store/live-caption';
 const CAPTION_STALE_MS = 6_000;
 
 /**
+ * Pins captions to the bottom of the nearest positioned ancestor. Teaching HTML
+ * keeps that ancestor on the board slot so the layer paints above the body-
+ * portaled iframe (z-index 1). Quiz host Start/Submit lives in a sibling strip,
+ * so the ancestor must be the page surface, not the whole board.
+ */
+export function ClassroomCaptionLayer() {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+      <LiveCaptionOverlay />
+    </div>
+  );
+}
+
+/**
  * J3.1/J3.2 实时字幕（docs/spec/02-product-manual.md 课堂）：教师讲授文本与
  * 学习者插话识别回显的只读投影。只是可见反馈——不持久化、不产生证据。
  * 字幕事件不可达时整个叠层静默缺省，不影响讲授。
@@ -34,7 +48,7 @@ export function LiveCaptionOverlay() {
   return (
     <div
       data-testid="classroom-captions"
-      className="max-h-28 shrink-0 overflow-y-auto"
+      className="pointer-events-auto max-h-16 overflow-y-auto"
       role="log"
       aria-label={t('livecourse.captionTitle')}
       aria-live="polite"
@@ -48,7 +62,7 @@ export function LiveCaptionOverlay() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: reduceMotion ? 0 : 0.15 }}
-            className="lc-classroom-captions-line px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere]"
+            className="lc-classroom-captions-line px-4 py-2 text-sm leading-5 [overflow-wrap:anywhere]"
           >
             <span
               className="lc-status-pill me-2 align-middle"

@@ -102,6 +102,9 @@ describe('ClassroomSessionBar controls', () => {
     expect(button?.disabled).toBe(true);
     await act(async () => button?.click());
     expect(onPlayPause).not.toHaveBeenCalled();
+    expect(container?.querySelector('[data-testid="classroom-session-bar"]')?.className).toContain(
+      'lc-classroom-session-header',
+    );
   });
 
   it('keeps a waiting checkpoint idle rather than offering a misleading pause', async () => {

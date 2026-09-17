@@ -55,7 +55,7 @@ import {
 import { AlertTriangle } from 'lucide-react';
 import { VisuallyHidden } from 'radix-ui';
 import { ClassroomSessionBar } from '@/components/livecourse/ClassroomSessionBar';
-import { LiveCaptionOverlay } from '@/components/livecourse/LiveCaptionOverlay';
+import { ClassroomCaptionLayer } from '@/components/livecourse/LiveCaptionOverlay';
 import { useLiveCaptionStore } from '@/lib/store/live-caption';
 import { TeacherAvatarHost } from '@/components/livecourse/TeacherAvatarHost';
 import { nodeIdForScene } from '@/lib/livecourse/domain';
@@ -3826,8 +3826,9 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                 presentationStore={playbackStore}
               />
             </div>
-            {/* Reserve space for captions instead of covering slide text or answers. */}
-            {liveCourseSession || presentationOnly ? <LiveCaptionOverlay /> : null}
+            {(liveCourseSession || presentationOnly) && currentScene?.type !== 'quiz' ? (
+              <ClassroomCaptionLayer />
+            ) : null}
           </div>
           {liveCourseSession ? (
             <TeacherAvatarHost

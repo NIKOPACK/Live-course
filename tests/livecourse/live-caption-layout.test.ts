@@ -17,7 +17,10 @@ vi.mock('motion/react', () => ({
   },
 }));
 
-import { LiveCaptionOverlay } from '@/components/livecourse/LiveCaptionOverlay';
+import {
+  ClassroomCaptionLayer,
+  LiveCaptionOverlay,
+} from '@/components/livecourse/LiveCaptionOverlay';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -52,6 +55,20 @@ describe('classroom caption layout', () => {
     expect(region.className).toContain('overflow-y-auto');
     expect(region.textContent).toContain(text.trim());
     expect(region.textContent).toContain('home.teacherTitle');
+  });
+
+  it('lets the page-surface layer capture clicks only on the caption strip', async () => {
+    await act(async () => {
+      root.render(createElement(ClassroomCaptionLayer));
+      useLiveCaptionStore.getState().setCaption({ speaker: 'teacher', text: 'Stay visible.' });
+    });
+    const layer = container.firstElementChild as HTMLElement;
+    const region = container.querySelector('[role="log"]')!;
+    expect(layer.className).toContain('pointer-events-none');
+    expect(layer.className).toContain('absolute');
+    expect(layer.className).toContain('bottom-0');
+    expect(region.className).toContain('pointer-events-auto');
+    expect(region.textContent).toContain('Stay visible.');
   });
 
   it('identifies the learner by text and hides stale captions without deleting the projection', async () => {

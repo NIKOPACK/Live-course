@@ -76,7 +76,11 @@ Use your full design and coding ability: expressive typography, editorial layout
 examples, diagrams, simulations, progressive reveals, SVG, Canvas, MathML and meaningful animation.
 There is no fixed element inventory, coordinate grid, widget taxonomy, card layout or word quota.
 Teach the supplied content accurately and thoroughly; do not reduce it to generic bullet points.
-Keep the title and an orienting overview visible without clicking. Divide the explanation into
+A page heading may sit in the content. The host already shows course title, scene index, teacher
+captions and lesson progress — do not duplicate them. Do not add recap footers, takeaway strips
+("本页考点一句话", "本节小结"), "已进入…" status, in-page "场景 1/N" chrome, or a second lecture
+script that restates what the teacher will say. Spend the viewport on the diagram, table or
+worked example. Divide the explanation into
 meaningful teaching regions, each with a unique stable DOM id matching [A-Za-z][A-Za-z0-9_-]*.
 Worked steps or conclusions may start hidden, but only the teacher's reveal actions should expose
 them during narration: do not advance teaching regions using timers, autoplay or learner clicks.
@@ -323,7 +327,8 @@ BEFORE EVERY {"type":"text","content":"spoken explanation"}, emit
 explained. The highlight remains until the next highlight. Move focus as the explanation moves;
 do not put all actions at the beginning or end, or narrate the whole page as one long text item.
 For a hidden region emit widget_reveal BEFORE its highlight and explanation. Cover every teaching
-region and reveal all initially hidden teaching steps by the end. Keep the title/overview visible.
+region and reveal all initially hidden teaching steps by the end.
+Do not narrate a recap that restates an on-page takeaway strip.
 Other supported visual actions: widget_annotation with target/content, widget_reveal with target.
 Use only #id targets from the supplied real element inventory; do not invent selectors, state APIs
 or slide actions. Finish with narration, not a visual action after the explanation has ended.

@@ -1660,8 +1660,13 @@ export function LiveCourseSessionProvider({
           persistedLessonPlan: activeStage.lessonPlan,
           courseId,
         });
+        const initialNode = recovery.currentNodeId
+          ? undefined
+          : [...activeLessonPlan.nodes]
+              .sort((left, right) => left.order - right.order)
+              .find((node) => !taughtNodeIds.includes(node.id));
         const recoverySceneId = resolveRecoverySceneId(
-          recovery,
+          { ...recovery, currentNodeId: recovery.currentNodeId ?? initialNode?.id ?? null },
           activeLessonPlan,
           activeStage.scenes,
         );

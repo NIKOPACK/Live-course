@@ -791,11 +791,11 @@
 .lc-classroom-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
+    'bar'
     'board'
-    'teacher'
-    'bar';
+    'teacher';
 }
 .lc-classroom-board-slot {
   grid-area: board;
@@ -836,10 +836,10 @@
 @media (min-width: 768px) {
   .lc-classroom-workbench {
     grid-template-columns: minmax(0, 1fr) var(--lc-classroom-rail);
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas:
-      'board teacher'
-      'bar bar';
+      'bar bar'
+      'board teacher';
   }
   .lc-teacher-rail {
     width: var(--lc-classroom-rail);
@@ -857,7 +857,7 @@
 }
 .lc-classroom-captions-line {
   border-top: 1px solid var(--lc-classroom-line);
-  background: var(--lc-classroom-deep);
+  background: color-mix(in srgb, var(--lc-classroom-deep) 92%, transparent);
   color: var(--lc-classroom-ink);
 }
 .lc-control-strip {
@@ -865,6 +865,10 @@
   border-top: 1px solid var(--lc-classroom-line) !important;
   background: var(--lc-classroom-surface) !important;
   color: var(--lc-classroom-ink);
+}
+.lc-classroom-session-header.lc-control-strip {
+  border-top: 0 !important;
+  border-bottom: 1px solid var(--lc-classroom-line);
 }
 /* Buttons sitting on classroom strips inherit the chrome palette instead of
    the default outline/ghost skin (which assumes an elevated page surface). */
@@ -1069,6 +1073,9 @@
   box-shadow:
     0 -1px 0 color-mix(in srgb, var(--lc-classroom-line) 70%, transparent),
     0 -12px 32px -20px color-mix(in srgb, var(--foreground) 22%, transparent);
+}
+.lc-classroom-session-header.lc-control-strip {
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--lc-classroom-line) 60%, transparent);
 }
 .lc-classroom-captions-line {
   border-top: 0;

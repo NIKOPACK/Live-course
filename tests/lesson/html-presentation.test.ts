@@ -210,6 +210,7 @@ describe('model-authored classroom pages', () => {
       expect(content).toEqual({ html: attachHtmlTeacherBridge(html), htmlPresentation: true });
       expect(aiCall).toHaveBeenCalledTimes(1);
       expect(aiCall.mock.calls[0][0]).toContain('not filling a slide template');
+      expect(aiCall.mock.calls[0][0]).toContain('Do not add recap footers');
       expect(aiCall.mock.calls[0][1]).toContain(presentation.visualStyle);
       expect(aiCall.mock.calls[0][1]).toContain(design.teachingPoints[0]);
       const scene = content && buildCompleteScene({ ...outline, type }, content, [], 'stage');

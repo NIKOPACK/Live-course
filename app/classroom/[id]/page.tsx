@@ -435,13 +435,15 @@ function ClassroomDetailContent({
             </div>
           ) : (
             <>
-              <header className="lc-classroom-header">
-                <div className="lc-classroom-header-copy">
-                  <p className="lc-classroom-kicker">LiveCourse</p>
-                  <h1>{loadedStage?.name ?? 'LiveCourse'}</h1>
-                </div>
-                <span className="lc-classroom-header-mark" aria-hidden="true" />
-              </header>
+              {view === 'replay' || view === 'post' ? (
+                <header className="lc-classroom-header">
+                  <div className="lc-classroom-header-copy">
+                    <p className="lc-classroom-kicker">LiveCourse</p>
+                    <h1>{loadedStage?.name ?? 'LiveCourse'}</h1>
+                  </div>
+                  <span className="lc-classroom-header-mark" aria-hidden="true" />
+                </header>
+              ) : null}
               {view === 'replay' ? (
                 // Keep the teaching provider out of the replay tree entirely.
                 // `sessionEnabled={false}` only skipped hydration; its command

@@ -157,6 +157,7 @@ export function CanvasArea({
                   mode={mode}
                   presentationOnly={presentationOnly}
                   presentationStore={presentationStore}
+                  showCaptions={classroomChrome}
                 />
               </SceneProvider>
             </div>
