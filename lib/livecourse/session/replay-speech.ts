@@ -13,9 +13,7 @@ export interface ReplaySpeechOptions {
 }
 
 /** J4: receive-only authored narration, without classroom tools or memory writers. */
-export function createReplaySpeech(
-  options: ReplaySpeechOptions,
-): TeacherSpeechPort & { close(): Promise<void> } {
+export function createReplaySpeech(options: ReplaySpeechOptions): TeacherSpeechPort {
   let disposed = false;
   let connecting: Promise<void> | undefined;
   let session: LiveCourseRealtimeSession | VolcTeacherSpeechSession | undefined;

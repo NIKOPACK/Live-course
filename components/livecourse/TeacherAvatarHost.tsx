@@ -205,6 +205,7 @@ export function TeacherAvatarHost({
             // stares into empty space beside the learner.
             lookAt="camera"
             className="absolute inset-0 size-full"
+            syncRealtimeAudio
           />
         </div>
         <div className="lc-lectern-plate">
@@ -335,6 +336,7 @@ export function TeacherAvatarHost({
               expression={expression}
               lookAt={lookAt}
               className="size-full"
+              syncRealtimeAudio
             />
           ) : null}
         </div>

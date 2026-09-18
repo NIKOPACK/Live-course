@@ -6,4 +6,6 @@ export interface TeacherSpeechPort {
   speak(text: string, options?: { signal?: AbortSignal }): Promise<void>;
   ask(text: string): Promise<void>;
   question?(question: OralQuestion, options: OralQuestionOptions): Promise<void>;
+  /** Tear down mic, audio bridge, and the model-side conversation. Idempotent. */
+  close(): Promise<void>;
 }

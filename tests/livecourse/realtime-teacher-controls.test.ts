@@ -1106,6 +1106,27 @@ describe('Realtime teacher controls lifecycle', () => {
     expect(getButton(container, '连接实时语音')).toBeDefined();
   });
 
+  it('closes the live session through the speech port while still mounted', async () => {
+    const { container } = await render(
+      createElement(RealtimeTeacherControls, {
+        onTeacherChange: (teacher) => {
+          currentTeacher = teacher;
+        },
+      }),
+    );
+    await click(getButton(container, '连接实时语音'));
+    expect(mocks.sessions[0]?.closeCount).toBe(0);
+    expect(mocks.registryCleanupCount).toBe(0);
+
+    await act(async () => {
+      await currentTeacher?.close();
+    });
+
+    expect(mocks.sessions[0]?.closeCount).toBe(1);
+    expect(mocks.registryCleanupCount).toBe(1);
+    expect(getButton(container, '连接实时语音')).toBeDefined();
+  });
+
   it('uses a fresh audio element after disconnecting and reconnecting', async () => {
     const { container } = await render(createElement(RealtimeTeacherControls));
     const firstAudio = container.querySelector('audio');

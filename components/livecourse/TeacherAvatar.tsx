@@ -30,6 +30,8 @@ interface TeacherAvatarProps {
   lookAt: AiriVrmLookAt;
   className?: string;
   onStatusChange?: (status: AiriVrmAvatarStatus) => void;
+  /** Classroom lectern only. Homepage and other decorative portraits stay silent. */
+  syncRealtimeAudio?: boolean;
 }
 
 const DEFAULT_MODEL_SRC = '/api/livecourse/avatar/model';
@@ -47,6 +49,7 @@ export function TeacherAvatar({
   lookAt,
   className,
   onStatusChange,
+  syncRealtimeAudio = false,
 }: TeacherAvatarProps) {
   const { t } = useI18n();
   const mountRef = useRef<HTMLDivElement>(null);
@@ -98,13 +101,15 @@ export function TeacherAvatar({
         avatarRef.current = avatar;
         setStatus(avatar.status);
 
-        const connectActiveAudio = () => {
-          if (!disposed) {
-            avatar.connectAudio(getActiveLipSyncAudioNode());
-          }
-        };
-        removeAudioSubscription = subscribeRealtimeAudioBridge(connectActiveAudio);
-        connectActiveAudio();
+        if (syncRealtimeAudio) {
+          const connectActiveAudio = () => {
+            if (!disposed) {
+              avatar.connectAudio(getActiveLipSyncAudioNode());
+            }
+          };
+          removeAudioSubscription = subscribeRealtimeAudioBridge(connectActiveAudio);
+          connectActiveAudio();
+        }
       })
       .catch((cause: unknown) => {
         if (disposed) return;
@@ -121,7 +126,7 @@ export function TeacherAvatar({
       avatar?.remove();
       avatarRef.current = null;
     };
-  }, [idleAnimationSrc, modelSrc, loadAttempt]);
+  }, [idleAnimationSrc, modelSrc, loadAttempt, syncRealtimeAudio]);
 
   useEffect(() => {
     avatarRef.current?.setExpression(expression);

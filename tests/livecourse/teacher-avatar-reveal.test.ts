@@ -12,6 +12,10 @@ const settings = vi.hoisted(() => ({
   trackingMode: 'none',
   interactionsEnabled: true,
 }));
+const audioBridge = vi.hoisted(() => ({
+  subscribe: vi.fn(() => () => undefined),
+  connectAudioCalls: 0,
+}));
 
 vi.mock('@/lib/hooks/use-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -31,7 +35,9 @@ class FakeAiriVrmAvatar extends HTMLElement {
 
   setExpression(): void {}
   setLookAt(): void {}
-  connectAudio(): void {}
+  connectAudio(): void {
+    audioBridge.connectAudioCalls += 1;
+  }
   disconnectAudio(): void {}
 
   emit(status: FakeAiriVrmAvatar['status']): void {
@@ -47,7 +53,7 @@ vi.mock('@/lib/store/avatar-settings', () => ({
 vi.mock('@/lib/livecourse/realtime/client/audio-bridge', () => ({
   getActiveRealtimeAudioBridge: () => null,
   getActiveLipSyncAudioNode: () => null,
-  subscribeRealtimeAudioBridge: () => () => undefined,
+  subscribeRealtimeAudioBridge: audioBridge.subscribe,
 }));
 
 vi.mock('@/lib/livecourse/avatar/airi-vrm-element', () => ({
@@ -85,6 +91,8 @@ beforeEach(() => {
   lastAvatar.current = null;
   settings.enabled = true;
   settings.modelUrl = '';
+  audioBridge.subscribe.mockClear();
+  audioBridge.connectAudioCalls = 0;
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -190,5 +198,38 @@ describe('TeacherAvatar reveal', () => {
     expect(lastAvatar.current?.modelSrc).toBe('');
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(poster().className).toContain('opacity-100');
+  });
+
+  it('does not subscribe to classroom realtime audio unless lip-sync is requested', async () => {
+    await act(async () => {
+      root!.render(
+        createElement(TeacherAvatar, {
+          mode: 'idle',
+          expression: 'neutral',
+          lookAt: 'camera',
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(audioBridge.subscribe).not.toHaveBeenCalled();
+    expect(audioBridge.connectAudioCalls).toBe(0);
+
+    await act(async () => {
+      root!.render(
+        createElement(TeacherAvatar, {
+          mode: 'idle',
+          expression: 'neutral',
+          lookAt: 'camera',
+          syncRealtimeAudio: true,
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(audioBridge.subscribe).toHaveBeenCalledOnce();
+    expect(audioBridge.connectAudioCalls).toBe(1);
   });
 });

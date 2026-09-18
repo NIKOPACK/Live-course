@@ -8,9 +8,20 @@ vi.mock('@/lib/hooks/use-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }));
 
+const lastHomeAvatarProps = vi.hoisted(() => ({
+  current: null as { syncRealtimeAudio?: boolean } | null,
+}));
+
 vi.mock('next/dynamic', () => ({
   default: () =>
-    function FakeTeacherAvatar({ onStatusChange }: { onStatusChange: (status: 'ready') => void }) {
+    function FakeTeacherAvatar({
+      onStatusChange,
+      syncRealtimeAudio,
+    }: {
+      onStatusChange: (status: 'ready') => void;
+      syncRealtimeAudio?: boolean;
+    }) {
+      lastHomeAvatarProps.current = { syncRealtimeAudio };
       useEffect(() => onStatusChange('ready'), [onStatusChange]);
       return createElement('div', { 'data-testid': 'home-live-teacher' });
     },
@@ -39,6 +50,7 @@ const cancelIdle = vi.fn();
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
+  lastHomeAvatarProps.current = null;
   desktop = false;
   listeners.clear();
   idleCallbacks.length = 0;
@@ -97,6 +109,7 @@ describe('homepage teacher scene', () => {
     await act(async () => idleCallbacks[0]());
     expect(container.querySelector('[data-testid="home-live-teacher"]')).not.toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe('home.avatarGreeting');
+    expect(lastHomeAvatarProps.current?.syncRealtimeAudio).toBe(false);
   });
 
   it('cancels pending loading and removes a mounted avatar when the viewport becomes narrow', async () => {

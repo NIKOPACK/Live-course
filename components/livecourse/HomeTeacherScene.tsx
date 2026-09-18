@@ -117,6 +117,7 @@ export function HomeTeacherScene() {
             expression="neutral"
             lookAt="camera"
             className="absolute inset-0"
+            syncRealtimeAudio={false}
             onStatusChange={setAvatarStatus}
           />
         ) : (

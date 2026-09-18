@@ -4022,6 +4022,8 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   saveSceneResumePosition(currentScene?.id, currentPlaybackActionIndexRef.current);
                   await runTeachingControl('pause', engine, session);
                 }
+                const teacher = teacherSpeechRef.current;
+                if (teacher) await teacher.close();
                 await saveTeachingPosition();
               }}
               onStartRelisten={startInClassRelisten}

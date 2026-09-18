@@ -578,6 +578,7 @@ export function RealtimeTeacherControls({
 
   const startRef = useRef(start);
   startRef.current = start;
+  const stopRef = useRef<() => Promise<void>>(async () => undefined);
   useEffect(() => {
     const teacher: TeacherSpeechPort = {
       question: async (question, options) => {
@@ -586,6 +587,7 @@ export function RealtimeTeacherControls({
         await realtime.question(question, options);
       },
       connect: () => startRef.current(),
+      close: () => stopRef.current(),
       speak: (text, options) => {
         const realtime = realtimeRef.current;
         if (!realtime?.connected)
@@ -675,18 +677,23 @@ export function RealtimeTeacherControls({
 
   const stop = useCallback(async () => {
     const realtime = realtimeRef.current;
+    const audioBridge = audioBridgeRef.current;
+    const unregisterAudioBridge = unregisterAudioBridgeRef.current;
+    unregisterAudioBridgeRef.current = null;
+    unregisterAudioBridge?.();
     try {
       if (realtime) await realtime.close();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      return;
+      if (realtimeRef.current === realtime && audioBridge) {
+        unregisterAudioBridgeRef.current ??= registerRealtimeAudioBridge(audioBridge);
+      }
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      setError(error.message);
+      throw error;
     }
     if (realtimeRef.current !== realtime) return;
     realtimeRef.current = null;
     audioBridgeRef.current = null;
-    const unregisterAudioBridge = unregisterAudioBridgeRef.current;
-    unregisterAudioBridgeRef.current = null;
-    unregisterAudioBridge?.();
     setAudioElementGeneration((generation) => generation + 1);
     setStatus('idle');
     setMuted(false);
@@ -699,6 +706,7 @@ export function RealtimeTeacherControls({
     interruptionPhaseRef.current = 'idle';
     setError(null);
   }, []);
+  stopRef.current = stop;
 
   useEffect(
     () => () => {
@@ -833,7 +841,10 @@ export function RealtimeTeacherControls({
                   <CircleStop aria-hidden="true" />
                   {t('livecourse.voiceInterrupt')}
                 </DropdownMenuItem>
-                <DropdownMenuItem className="min-h-11 rounded-lg" onSelect={() => void stop()}>
+                <DropdownMenuItem
+                  className="min-h-11 rounded-lg"
+                  onSelect={() => void stop().catch(() => undefined)}
+                >
                   <Power aria-hidden="true" />
                   {t('livecourse.voiceDisconnect')}
                 </DropdownMenuItem>
@@ -856,7 +867,10 @@ export function RealtimeTeacherControls({
             >
               <CircleStop />
             </IconButton>
-            <IconButton label={t('livecourse.voiceDisconnect')} onClick={() => void stop()}>
+            <IconButton
+              label={t('livecourse.voiceDisconnect')}
+              onClick={() => void stop().catch(() => undefined)}
+            >
               <Power />
             </IconButton>
           </>

@@ -381,6 +381,7 @@ beforeEach(() => {
   mocks.routerPush.mockClear();
   mocks.teacher = {
     connect: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
     ask: vi.fn(async () => undefined),
     speak: vi.fn(
       (text, options) =>
@@ -655,6 +656,11 @@ describe('whole classroom with controlled real-audio boundaries', () => {
     expect(await listEvidenceRecords(scope.stageId, { store, ...scope })).toHaveLength(0);
     await click('livecourse.leaveClassroom');
     await until(() => mocks.routerPush.mock.calls.length === 1);
+    expect(mocks.teacher?.close).toHaveBeenCalledOnce();
+    const closeMock = mocks.teacher?.close as ReturnType<typeof vi.fn>;
+    expect(closeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.routerPush.mock.invocationCallOrder[0],
+    );
     const oldSession = session;
     await act(async () => {
       root.unmount();
@@ -673,5 +679,38 @@ describe('whole classroom with controlled real-audio boundaries', () => {
     expect(await listEvidenceRecords(scope.stageId, { store, ...scope })).toHaveLength(1);
     const saved = await createCourseStateRepository({ store, ...scope }).load();
     expect(saved?.lifecycle?.status).toBe('archived');
+  }, 20_000);
+
+  it('closes the live teacher before navigating home from an unfinished classroom', async () => {
+    await mount();
+    await click('livecourse.startTeaching');
+    await until(() => mocks.speech.length === 1);
+    await click('livecourse.pause');
+    await until(() => session.classroomState === 'paused');
+    const order: string[] = [];
+    (mocks.teacher!.close as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      order.push('close');
+    });
+    mocks.routerPush.mockImplementation(() => {
+      order.push('navigate');
+    });
+    await click('livecourse.leaveClassroom');
+    await until(() => mocks.routerPush.mock.calls.length === 1);
+    expect(order).toEqual(['close', 'navigate']);
+  }, 20_000);
+
+  it('stays in the classroom when closing the live teacher fails', async () => {
+    await mount();
+    await click('livecourse.startTeaching');
+    await until(() => mocks.speech.length === 1);
+    await click('livecourse.pause');
+    await until(() => session.classroomState === 'paused');
+    (mocks.teacher!.close as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('voice still open'),
+    );
+    await click('livecourse.leaveClassroom');
+    await until(() => !!container.textContent?.includes('livecourse.leaveFailed'));
+    expect(mocks.routerPush).not.toHaveBeenCalled();
+    expect(session.classroomState).toBe('paused');
   }, 20_000);
 });
