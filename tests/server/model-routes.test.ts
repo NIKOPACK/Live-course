@@ -208,6 +208,8 @@ describe('model-routes', () => {
         'scene-content:interactive',
         'scene-content:pbl',
         'scene-outlines-stream',
+        'lesson-plan',
+        'classroom-review',
         'scene-content',
         'scene-actions',
         'agent-profiles',

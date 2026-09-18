@@ -228,6 +228,18 @@ describe('resolveModel — per-stage resolution order', () => {
     expect(r.thinkingConfig).toBeUndefined();
   });
 
+  it('unrouted classroom-review drops client thinking so review defaults independently', async () => {
+    process.env.DEFAULT_MODEL = 'openai:gpt-5.4-mini';
+    process.env.MODEL_ROUTES = JSON.stringify({ 'scene-content': 'deepseek:deepseek-v4-pro' });
+    const { resolveModel } = await import('@/lib/server/resolve-model');
+    const r = await resolveModel({
+      stage: 'classroom-review',
+      modelString: 'openai:gpt-5.4-mini',
+      thinkingConfig: { mode: 'disabled' },
+    });
+    expect(r.thinkingConfig).toBeUndefined();
+  });
+
   it('unrouted stage keeps the client thinking config', async () => {
     process.env.MODEL_ROUTES = JSON.stringify({ 'scene-content': 'deepseek:deepseek-v4-pro' });
     const { resolveModel } = await import('@/lib/server/resolve-model');

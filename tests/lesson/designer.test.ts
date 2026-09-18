@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   designLessonPlan,
+  completeTeachingText,
+  TeachingOutputError,
   designLessonPlanWithSubagents,
   formatLessonNodeDesignForPrompt,
   type DesignLessonPlanInput,
@@ -12,6 +14,34 @@ import { goalIdForScene, nodeIdForScene } from '@/lib/livecourse/domain/lesson-p
 import type { SceneOutline } from '@/lib/types/generation';
 
 const NOW = '2026-08-20T00:00:00.000Z';
+
+describe('complete lesson design output', () => {
+  test('uses only a complete nonempty final answer', () => {
+    expect(completeTeachingText({ text: '{"nodes":[]}', finishReason: 'stop' })).toBe(
+      '{"nodes":[]}',
+    );
+    expect(() => completeTeachingText({ text: '{"nodes":[]}', finishReason: 'length' })).toThrow(
+      TeachingOutputError,
+    );
+    expect(() => completeTeachingText({ text: ' ', finishReason: 'stop' })).toThrow(
+      TeachingOutputError,
+    );
+    expect(
+      completeTeachingText({
+        text: '',
+        finishReason: 'stop',
+        reasoningText: 'The plan is {"nodes":[]}',
+      }),
+    ).toBe('{"nodes":[]}');
+    expect(() =>
+      completeTeachingText({
+        text: '',
+        finishReason: 'stop',
+        reasoningText: '{"nodes":[',
+      }),
+    ).toThrow(TeachingOutputError);
+  });
+});
 
 const outlines: SceneOutline[] = [
   {
@@ -186,6 +216,26 @@ describe('designLessonPlan', () => {
     expect(plan).toBeNull();
   });
 
+  test('retains substantial explanations and worked examples instead of rejecting character budgets', async () => {
+    const substantial = {
+      ...designFor('complete'),
+      explanationPlan: 'Explain every necessary step. '.repeat(120).trim(),
+      examples: ['A complete derivation with its assumptions. '.repeat(40).trim()],
+      anticipatedQuestions: [
+        {
+          question: 'Why does normalization matter?',
+          response: 'Distinguish the inner product from the coefficient. '.repeat(60).trim(),
+        },
+      ],
+    };
+    const plan = await designLessonPlan(input(), async () =>
+      JSON.stringify({
+        nodes: outlines.map((node) => ({ sceneId: node.id, design: substantial })),
+      }),
+    );
+    expect(plan?.nodes[0].design).toEqual(substantial);
+  });
+
   test('markdown 围栏包裹的 JSON 也能修复解析', async () => {
     const plan = await designLessonPlan(input(), async () => `\`\`\`json\n${llmPayload()}\n\`\`\``);
     expect(plan).not.toBeNull();
@@ -294,10 +344,13 @@ describe('designLessonPlanWithSubagents', () => {
     );
 
     expect(aiCall).toHaveBeenCalledTimes(1);
-    // 补充调用的 user prompt 只包含缺失节点
-    expect(aiCall.mock.calls[0][1]).toContain('scene-rules');
-    expect(aiCall.mock.calls[0][1]).toContain('scene-quiz-2');
-    expect(aiCall.mock.calls[0][1]).not.toContain('scene-intro');
+    const requestedNodes = aiCall.mock.calls[0][1].split(
+      'Scene outlines (design exactly one node per outline):',
+    )[1];
+    expect(requestedNodes).toContain('scene-rules');
+    expect(requestedNodes).toContain('scene-quiz-2');
+    expect(requestedNodes).not.toContain('scene-intro');
+    expect(aiCall.mock.calls[0][1]).toContain('Whole-course teaching boundaries');
 
     expect(plan).not.toBeNull();
     expect(plan!.nodes).toHaveLength(5);
@@ -321,6 +374,47 @@ describe('designLessonPlanWithSubagents', () => {
 
     expect(aiCall).toHaveBeenCalledTimes(1);
     expect(plan!.nodes.find((n) => n.sceneId === 'scene-lab')!.design).toBeDefined();
+  });
+
+  test('all workers share teaching boundaries while fallback cannot overwrite successful designs', async () => {
+    const outputs = new Map(
+      manyOutlines
+        .slice(0, -1)
+        .map((node) => [`lesson-node:${node.id}`, JSON.stringify(designFor(node.id))]),
+    );
+    const pool = poolReturning(outputs);
+    const aiCall = vi.fn(async () =>
+      JSON.stringify({
+        nodes: [
+          { sceneId: 'scene-intro', design: designFor('unwanted replacement') },
+          { sceneId: 'scene-quiz-2', design: designFor('repaired') },
+        ],
+      }),
+    );
+    const plan = await designLessonPlanWithSubagents(
+      input({
+        outlines: manyOutlines,
+        teachingBrief: {
+          throughline: 'One moving secant; same notation throughout.',
+          estimatedDurationSeconds: 1800,
+        },
+      }),
+      fakeRuntime,
+      aiCall,
+      pool,
+    );
+    expect(plan?.nodes[0].design?.teachingPoints).toEqual(designFor('scene-intro').teachingPoints);
+    expect(plan?.nodes.at(-1)?.design?.teachingPoints).toEqual(
+      designFor('repaired').teachingPoints,
+    );
+    for (const task of vi.mocked(pool).mock.calls[0][0]) {
+      expect(task.task).toContain('One moving secant');
+      expect(task.task).toContain('和差积商求导');
+      expect(task.task).not.toContain('Node time budget:');
+      expect(task.systemPrompt).toContain('Duration estimates are informational');
+      expect(task.systemPrompt).toContain('normalization');
+      expect(task.systemPrompt).toContain('NOT click buttons');
+    }
   });
 
   test('全部失败且单调用补充也失败：节点保留但无 design（固定降级语义）', async () => {

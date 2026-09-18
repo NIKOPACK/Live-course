@@ -27,6 +27,7 @@
  */
 
 import { createOpenAI } from '@ai-sdk/openai';
+import { normalizeResponsesMetadata } from './openai-responses-compat';
 import { createAzure } from '@ai-sdk/azure';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
@@ -1951,6 +1952,15 @@ export function getModel(config: ModelConfig): ModelWithInfo {
         baseURL: effectiveBaseUrl,
         name: config.providerId,
       };
+      if (
+        config.providerId === 'openai' &&
+        shouldUseOpenAIResponsesApi(config.providerId, config.modelId) &&
+        effectiveBaseUrl &&
+        new URL(effectiveBaseUrl).hostname !== 'api.openai.com'
+      ) {
+        openaiOptions.fetch = async (url, init) =>
+          normalizeResponsesMetadata(await globalThis.fetch(url, init));
+      }
 
       // For OpenAI-compatible providers (not native OpenAI), add a fetch
       // wrapper that injects vendor-specific thinking params into the HTTP

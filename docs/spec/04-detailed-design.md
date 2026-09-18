@@ -21,7 +21,7 @@
   - 完成事件已持久化而完成门读取失败时，同 key 重试仍重评完成门；新协调器加载持久化完成进度后也恢复该门，不重复写完成事件或进度。暂停 / 重听期间仍沿用原状态门禁。
 - 才新写（A2）：提交答案、重试节点、暂停 / 继续、`saveAndLeaveSession` 与 `finalizeSession` 带稳定 idempotency key。判分重试复用同一次提交，`EvidenceRecord` 只 append 一次；重听和媒体重试永不产生 evidence
 - 选择题答案以选项 `value` 为准；模型或旧文档给出选项文字时，只允许唯一匹配的 `label` 转换为 `value`，合法标识优先，不做语义猜测。生成、文档读取与本地判分共用 DSL 归一化；未知、歧义或无可用答案的生成题目失败并沿用单段重试。判分错误留在可见失败态，不生成分数、review 或 evidence，不改写已提交的历史成绩。
-- 检查页的字幕层只挂在题面区域，不覆盖宿主的开始答题、提交或重试区域；长字幕和持续保留的检查引导也不得拦截这些按钮。课堂与 replay 沿用同一字幕投影，预览默认不显示；保留字幕条内的滚动阅读，不以禁用整个题面交互绕过遮挡。
+- 检查页的字幕层只挂在题面区域，不覆盖宿主的开始答题、提交或重试区域；长字幕和持续保留的检查引导也不得拦截这些按钮。课堂与 replay 沿用同一字幕投影，预览默认不显示；保留字幕条内的滚动阅读，不以禁用整个题面交互绕过遮挡。检查页 HTML 在 iframe 内滚动阅读；开始答题前不得把题面整页 `inert` / `pointer-events: none`。作答仍只在 `phase === "answering"` 经 `setAnswer` 生效。
 - 才新写（A2）：未完成课堂只由「暂时离开课堂」调用幂等 `saveAndLeaveSession`：显示保存中，成功时严格先关闭本趟 Realtime 教师会话（先注销全局口型音频桥，再关闭 transport / 麦克风 / 模型侧对话），再写 `C` 恢复点、再销毁 `W`、最后导航首页；关闭实时教师或任一步保存失败都留在课堂可重试。实时会话不是 W / C / L，卸载时的 `close` 只是备份。浏览器 / 标签卸载只允许 best-effort 保存，不算成功状态迁移
 - 改角色（A2 离开闭环）：`TeacherSpeechPort.close` 是离开前必须等待的会话拆除。`PlaybackChromeRoot` 在 `onPrepareLeave` 里调用它；首页 `TeacherAvatar` 默认不订阅课堂口型桥，课堂 `TeacherAvatarHost` 才显式打开 lip-sync
 - 才新写（J3.1 讲课手势）：`lib/livecourse/avatar/speaking-gestures.ts` 在现有 VRM 归一化上半身骨骼上混合少量程序化手势，沿用 `airi-vrm-element.ts` 的渲染循环。每帧先恢复上次手势前的骨骼姿态，再更新待机动画、叠加本帧手势，最后同步 humanoid；不累计旋转，不覆盖口型、表情、视线或下半身。仅使用既有 `vendor/airi/lip-sync.ts` 的真实音频活动检测结果，不用连接状态、讲稿计时器或 `avatar.speech_start` 冒充发声；不增加分析音频的第二通道
@@ -101,7 +101,7 @@
 - 改角色（A8）：`listDocuments` / `StageListItem` / `DocumentSummary` 增加可选 `generationComplete?: boolean`（browser 同一 readonly 事务 join OUTLINES；PG 从 outline JSON 取布尔；HTTP 透传）。缺字段或非 boolean 则省略。`ClassroomCard`：`canShare = id !== SHOWCASE_CLASSROOM_ID && generationComplete === true && !generating`。点击仍 `assertHtmlClassroom` fail closed，但不能当唯一可见性条件。禁止新 DocumentStore 方法
 - 改角色（A8）：分享 Dialog 用现有 `components/ui/dialog.tsx`（非 AlertDialog）。文案键 `home.shareCourse*`；不征用、不改语义 `share.notReady`。删副本成功后由 `app/page.tsx` 调用 `clearShareRedeemRegistration(stageId)`，**不**改 `delete-user-classroom.ts`
 - 才新写（A8）：`lib/livecourse/lesson/outlines-from-scenes.ts`（从 `app/generation-preview/resume-session.ts` 迁出纯 scene→outline 投影，`resume-session` 再导出）
-- 才新写（A8）：`lib/livecourse/share/` — schema、剥离非材料字段、ref 分类 / `resolveShareMediaBytes` / 不可变 `bindShareMediaRefs` / `rewriteShareMaterials`、create/redeem 客户端、兑付登记。**禁止** import `app/`。**禁止** mutate `loadStageData` 返回的源文档；create-client 不得 `saveStageData` / `useStageStore.setState`
+- 才新写（A8）：`lib/livecourse/share/` — schema、剥离非材料字段、ref 分类 / `resolveShareMediaBytes` / 不可变 `bindShareMediaRefs` / `rewriteShareMaterials`、create/redeem 客户端、兑付登记。**禁止** import `app/`。**禁止** mutate `loadStageData` 返回的源文档；create-client 不得 `saveStageData` / `useStageStore.setState`。HTML/CSS `url(#id)` 是页内 SVG fragment，不是媒体文件，不得当缺媒体失败；`gen_img_*` / pool / 封面 / 语音仍缺字节则失败可重试
 - 才新写（A8）：`lib/server/classroom-share-storage.ts` 与 `app/api/classroom-shares/`。快照落 `data/classroom-shares/{token}.json` + `{token}/media|audio/`。令牌不可猜测（熵 ≥ 128 bit）。Create 只接受上传字节，禁止 `POST { sourceClassroomId }` 再 `readClassroom`。Redeem 才 `createGenerationIdentity(nanoid())`，种子禁止用 token。GET 元数据 200/404，无列表。multipart 字段名 `snapshot`，文件字段名 = `mediaManifest.path`；对账失败 400。请求合计 ≤ 50MB（抄 `extract-document`，无 `export const sizeLimit`）。顶层 `{token}.json` 个数 ≥ 100 或 `du`（含本请求）≥ 2 GiB → 413。ACCESS_CODE 沿用根布局 + 现有 middleware，新 API 不进白名单
 - 才新写（A8）：`app/share/[token]/page.tsx` 落地页不执行课堂 HTML。首次兑付 `initializeCourseState` 且不调 `persistGenerationCourseIntake`。本机 KV：`share.redeems.{token}` 与 `share.redeemByStage.{stageId}`；坏指针当从未兑付
 
@@ -207,9 +207,10 @@
 - 改角色（A1）：大纲不再独自决定「这堂课是什么」；LessonPlan 成为内容生成输入
 - 才新写（A3）：`lib/livecourse/outline/` — 三个 Agent 组成大纲工作流：**课前追问 / 澄清**（只对会改变本课设计、且本次输入与适用记忆不能可靠回答的范围、本主题程度、目标、教学方法、深度、节奏或互动方式产出少量带选项问题）、**知识分解**（仅在范围不明确时列出主题知识点树供学习者勾选）、**审校**（大纲组装后检查范围覆盖与顺序，不合格修复一次）。问题均可跳过；编排沿用 `@langchain/langgraph`，不另选框架
 - 才新写（A4）：`lib/livecourse/outline/subagent.ts` — worker Agent 的 subagent 运行器，沿用 `@earendil-works/pi-agent-core`（课堂 director 在用的 pi 运行时），worker 可派生并行 subagent。**知识分解**改两段：先粗分枝干，再每个枝干派一个 subagent 并行细分解后合并（单次调用列不全「高数」这类大主题）；**教案设计**按节点派并行 subagent，每节点一份详细设计。约束：subagent 同为台后 worker，不在界面出现；并发有上限；任一 subagent 失败降级回单调用路径
-- 才新写（A5）：`lib/livecourse/lesson/visual-aids.ts` —— 逐段内容生成前把教案各节点 `design.visualAids` 合并进对应 outline 的 `mediaGenerations`（幂等，不覆盖既有 elementId）。执行仍走 media-orchestrator / `/api/generate/image` 与 `lib/media` 适配器矩阵，不新增 provider 路径；subagent 保持无工具——配图是声明式意图，不是工具调用
-- 才新写（A5.2）：`lib/livecourse/lesson/course-cover.ts` —— 课程封面是文档级配图，不是教案节点 visualAids，也不进入 outline.mediaGenerations。主 Agent 在视觉方向 JSON 里同时给出可选 `coverPrompt`；缺省时用 `courseTitle + visualStyle` 拼确定性 fallback。执行仍走 `/api/generate/image` 与 `lib/media` 适配器矩阵（浏览器 `course-cover-runtime.ts`，服务端 `classroom-media-generation.ts`），不新增 provider；未配置或关闭图片生成、已有 `coverAssetId`、或生成失败时跳过，不阻塞大纲 / 教案 / 逐段内容。成功后把 `coverAssetId` 写在 `Stage` 上，`listDocuments` 的 `DocumentSummary` 带上该字段供首页卡片读取；asset 回收必须把封面算进引用。封面不写 W / C / L，学习者不能改封面
+- 才新写（A5）：`lib/livecourse/lesson/visual-aids.ts` —— 逐段内容生成前把教案各节点 `design.visualAids` 合并进对应 outline 的 `mediaGenerations`（幂等，不覆盖既有 elementId）。执行仍走 media-orchestrator / `/api/generate/image` 与 `lib/media` 适配器矩阵，不新增 provider 路径；subagent 保持无工具——配图是声明式意图，不是工具调用。图片通道对上游超时类失败（HTTP 408/502/503/504/524 与传输超时）自动再发一次生成请求，鉴权/内容审核失败不重试；两次仍失败则跳过该图
+- 才新写（A5.2）：`lib/livecourse/lesson/course-cover.ts` —— 课程封面是文档级配图，不是教案节点 visualAids，也不进入 outline.mediaGenerations。主 Agent 在视觉方向 JSON 里同时给出可选 `coverPrompt`；缺省时用 `courseTitle + visualStyle` 拼确定性 fallback。执行仍走 `/api/generate/image` 与 `lib/media` 适配器矩阵（浏览器 `course-cover-runtime.ts`，服务端 `classroom-media-generation.ts`），不新增 provider；未配置或关闭图片生成、已有 `coverAssetId`、或生成失败时跳过，不阻塞大纲 / 教案 / 逐段内容。封面与课内配图共用同一超时再发一次。成功后把 `coverAssetId` 写在 `Stage` 上，`listDocuments` 的 `DocumentSummary` 带上该字段供首页卡片读取；asset 回收必须把封面算进引用。封面不写 W / C / L，学习者不能改封面
 - 改角色（A3）：`app/generation-preview/page.tsx` 在开始生成大纲之前按需内嵌课前问题卡片与范围勾选（首页只负责提交草稿）；`app/api/generate/scene-outlines-stream` 接受课前答案与勾选范围作为大纲生成输入。知识树首次加载失败时尚无推荐缓存，只能重试或明确按需求与合理默认跳过范围确认；成功加载后必须缓存已选与推荐项，使确认 / 提交失败可重试或使用缓存推荐范围。主题具体只允许省略范围分解，不代表程度 / 方法信息不足时必然无追问
+- 改角色（A3/S2）：`components/generation/scope-picker.tsx` 沿用现有知识树和独立节点选择，分组默认收起，以已选后代计数表达隐藏选择；复选框与展开按钮分离，说明按需展开。使用已有 Collapsible / 高度过渡、稳定节点 key 与减少动效规则，不新增级联勾选或另一份选择事实。总数与操作区保持可见，busy/error 更新不重置选择、展开或推荐缓存
 - 改角色（A6）：上述输入再接收经过 §6 policy 过滤的 `LearnerMemory`；同课重开可接收同课程摘要，不同课不得接收其他课程摘要
 - 禁止：课前追问不出现在课堂内；不新增首页产品开关；不平行再写一套大纲模型（A1 的 LessonPlan 仍在大纲与内容之间）；不做必填长问卷或重复询问已可靠知道的信息
 - **台前单 Agent**（A1/A3 共同约束）：澄清、分解、审校、教案设计全是台后 worker。学习者界面只出现一位 Agent 老师（首页澄清卡片与课堂授课同一人设），不展示工作流状态、不区分 Agent 身份
@@ -222,12 +223,26 @@
 
 ### A5.1 模型原生 HTML 课堂
 
-- 才新写：`lib/livecourse/lesson/html-presentation.ts` 负责主 Agent 的课程级视觉方向与自由 HTML 页面 prompt。教案 schema 增加可选 `presentation: { mode: 'html', visualStyle: string, coverPrompt?: string }`；视觉方向以自由文本描述配色、字体、构图、图形语言和动效，不引入另一套模板枚举。先定风格，再让节点 worker 读同一方向。风格失败显式报错；节点设计失败仍可使用真实大纲骨架。`coverPrompt` 缺失或无效不得让视觉方向失败，生成封面时再 fallback。
+- 才新写：`lib/livecourse/lesson/html-presentation.ts` 负责主 Agent 的课程级视觉方向与自由 HTML 页面 prompt。教案 schema 增加可选 `presentation: { mode: 'html', visualStyle: string, coverPrompt?: string }`；视觉方向以自由文本描述配色、字体、构图、图形语言和动效，不引入另一套模板枚举。先定风格，再让节点 worker 读同一方向。风格失败显式报错；新课节点设计经既有一次缺项补充后仍不完整则失败，不以骨架冒充设计完成。`coverPrompt` 缺失或无效不得让视觉方向失败，生成封面时再 fallback。
+- 改角色（教学质量）：主 Agent 同一次调用确定 `teachingBrief: { throughline, estimatedDurationSeconds? }`，包含共同案例、符号/先修约定与各段贡献。新课必需，持久化 schema 可选以兼容旧课。预计时长只作参考，不分配固定讲稿配额、不触发超限删改或失败；保留充分推导和有用例题，主要通过消除重复生成提速。节点 worker 接收整课关键点及主线，不只接收相邻标题；只有请求的节点产出设计，缺项补充不得覆盖成功节点。数学例题须说明定义域、单位、积分区间与归一化等必要条件；精确图形优先 SVG/Canvas，不额外申请相同含义的生成图片。页面和动作共享节点设计，明确主讲与答疑储备，但不以时长或字数牺牲核心内容。
+- 教案正文（教学要点、解释、例题、误区、预设问题回答）不使用任意字符上限阻挡充分展开的内容；结构、必填、类型及交互协议仍严格校验。输出示例与实际 `oralQuestion` 对象结构一致；schema 错误记录具体字段，不把解析成功等同于完整设计。
+- 才新写（上线质量门禁）：`lesson/quality-review.ts` 在完整教案接受前独立审校知识正确性、条件与范围覆盖；`generation/reviewed-scene.ts` 在场景保存前联合审校 HTML、结构化题目与讲稿/动作。审校使用独立 `classroom-review` 路由和新的调用上下文，默认推理，不把原作者的说明当作正确性证据。只报告有证据的阻断问题，不以时长、字数、装饰偏好评分；审校输出含具体核对事实，格式错误不得当作通过。
+- 适度审校：以「没有明显硬伤、能够有效学习」为标准，不追求满分。只有高置信度的核心知识/例题错误、关键内容缺失、必要交互不可用或无效判分题目才阻断；措辞、排版、不影响理解的视觉瑕疵、可选补充和不确定意见不阻断，也不触发重写。
+- 显露已可见的讲授区域是合法幂等操作，不因缺少隐藏动画或答案表提前可见而拦课；正式判分题目泄露答案仍属硬伤。测验 HTML 作者只读取无答案的题面，不读取教案中的解题例子，不预载同题解答或最终状态图。审校材料省去可信宿主桥代码，避免把宿主协议误当页面问题；模型分多段输出审校 JSON 时合并所有检查与发现，不丢弃早先的硬伤。
+- HTML 内容修复由审校路由在另一次调用中生成 JSON 补丁，沿用 `lib/edit/html-edit.ts` 的原子唯一锚点应用，不整页重写。兼容 Chat 渠道的含 HTML 补丁受非推理保护，以避免代码耗在推理通道；原生 OpenAI Responses 的结构化补丁保留审校路由的推理设置。修复接收审校已核对的事实与原讲稿（转换回作者输出协议），保留正确部分。格式/锚点错误只允许一次机械纠正，仍以原始页面原子应用，不接受部分补丁、不增加知识审校轮次。复核按原问题编号逐项确认，不重新开放全课审查。
+- 自定义 OpenAI Responses 中转若在非流式 `output_text` 中省略 `annotations`，兼容层只补空元数据数组并记录日志；不改文本、状态、用量，不掩盖截断、错误或非法字段。官方接口和流式响应不经此修正。
+- 页面作者、讲稿作者、修复与复核共用真实教师动作能力说明：reveal 只显露目标本身，不调用页面自定义钩子、不切换后代的动画类；核心图形不能靠虚构的 `window.__reveal` 调用或仅 reduced-motion 模式才能显示。
+- 最终材料的聚焦复核只接收实际 HTML、讲稿、题目与原问题，不再次把不属于本次修复目标的参考教案送审。教案知识问题由前置的独立教案审校处理，不能把已修正成品因旧参考措辞再次判成同一页面错误。
+- 教案的事实修复也使用独立审校路由，而不是重新交给已产生错误定义的快速作者；仍只修被点名的节点/主线，并保留原有身份、范围和视觉方向。修复与复核是独立调用，不携带作者对话历史。
+- 测验作者与审校共用宿主状态协议说明：`answers` 是按题号索引的学习者作答对象，`results` 是按 `questionId` 查找的数组。`result.answer` 是标准答案，不能拿来覆盖学习者选择；反馈字段 `answer` / `analysis` / `aiComment` 只有 reviewing 才显示。仅 answering 且非 readOnly 能作答，不能猜测返回结构导致提交后无反馈或把标准答案显示为用户答案。
+- 生成内修复：教案只替换被指出的节点设计/教学主线，保留节点身份、范围、视觉方向和其他节点；课堂成品只修当前未保存草稿。HTML 修复后重新校验语法并基于修复后的页面生成讲稿；只有讲稿出错时不重做页面。修复不得通过删掉核心知识、例题或缩短解释来过关。最多一次定向修复，之后只复核原问题及修复引入的明显严重回归，不扩大审校范围；仍有硬伤明确阻断，不落盘、不置 completed、不触发外层自动重复修复。结构化测验题目及判分键不能被页面修复改写；其知识错误直接失败重试该段。取消贯穿审校和修复。已有课堂和已成功段不进入此流程，不新增改课入口。
+- 改角色（阶段推理）：`lesson-plan` 与 HTML 课的 `scene-actions` 未显式配置思考策略时默认启用推理，渠道能力由既有适配器归一化；显式关闭仍受尊重。浏览器和服务端均解析独立模型路由，并把相同配置及模型原生输出窗口传给主 Agent、节点 worker 与讲稿生成，不另加人为推理 token 配额。教案与讲稿只接受非空、未截断的最终答案，不以推理文本代替成品；动作 API 允许与教案相同的服务执行时长。自由 HTML 页面继续使用已有非推理兼容保护，不在未经验证时移除。`.env.example` 给出教案/讲稿推理、页面快速生成的路由示例，不新增前台开关。
 - 改角色：`app/api/generate/lesson-plan/`、`app/generation-preview/`、`lib/hooks/use-scene-generator.ts`、`app/api/generate/scene-content/`、`lib/server/classroom-generation.ts` 只生成 HTML 课；视觉方向失败则整课失败，禁止无 presentation 继续。打开课堂时 `assertHtmlClassroom`：无 `presentation.mode = html`、或含 slide / widget / PBL 场景的文档显式失败，不回退播放。
 - 改角色：`lib/generation/scene-generator.ts`、`scene-builder.ts` 沿用内容与动作两阶段。非检查页用 interactive HTML 存储/动作通道，不要求 widget 分类；检查仍为 quiz，必须带 HTML 字段，结构化题目保留为判分事实。两种场景构造路径必须保存 HTML，不把检查变成无需作答的普通互动。`generateSceneContent` 没有 HTML presentation 时失败。
 - 改角色：`packages/@livecourse/dsl/src/stage.ts`、`lib/types/generation.ts` 增加可选 quiz HTML；存储和媒体处理沿用现有文档/资源通道。不做旧格式迁移。
 - 改角色：场景渲染、测验视图、生成预览、场景缩略图显示真实 HTML。自由布局与页内 JavaScript 在不带 `allow-same-origin` 的 iframe 沙箱运行；保留运行错误反馈。测验桥只传递经校验的当前题目答案/展示状态，显式提交及重试沿用原判分与幂等逻辑，不接受页内宣称的分数或完成事件；只读预览与 replay 不写 evidence、C 或 L。
 - 沿用：既有 `postProcessInteractiveHtml`、iframe host、媒体占位替换、节点控制器与语音完成边界；HTML 页不得越权访问宿主页、配置密钥、课程存储或注册新发言者。
+- 才新写（A5.1）：共享 HTML 脚本语法校验器用 parse5 识别实际可执行脚本 / 事件属性，用 Acorn 只做语法解析（区分 classic/module，跳过 JSON/importmap 等数据脚本），不在服务器执行生成代码。`html-presentation.ts` 在页面接受前及后处理 / 桥接后校验；两条生成路径共用。首次语法失败最多一次调用原页面生成通道修复当前 HTML，保留现有题目与 ID、语言、视觉方向，不重跑题目生成或成功段。修复耗尽返回明确的不可自动重试错误，避免外层网络重试把修复次数放大；手动失败段重试仍可用。已存坏页面继续使用现有运行错误与显式基础题目恢复，不静默改写课程
 - 才新写：`lib/livecourse/html/teacher-bridge.ts` 给新讲授页注入通用高亮、标注与显露处理；只接收父窗口的既有类型化消息，不要求模型每页重复实现通信代码，也不限制页面构图。`quiz-bridge.ts` 只传递草稿与宿主展示状态，不能提交或判分。
 - 改角色（HTML 讲授同步）：页面提供真实稳定的教学区域 id；动作生成沿用元素清单，逐段先显露 / 高亮再讲解，拒绝纯讲稿、虚构目标和讲完才执行的动作。高亮持续到下一重点。课堂渲染时升级已注入的教师桥，不改写持久化 HTML；宿主等待桥的 DOM 就绪与动作执行确认，失败交还现有播放游标重试，暂停 / 插话 / 切页取消尚未投递的动作。replay 投递讲授视觉动作但不写证据或课程进度。
 
@@ -255,6 +270,7 @@
 | 材料与舞台 | 本仓库 OpenMAIC 迁入层、`packages/@livecourse/*` | 现有 DSL 表达不了新场景类型 |
 | 课中编排 | `@langchain/langgraph` | 不得另选编排框架 |
 | 生成侧 subagent 运行时 | `@earendil-works/pi-agent-core`（`lib/chat/pi`、`lib/agent/runtime` 在用） | 不得另选 agent 循环框架 |
+| HTML 页面语法校验 | parse5（HTML 解析）与 Acorn（JavaScript 语法解析），作为直接运行时依赖 | 现有 HTML 外壳正则不能识别脚本语法错误；用标准解析器而非自造括号修补、`eval` 或执行生成代码。只扩展既有 A5.1 生成验收缝 |
 | 全双工 | OpenAI Realtime + Agents SDK、`lib/livecourse/realtime` | 不得再接一套课中 ASR/TTS 主路径 |
 | 形象 | `@pixiv/three-vrm` / Airi | 不得换形象栈 |
 | 存储 | IndexedDB 默认、HTTP adapter、可选 PostgreSQL、`@livecourse/storage` | 不得为课程或记忆再写一套数据库 |

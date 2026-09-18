@@ -1,5 +1,10 @@
 import { APICallError, RetryError } from 'ai';
 import { apiError } from '@/lib/server/api-response';
+import {
+  ClassroomQualityError,
+  ClassroomReviewUnavailableError,
+} from '@/lib/livecourse/lesson/quality-review';
+import { TeachingOutputError } from '@/lib/livecourse/lesson/designer';
 
 const HTTP_ERROR_MIN = 400;
 const HTTP_ERROR_MAX = 599;
@@ -61,6 +66,36 @@ function messageForStatus(status: number): string {
  * exposing provider response bodies, URLs, or credential-adjacent details.
  */
 export function llmApiError(error: unknown) {
+  if (error instanceof ClassroomReviewUnavailableError) {
+    return apiError(
+      'UPSTREAM_ERROR',
+      statusFromError(error) ?? 503,
+      'Classroom review is temporarily unavailable. Please retry this segment.',
+      undefined,
+      { isRetryable: false },
+    );
+  }
+  if (error instanceof ClassroomQualityError) {
+    return apiError(
+      'GENERATION_FAILED',
+      422,
+      'Classroom content did not pass quality review. Please retry this segment.',
+      undefined,
+      { isRetryable: false },
+    );
+  }
+  if (error instanceof TeachingOutputError) {
+    return apiError(
+      'GENERATION_FAILED',
+      422,
+      'Teaching generation did not return a complete final answer. Please retry this segment.',
+      undefined,
+      { isRetryable: false },
+    );
+  }
+  if (error instanceof TeachingOutputError) {
+    return apiError('GENERATION_FAILED', 422, error.message, undefined, { isRetryable: false });
+  }
   const status = statusFromError(error);
   if (status === undefined) {
     return apiError('INTERNAL_ERROR', 500, 'Scene generation failed. Please try again.');

@@ -26,6 +26,7 @@ export interface ApiErrorBody {
   errorCode: ApiErrorCode;
   error: string;
   details?: string;
+  isRetryable?: boolean;
 }
 
 export function apiError(
@@ -33,6 +34,7 @@ export function apiError(
   status: number,
   error: string,
   details?: string,
+  options?: Pick<ApiErrorBody, 'isRetryable'>,
 ): NextResponse<ApiErrorBody> {
   return NextResponse.json(
     {
@@ -40,6 +42,7 @@ export function apiError(
       errorCode: code,
       error,
       ...(details ? { details } : {}),
+      ...(options?.isRetryable !== undefined ? { isRetryable: options.isRetryable } : {}),
     },
     { status },
   );

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   designLessonPlanWithSubagents: vi.fn(),
   persistClassroom: vi.fn(),
   callLLM: vi.fn(),
+  getStageModel: vi.fn(),
 }));
 const PBLGenerationErrorMock = vi.hoisted(
   () =>
@@ -29,6 +30,7 @@ const PBLGenerationErrorMock = vi.hoisted(
 vi.mock('@/lib/server/resolve-model', () => ({
   resolveModel: mocks.resolveModel,
 }));
+vi.mock('@/lib/server/model-routes', () => ({ getStageModel: mocks.getStageModel }));
 
 vi.mock('@/lib/ai/providers', async (importOriginal) => ({
   // The module graph now reaches the settings store (stage store -> settings),
@@ -39,6 +41,17 @@ vi.mock('@/lib/ai/providers', async (importOriginal) => ({
 
 vi.mock('@/lib/ai/llm', () => ({
   callLLM: mocks.callLLM,
+  collectStreamedCompletion: mocks.callLLM,
+  completeLLMText: async (
+    params: unknown,
+    source: string,
+    thinking?: unknown,
+  ) => {
+    const result = (await mocks.callLLM(params, source, undefined, thinking)) as {
+      text?: string;
+    };
+    return result?.text ?? '';
+  },
   resolveLlmText: (result: { text?: string; reasoningText?: string }) =>
     result.text?.trim() ? result.text : (result.reasoningText ?? ''),
 }));
@@ -59,7 +72,8 @@ vi.mock('@/lib/server/classroom-storage', () => ({
   persistClassroom: mocks.persistClassroom,
 }));
 
-vi.mock('@/lib/livecourse/lesson/html-presentation', () => ({
+vi.mock('@/lib/livecourse/lesson/html-presentation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/livecourse/lesson/html-presentation')>()),
   designHtmlLessonPlan: mocks.designLessonPlanWithSubagents,
 }));
 
@@ -114,7 +128,7 @@ describe('classroom scene generation retries', () => {
       apiKey: '',
     });
     mocks.isProviderKeyRequired.mockReturnValue(false);
-    mocks.callLLM.mockResolvedValue({ text: 'ok' });
+    mocks.callLLM.mockResolvedValue({ text: 'ok', finishReason: 'stop', reasoningText: '' });
     mocks.generateSceneOutlinesFromRequirements.mockResolvedValue({
       success: true,
       data: {
@@ -170,6 +184,102 @@ describe('classroom scene generation retries', () => {
     );
   }, 15_000); // Retries use a real backoff delay; under full-suite worker load, the default 5s timeout flakes
 
+  it('persists reviewed HTML corrections and does not regenerate the original content stage', async () => {
+    const real = await vi.importActual<typeof import('@/lib/generation/scene-generator')>(
+      '@/lib/generation/scene-generator',
+    );
+    mocks.createSceneWithActions.mockImplementation(real.createSceneWithActions);
+    mocks.generateSceneContent.mockResolvedValue({
+      html: '<html><head></head><body><p id="value">Wrong value.</p></body></html>',
+      htmlPresentation: true,
+    });
+    let reviews = 0;
+    mocks.callLLM.mockImplementation(async (_params, source) => ({
+      text:
+        source === 'classroom-review' &&
+        !String(_params.system).includes('minimal exact-text edits')
+          ? JSON.stringify({
+              checks: ['Amplitude is 1.'],
+              resolutions: [{ issueIndex: 0, fixed: true, evidence: 'The label is corrected.' }],
+              issues:
+                reviews++ === 0
+                  ? [
+                      {
+                        severity: 'blocking',
+                        confidence: 'high',
+                        target: 'html',
+                        evidence: 'The label is wrong.',
+                        correction: 'Amplitude is 1.',
+                      },
+                    ]
+                  : [],
+            })
+          : JSON.stringify({ edits: [{ oldText: 'Wrong value.', newText: 'Amplitude is 1.' }] }),
+      finishReason: 'stop',
+    }));
+    await generateWithProgress();
+    expect(mocks.persistClassroom.mock.calls[0][0].scenes[0].content.html).toContain(
+      'Amplitude is 1.',
+    );
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(1);
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(2);
+    expect(mocks.resolveModel).toHaveBeenCalledWith({ stage: 'classroom-review' });
+  });
+
+  it('does not persist a material error or multiply the single quality repair', async () => {
+    mocks.generateSceneContent.mockResolvedValue({
+      html: '<html><head></head><body><p id="value">Value.</p></body></html>',
+      htmlPresentation: true,
+    });
+    mocks.callLLM.mockResolvedValue({
+      text: JSON.stringify({
+        checks: ['The explanation is incorrect.'],
+        resolutions: [
+          { issueIndex: 0, fixed: false, evidence: 'The narration is still incorrect.' },
+        ],
+        issues: [
+          {
+            severity: 'blocking',
+            confidence: 'high',
+            target: 'actions',
+            evidence: 'The narration is incorrect.',
+            correction: 'Explain the correct value.',
+          },
+        ],
+      }),
+      finishReason: 'stop',
+    });
+    await expect(generateWithProgress()).rejects.toMatchObject({
+      name: 'ClassroomQualityError',
+      isRetryable: false,
+    });
+    expect(mocks.generateSceneActions).toHaveBeenCalledTimes(2);
+    expect(mocks.createSceneWithActions).not.toHaveBeenCalled();
+    expect(mocks.persistClassroom).not.toHaveBeenCalled();
+  });
+
+  it('does not multiply exhausted HTML syntax repair or persist a failed page in the one-shot path', async () => {
+    const { generateHtmlClassroomPage } = await vi.importActual<
+      typeof import('@/lib/livecourse/lesson/html-presentation')
+    >('@/lib/livecourse/lesson/html-presentation');
+    mocks.callLLM.mockResolvedValue({
+      text: '<html><head></head><body><p>Retries</p><script>const data = {;</script></body></html>',
+    });
+    mocks.generateSceneContent.mockImplementation((sceneOutline, aiCall, options) =>
+      generateHtmlClassroomPage(sceneOutline, aiCall, { presentation: options.presentation }),
+    );
+    await expect(generateWithProgress()).rejects.toMatchObject({
+      name: 'ClassroomHtmlGenerationError',
+      isRetryable: false,
+      message: expect.stringContaining('syntax repair failed'),
+    });
+    expect(mocks.callLLM).toHaveBeenCalledTimes(2);
+    expect(mocks.generateSceneContent).toHaveBeenCalledTimes(1);
+    expect(mocks.generateSceneActions).not.toHaveBeenCalled();
+    expect(mocks.createSceneWithActions).not.toHaveBeenCalled();
+    expect(mocks.persistClassroom).not.toHaveBeenCalled();
+  });
+
   it('forwards classroom thinking config to scene retry LLM calls', async () => {
     const thinkingConfig = { enabled: true, effort: 'high' };
     mocks.resolveModel.mockResolvedValue({
@@ -209,6 +319,51 @@ describe('classroom scene generation retries', () => {
       true,
     );
   }, 15_000); // Retries use a real backoff delay; under full-suite worker load, the default 5s timeout flakes
+
+  it.each([undefined, { mode: 'disabled' }, { mode: 'enabled', effort: 'high' }])(
+    'uses the scene-actions route and its reasoning configuration for HTML narration (%j)',
+    async (thinkingConfig) => {
+      const model = { id: 'narration-model' };
+      mocks.getStageModel.mockImplementation((stage) =>
+        stage === 'scene-actions' ? 'test:narration' : undefined,
+      );
+      mocks.resolveModel.mockImplementation(async ({ stage }) => ({
+        model: stage === 'scene-actions' ? model : { id: 'default-model' },
+        modelInfo: { outputWindow: 32768 },
+        modelString: stage === 'scene-actions' ? 'test:narration' : 'test:default',
+        providerId: 'test',
+        apiKey: '',
+        thinkingConfig: stage === 'scene-actions' ? thinkingConfig : undefined,
+      }));
+      mocks.generateSceneContent.mockResolvedValue(slideContent);
+      mocks.generateSceneActions.mockImplementation(async (_outline, _content, aiCall) => {
+        expect(await aiCall('narration system', 'narration prompt')).toBe('ok');
+        return [];
+      });
+
+      await generateWithProgress();
+
+      expect(mocks.callLLM).toHaveBeenCalledWith(
+        expect.objectContaining({ model, maxOutputTokens: 32768 }),
+        'generate-classroom-scene',
+        { mode: 'disabled', enabled: false },
+      );
+    },
+  );
+
+  it.each([
+    { text: '', reasoningText: 'Not a final answer', finishReason: 'stop' },
+    { text: '[]', finishReason: 'length' },
+  ])('does not persist empty or truncated narration (%j)', async (result) => {
+    mocks.callLLM.mockResolvedValue(result);
+    mocks.generateSceneContent.mockResolvedValue(slideContent);
+    mocks.generateSceneActions.mockImplementation(async (_outline, _content, aiCall) => {
+      await aiCall('system', 'prompt');
+      return [];
+    });
+    await expect(generateWithProgress()).rejects.toThrow(/final answer|truncated/);
+    expect(mocks.persistClassroom).not.toHaveBeenCalled();
+  });
 
   it('persists the designed lesson plan with the classroom file', async () => {
     const lessonPlan = {
@@ -271,6 +426,61 @@ describe('classroom scene generation retries', () => {
     expect(mocks.persistClassroom).not.toHaveBeenCalled();
   });
 
+  it('uses the independently routed lesson model and reasoning for both main design and workers', async () => {
+    const lessonModel = { id: 'reasoning-lesson-model' };
+    const thinking = { mode: 'enabled', effort: 'high' };
+    mocks.getStageModel.mockImplementation((stage) =>
+      stage === 'lesson-plan' ? 'test:reasoning' : undefined,
+    );
+    mocks.resolveModel.mockImplementation(async ({ stage }) => ({
+      model: stage === 'lesson-plan' ? lessonModel : { id: 'fast-model' },
+      modelInfo: { outputWindow: 8192 },
+      modelString: 'test:model',
+      providerId: 'test',
+      apiKey: '',
+      thinkingConfig: stage === 'lesson-plan' ? thinking : undefined,
+    }));
+    mocks.generateSceneContent.mockResolvedValue(slideContent);
+    await generateWithProgress();
+    expect(mocks.resolveModel).toHaveBeenCalledWith({ stage: 'lesson-plan' });
+    const [, runtime, designCall] = mocks.designLessonPlanWithSubagents.mock.calls[0];
+    expect(runtime).toEqual({
+      languageModel: lessonModel,
+      thinkingConfig: thinking,
+      maxOutputTokens: 8192,
+    });
+    await designCall('design system', 'design prompt');
+    expect(mocks.callLLM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: lessonModel,
+        system: 'design system',
+        prompt: 'design prompt',
+      }),
+      'lesson-plan',
+      thinking,
+    );
+  });
+
+  it('fails visibly when an explicitly configured lesson route cannot resolve', async () => {
+    const failure = new Error('Lesson model not configured');
+    mocks.getStageModel.mockImplementation((stage) =>
+      stage === 'lesson-plan' ? 'test:missing' : undefined,
+    );
+    mocks.resolveModel.mockImplementation(async ({ stage }) => {
+      if (stage === 'lesson-plan') throw failure;
+      return {
+        model: {},
+        modelInfo: {},
+        modelString: 'test:model',
+        providerId: 'test',
+        apiKey: '',
+      };
+    });
+    await expect(generateWithProgress()).rejects.toBe(failure);
+    expect(mocks.designLessonPlanWithSubagents).not.toHaveBeenCalled();
+    expect(mocks.generateSceneContent).not.toHaveBeenCalled();
+    expect(mocks.persistClassroom).not.toHaveBeenCalled();
+  });
   it('does not retry non-retryable action generation errors', async () => {
     const unauthorized = Object.assign(new Error('Unauthorized'), { statusCode: 401 });
     mocks.generateSceneContent.mockResolvedValue(slideContent);

@@ -286,8 +286,9 @@ async function pump(
     };
 
     const hasToolCall = partial.content.some((c) => (c as ToolCall).type === 'toolCall');
-    partial.stopReason = hasToolCall ? 'toolUse' : 'stop';
-    stream.push({ type: 'done', reason: hasToolCall ? 'toolUse' : 'stop', message: partial });
+    const finishReason = await result.finishReason;
+    partial.stopReason = finishReason === 'length' ? 'length' : hasToolCall ? 'toolUse' : 'stop';
+    stream.push({ type: 'done', reason: partial.stopReason, message: partial });
   } catch (err) {
     partial.stopReason = 'error';
     partial.errorMessage = err instanceof Error ? err.message : String(err);

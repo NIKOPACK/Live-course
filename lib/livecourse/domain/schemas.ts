@@ -51,7 +51,7 @@ export const learningGoalSchema = z
 export const anticipatedQuestionSchema = z
   .object({
     question: z.string().trim().min(1).max(500),
-    response: z.string().trim().min(1).max(2000),
+    response: z.string().trim().min(1),
   })
   .strict();
 
@@ -63,6 +63,13 @@ export const oralQuestionSchema = z
   .strict();
 
 export type OralQuestion = z.infer<typeof oralQuestionSchema>;
+
+export const lessonTeachingBriefSchema = z
+  .object({
+    throughline: z.string().trim().min(1),
+    estimatedDurationSeconds: z.number().int().positive().optional(),
+  })
+  .strict();
 
 /**
  * 声明式配图意图（docs/spec/04-detailed-design.md §5，A5）。
@@ -90,14 +97,14 @@ export const lessonVisualAidSchema = z
 export const lessonNodeDesignSchema = z
   .object({
     /** 本节点要讲清的具体要点，按讲授顺序排列 */
-    teachingPoints: z.array(z.string().trim().min(1).max(500)).min(1),
+    teachingPoints: z.array(z.string().trim().min(1)).min(1),
     /** 怎么讲：引入、展开、小结的组织方式 */
-    explanationPlan: z.string().trim().min(1).max(2000),
-    examples: z.array(z.string().trim().min(1).max(500)).optional(),
+    explanationPlan: z.string().trim().min(1),
+    examples: z.array(z.string().trim().min(1)).optional(),
     anticipatedQuestions: z.array(anticipatedQuestionSchema).optional(),
     oralQuestion: oralQuestionSchema.optional(),
     /** 易错点 / 常见误解，检查时重点验证 */
-    misconceptions: z.array(z.string().trim().min(1).max(500)).optional(),
+    misconceptions: z.array(z.string().trim().min(1)).optional(),
     /** 声明式配图意图（A5）；不需要配图的节点省略 */
     visualAids: z.array(lessonVisualAidSchema).max(3).optional(),
   })
@@ -137,6 +144,7 @@ export const lessonPlanSchema = z
     goals: z.array(learningGoalSchema),
     nodes: z.array(lessonNodeSchema),
     presentation: lessonPresentationSchema.optional(),
+    teachingBrief: lessonTeachingBriefSchema.optional(),
   })
   .strict()
   .superRefine((plan, context) => {
@@ -457,6 +465,7 @@ export type LearningGoal = z.infer<typeof learningGoalSchema>;
 export type AnticipatedQuestion = z.infer<typeof anticipatedQuestionSchema>;
 export type LessonVisualAid = z.infer<typeof lessonVisualAidSchema>;
 export type LessonNodeDesign = z.infer<typeof lessonNodeDesignSchema>;
+export type LessonTeachingBrief = z.infer<typeof lessonTeachingBriefSchema>;
 export type LessonNode = z.infer<typeof lessonNodeSchema>;
 export type LessonPresentation = z.infer<typeof lessonPresentationSchema>;
 export type LessonPlan = z.infer<typeof lessonPlanSchema>;

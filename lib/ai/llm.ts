@@ -426,10 +426,29 @@ export function streamLLM<T extends StreamTextParams>(
 /**
  * Collect a full completion through `streamLLM`.
  *
- * OpenAI-compatible gateways (and some proxies) apply a first-byte timeout to
- * non-streaming `/chat/completions`. Slide JSON often takes longer than that
- * to finish, so waiting on a streamed first token keeps long generations alive.
+ * OpenAI-compatible gateways apply a first-byte timeout to non-streaming
+ * `/chat/completions`. Waiting on a streamed first token keeps long teaching
+ * JSON and review reports alive for the 600s route window.
  */
+export async function collectStreamedCompletion(
+  params: StreamTextParams,
+  source: string,
+  thinking?: ThinkingConfig,
+): Promise<{ text: string; finishReason: string; reasoningText: string }> {
+  const result = streamLLM(params, source, thinking);
+  const [text, finishReason, reasoningText, reasoningParts] = await Promise.all([
+    result.text,
+    result.finishReason,
+    result.reasoningText,
+    result.reasoning,
+  ]);
+  return {
+    text,
+    finishReason: finishReason ?? 'unknown',
+    reasoningText: reasoningText || reasoningParts.map((part) => part.text).join(''),
+  };
+}
+
 /**
  * Prefer visible answer text. Some OpenAI-compatible gateways (DeepSeek-V4 on
  * aiping) put the entire completion in `reasoning_content`; extractReasoningMiddleware
@@ -457,14 +476,5 @@ export async function completeLLMText(
   source: string,
   thinking?: ThinkingConfig,
 ): Promise<string> {
-  const result = streamLLM(params, source, thinking);
-  const [text, reasoningText, reasoningParts] = await Promise.all([
-    result.text,
-    result.reasoningText,
-    result.reasoning,
-  ]);
-  return resolveLlmText({
-    text,
-    reasoningText: reasoningText || reasoningParts.map((part) => part.text).join(''),
-  });
+  return resolveLlmText(await collectStreamedCompletion(params, source, thinking));
 }

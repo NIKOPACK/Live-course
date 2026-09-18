@@ -56,6 +56,7 @@ import type {
 import type { ThinkingConfig } from '@/lib/types/provider';
 import {
   oralQuestionSchema,
+  lessonNodeDesignSchema,
   type LessonNodeDesign,
   type LessonPresentation,
 } from '@/lib/livecourse/domain/schemas';
@@ -114,6 +115,7 @@ export interface SceneContentOptions {
 }
 
 export interface SceneActionsOptions {
+  lessonNodeDesign?: LessonNodeDesign;
   ctx?: SceneGenerationContext;
   agents?: AgentInfo[];
   userProfile?: string;
@@ -250,6 +252,7 @@ export async function generateSceneContent(
         ...pageOptions,
         questions: quiz.questions,
       }),
+      htmlPresentation: true,
     };
   }
   return {
@@ -1548,6 +1551,10 @@ export async function generateSceneActions(
 ): Promise<Action[]> {
   const { ctx, agents, userProfile, languageDirective } = options;
   if ('htmlPresentation' in content && content.htmlPresentation) {
+    const lessonNodeDesign =
+      options.lessonNodeDesign === undefined
+        ? undefined
+        : lessonNodeDesignSchema.parse(options.lessonNodeDesign);
     const oralQuestion =
       content.oralQuestion === undefined
         ? undefined
@@ -1562,11 +1569,18 @@ export async function generateSceneActions(
     if (!teachingInventory) {
       throw new ClassroomHtmlActionsError('HTML page has no teaching region ids');
     }
-    const response = await generateHtmlClassroomActionOutput(outline, content.html, aiCall, {
+    const actionOptions = {
       ...options,
+      lessonNodeDesign,
       elementInventory: teachingInventory,
       oralQuestion,
-    });
+    };
+    const response = await generateHtmlClassroomActionOutput(
+      outline,
+      content.html,
+      aiCall,
+      actionOptions,
+    );
     const actions = repairHtmlTeachingActions(
       normalizeHtmlTeachingActions(
         parseActionsFromStructuredOutput(response, 'interactive', [

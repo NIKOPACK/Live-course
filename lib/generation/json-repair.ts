@@ -279,3 +279,58 @@ export function tryParseJson<T>(jsonStr: string): T | null {
     return null;
   }
 }
+
+/**
+ * Return a balanced JSON object/array substring that `JSON.parse` accepts
+ * without repair. Truncated payloads return undefined — do not use jsonrepair
+ * here; it will invent a closed document.
+ */
+export function extractBalancedJsonText(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  const startArray = trimmed.indexOf('[');
+  const startObject = trimmed.indexOf('{');
+  if (startArray < 0 && startObject < 0) return undefined;
+  const start =
+    startArray < 0
+      ? startObject
+      : startObject < 0
+        ? startArray
+        : Math.min(startArray, startObject);
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let index = start; index < trimmed.length; index++) {
+    const char = trimmed[index];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '[' || char === '{') depth++;
+    else if (char === ']' || char === '}') {
+      depth--;
+      if (depth === 0) {
+        const candidate = trimmed.slice(start, index + 1);
+        try {
+          JSON.parse(candidate);
+          return candidate;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}

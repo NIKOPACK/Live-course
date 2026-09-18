@@ -1,11 +1,10 @@
 import { nanoid } from 'nanoid';
-import { callLLM, resolveLlmText } from '@/lib/ai/llm';
+import { callLLM, collectStreamedCompletion, completeLLMText, resolveLlmText } from '@/lib/ai/llm';
 import { createStageAPI } from '@/lib/api/stage-api';
 import type { StageStore } from '@/lib/api/stage-api-types';
 import { generateSceneOutlinesFromRequirements } from '@/lib/generation/outline-generator';
 import {
   createSceneWithActions,
-  generateSceneActions,
   generateSceneContent,
   PBLGenerationError,
 } from '@/lib/generation/scene-generator';
@@ -19,7 +18,10 @@ import { resolveModel } from '@/lib/server/resolve-model';
 import { getStageModel, type LlmStage } from '@/lib/server/model-routes';
 import type { LanguageModel } from 'ai';
 import type { ThinkingConfig } from '@/lib/types/provider';
-import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
+import {
+  thinkingConfigForHtmlClassroom,
+  thinkingConfigForTeaching,
+} from '@/lib/ai/thinking-config';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 import { buildSearchQuery } from '@/lib/server/search-query-builder';
 import { formatSearchResultsAsContext, searchWeb } from '@/lib/web-search';
@@ -35,6 +37,9 @@ import { resolveCoverPrompt } from '@/lib/livecourse/lesson/course-cover';
 import { withGenerationRetry } from '@/lib/generation/generation-retry';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
+import { completeTeachingText, TeachingOutputError } from '@/lib/livecourse/lesson/designer';
+import { createClassroomReviewer } from '@/lib/server/classroom-review';
+import { generateReviewedTeachingMaterial } from '@/lib/generation/reviewed-scene';
 import { ClassroomHtmlRequiredError } from '@/lib/livecourse/lesson/html-classroom';
 import { applyVisualAidsToOutlines } from '@/lib/livecourse/lesson/visual-aids';
 import {
@@ -282,7 +287,7 @@ export async function generateClassroom(
     if (cached) return cached;
 
     // No route configured → reuse the classroom model, no extra resolution.
-    if (!getStageModel(stage)) {
+    if (!getStageModel(stage) && stage !== 'classroom-review') {
       const fallback = {
         model: languageModel,
         outputWindow: modelInfo?.outputWindow,
@@ -303,6 +308,7 @@ export async function generateClassroom(
       stageModelCache.set(stage, entry);
       return entry;
     } catch (err) {
+      if (stage === 'lesson-plan' || stage === 'classroom-review') throw err;
       log.warn(
         `Stage "${stage}" route "${getStageModel(stage)}" could not be resolved; ` +
           `falling back to the generate-classroom model.`,
@@ -330,20 +336,19 @@ export async function generateClassroom(
     const { model, outputWindow, thinking } = await resolveStageModel(stage);
     const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinking);
     const aiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
-      const result = await callLLM(
-        {
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          maxOutputTokens: outputWindow,
-          maxRetries: 0,
-        },
-        'generate-classroom-scene',
-        undefined,
-        pageThinking,
-      );
+      const params = {
+        model,
+        messages: [
+          { role: 'system' as const, content: systemPrompt },
+          { role: 'user' as const, content: userPrompt },
+        ],
+        maxOutputTokens: outputWindow,
+        maxRetries: 0 as const,
+      };
+      if (htmlClassroom) {
+        return completeLLMText(params, 'generate-classroom-scene', pageThinking);
+      }
+      const result = await callLLM(params, 'generate-classroom-scene', undefined, pageThinking);
       return resolveLlmText(result);
     };
     return { aiCall, model, thinking: pageThinking };
@@ -379,22 +384,22 @@ export async function generateClassroom(
   const getSceneActionsAiCall = async (htmlClassroom = false): Promise<AICallFn> => {
     if (sceneActionsAiCall) return sceneActionsAiCall;
     const { model, outputWindow, thinking } = await resolveStageModel('scene-actions');
-    const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinking);
+    const actionThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinking);
     sceneActionsAiCall = async (systemPrompt, userPrompt, _images) => {
-      const result = await callLLM(
-        {
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          maxOutputTokens: outputWindow,
-          maxRetries: 0,
-        },
-        'generate-classroom-scene',
-        undefined,
-        pageThinking,
-      );
+      const params = {
+        model,
+        messages: [
+          { role: 'system' as const, content: systemPrompt },
+          { role: 'user' as const, content: userPrompt },
+        ],
+        maxOutputTokens: outputWindow,
+      };
+      if (htmlClassroom) {
+        return completeTeachingText(
+          await collectStreamedCompletion(params, 'generate-classroom-scene', actionThinking),
+        );
+      }
+      const result = await callLLM(params, 'generate-classroom-scene', undefined, actionThinking);
       return resolveLlmText(result);
     };
     return sceneActionsAiCall;
@@ -570,11 +575,40 @@ export async function generateClassroom(
   };
 
   // The main agent sets one visual direction before node design/page generation.
-  // Node designs may degrade to the real outline skeleton; the direction may not.
+  // Both paths use the same independently routed model for all lesson design calls.
+  const resolveReviewModel = async () => {
+    const resolved = await resolveStageModel('classroom-review');
+    return {
+      model: resolved.model,
+      modelInfo: { outputWindow: resolved.outputWindow },
+      thinkingConfig: resolved.thinking,
+    };
+  };
+  const reviewCall = createClassroomReviewer(resolveReviewModel);
+  const repairHtmlCall = createClassroomReviewer(resolveReviewModel, undefined, 'html-repair');
+  const lessonModel = await resolveStageModel('lesson-plan');
+  const lessonThinking = thinkingConfigForTeaching(lessonModel.thinking);
   const lessonPlan = await designHtmlLessonPlan(
     { courseId, stageId, lessonId, requirement, courseTitle, languageDirective, outlines },
-    { languageModel, thinkingConfig: classroomThinking },
-    aiCall,
+    {
+      languageModel: lessonModel.model,
+      thinkingConfig: lessonThinking,
+      maxOutputTokens: lessonModel.outputWindow,
+    },
+    async (system, prompt) =>
+      completeTeachingText(
+        await collectStreamedCompletion(
+          {
+            model: lessonModel.model,
+            system,
+            prompt,
+            maxOutputTokens: lessonModel.outputWindow,
+          },
+          'lesson-plan',
+          lessonThinking,
+        ),
+      ),
+    reviewCall,
   );
   if (lessonPlan?.presentation?.mode !== 'html') {
     throw new ClassroomHtmlRequiredError();
@@ -689,31 +723,42 @@ export async function generateClassroom(
     }
 
     const actionsAiCall = await getSceneActionsAiCall(lessonPlan?.presentation?.mode === 'html');
-    const actions = await withGenerationRetry(
+    const reviewed = await withGenerationRetry(
       () =>
-        generateSceneActions(safeOutline, content, actionsAiCall, {
-          agents,
-          languageDirective,
-          ctx: {
-            pageIndex: index + 1,
-            totalPages: outlines.length,
-            allTitles: outlines.map((item) => item.title),
-            previousSpeeches:
-              store
-                .getState()
-                .scenes.at(-1)
-                ?.actions?.flatMap((action) => (action.type === 'speech' ? [action.text] : [])) ??
-              [],
+        generateReviewedTeachingMaterial(
+          safeOutline,
+          content,
+          actionsAiCall,
+          {
+            agents,
+            languageDirective,
+            lessonNodeDesign: lessonDesignByOutlineId.get(safeOutline.id),
+            ctx: {
+              pageIndex: index + 1,
+              totalPages: outlines.length,
+              allTitles: outlines.map((item) => item.title),
+              previousSpeeches:
+                store
+                  .getState()
+                  .scenes.at(-1)
+                  ?.actions?.flatMap((action) => (action.type === 'speech' ? [action.text] : [])) ??
+                [],
+            },
           },
-        }),
+          {
+            reviewCall,
+            repairHtmlCall,
+          },
+        ),
       {
         label: `scene ${index + 1}/${outlines.length} actions`,
         onRetry: (event) => reportSceneRetry('actions', event),
       },
     );
+    const { actions } = reviewed;
     log.info(`Scene "${safeOutline.title}": ${actions.length} actions`);
 
-    const sceneId = createSceneWithActions(safeOutline, content, actions, api);
+    const sceneId = createSceneWithActions(safeOutline, reviewed.content, actions, api);
     if (!sceneId) {
       throw new Error(`Failed to save HTML page "${safeOutline.title}"`);
     }

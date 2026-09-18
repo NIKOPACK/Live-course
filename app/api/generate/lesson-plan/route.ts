@@ -9,18 +9,21 @@
  */
 
 import { NextRequest } from 'next/server';
-import { callLLM } from '@/lib/ai/llm';
+import { collectStreamedCompletion } from '@/lib/ai/llm';
+import { thinkingConfigForTeaching } from '@/lib/ai/thinking-config';
 import { isAbortError } from '@/lib/generation/generation-retry';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
+import { completeTeachingText } from '@/lib/livecourse/lesson/designer';
 import { llmApiError } from '@/lib/server/llm-error-response';
+import { createClassroomReviewer } from '@/lib/server/classroom-review';
 import type { SceneOutline, UserRequirements } from '@/lib/types/generation';
 
 const log = createLogger('Lesson Plan API');
 
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 /** One in-flight design per stage so a refresh aborts the previous 14-way fan-out. */
 const lessonPlanJobs = new Map<string, AbortController>();
@@ -71,13 +74,14 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'outlines is required and must not be empty');
     }
 
-    const { model: languageModel, thinkingConfig } = await resolveModelFromRequest(
-      req,
-      body,
-      'lesson-plan',
-    );
+    const {
+      model: languageModel,
+      modelInfo,
+      thinkingConfig,
+    } = await resolveModelFromRequest(req, body, 'lesson-plan');
 
     const job = takeLessonPlanSignal(stageId.trim(), req.signal);
+    const designThinking = thinkingConfigForTeaching(thinkingConfig);
     try {
       const lessonPlan = await designHtmlLessonPlan(
         {
@@ -91,16 +95,30 @@ export async function POST(req: NextRequest) {
           clarificationAnswers: requirements?.clarificationAnswers,
           selectedTopics: requirements?.selectedTopics,
         },
-        { languageModel, thinkingConfig, abortSignal: job.signal },
+        {
+          languageModel,
+          thinkingConfig: designThinking,
+          maxOutputTokens: modelInfo?.outputWindow,
+          abortSignal: job.signal,
+        },
         async (system, user) =>
-          (
-            await callLLM(
-              { model: languageModel, system, prompt: user, abortSignal: job.signal },
+          completeTeachingText(
+            await collectStreamedCompletion(
+              {
+                model: languageModel,
+                system,
+                prompt: user,
+                maxOutputTokens: modelInfo?.outputWindow,
+                abortSignal: job.signal,
+              },
               'lesson-plan',
-              undefined,
-              thinkingConfig,
-            )
-          ).text,
+              designThinking,
+            ),
+          ),
+        createClassroomReviewer(
+          () => resolveModelFromRequest(req, body, 'classroom-review'),
+          job.signal,
+        ),
       );
 
       return apiSuccess({ lessonPlan });

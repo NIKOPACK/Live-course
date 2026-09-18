@@ -1,5 +1,14 @@
 export const HTML_TEXT_SELECTION_LIMIT = 500;
 
+export const HTML_TEACHER_ACTION_CONTRACT = `Actual host teacher-action contract:
+widget_highlight adds an outline and scrolls to the target; widget_annotation displays a note.
+widget_reveal removes hidden and overrides display:none, visibility:hidden or opacity:0 ONLY on
+the requested element. It does NOT call window.__reveal or any page-defined function, dispatch
+custom events, add animation classes, change controls, or unhide descendants/ancestors.
+Render core computed plots visibly on load. For progressive content use hidden on a stable,
+explicit target ID, not custom reveal hooks or opacity-zero descendants inside a visible target.
+Highlighting/revealing an already visible region is valid and does not simulate a click.`;
+
 const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
 (function () {
   var pending = [];
@@ -115,10 +124,15 @@ const TEACHER_BRIDGE = `<script data-livecourse-teacher-bridge>
 </script>`;
 
 /** New HTML pages share the existing teacher action protocol, not a layout template. */
+export function stripHtmlTeacherBridge(html: string): string {
+  return html.replace(
+    /<script\b[^>]*\bdata-livecourse-teacher-bridge\b[^>]*>[\s\S]*?<\/script\s*>/gi,
+    '',
+  );
+}
+
 export function attachHtmlTeacherBridge(html: string): string {
-  return html
-    .replace(/<script\b[^>]*\bdata-livecourse-teacher-bridge\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
-    .replace(/<head\b[^>]*>/i, (head) => head + TEACHER_BRIDGE);
+  return stripHtmlTeacherBridge(html).replace(/<head\b[^>]*>/i, (head) => head + TEACHER_BRIDGE);
 }
 
 export function hasHtmlTeacherBridge(html: string): boolean {

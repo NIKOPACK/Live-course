@@ -6,7 +6,12 @@ import {
   generateHtmlClassroomPage,
   parseClassroomHtml,
 } from '@/lib/livecourse/lesson/html-presentation';
-import { isRetryableGenerationError } from '@/lib/generation/generation-retry';
+import { isRetryableGenerationError, withGenerationRetry } from '@/lib/generation/generation-retry';
+import {
+  ClassroomHtmlGenerationError,
+  ClassroomHtmlSyntaxError,
+  validateClassroomHtmlSyntax,
+} from '@/lib/livecourse/html/syntax-validator';
 import { lessonPlanSchema, type LessonPresentation } from '@/lib/livecourse/domain/schemas';
 import {
   generateSceneContent,
@@ -16,6 +21,11 @@ import {
 import { buildCompleteScene } from '@/lib/generation/scene-builder';
 import { createStageAPI } from '@/lib/api/stage-api';
 import { attachHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
+import { patchQuizHtml } from '@/lib/livecourse/html/quiz-bridge';
+import * as teacherBridge from '@/lib/livecourse/html/teacher-bridge';
+import * as quizBridge from '@/lib/livecourse/html/quiz-bridge';
+import * as mathProcessor from '@/lib/generation/interactive-post-processor';
+import * as iframePatch from '@/lib/utils/iframe';
 import type { StageStore } from '@/lib/api/stage-api-types';
 import type { SceneOutline } from '@/lib/types/generation';
 
@@ -34,7 +44,14 @@ const presentation: LessonPresentation = {
   visualStyle:
     'Warm editorial paper, ink typography and teal mathematical diagrams; --accent: #087f83.',
 };
+const teachingBrief = {
+  throughline:
+    'Use the same moving secant to build the tangent definition; keep notation consistent.',
+  estimatedDurationSeconds: 180,
+};
+const direction = { visualStyle: presentation.visualStyle, teachingBrief };
 const runtime = { languageModel: createOpenAI({ apiKey: 'unused' }).chat('test-model') };
+const reviewCall = async () => JSON.stringify({ checks: ['Teaching verified.'], issues: [] });
 const design = {
   teachingPoints: ['Explain the limiting secant.'],
   explanationPlan: 'Animate the slope, then derive it.',
@@ -49,6 +66,49 @@ const input = {
 };
 
 describe('main-agent HTML visual direction', () => {
+  it('routes factual plan repair to the independently configured reviewer rather than the original author', async () => {
+    const corrected = {
+      ...design,
+      teachingPoints: ['The secant slope tends to the tangent slope.'],
+    };
+    const author = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify(direction))
+      .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
+    const reviewer = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          checks: ['The limiting slope is the derivative.'],
+          issues: [
+            {
+              severity: 'blocking',
+              confidence: 'high',
+              target: 'node',
+              sceneId: outline.id,
+              evidence: 'Incorrect definition.',
+              correction: 'State the correct limiting slope.',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({ nodes: [{ sceneId: outline.id, design: corrected }] }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          checks: ['The definition is fixed.'],
+          resolutions: [{ issueIndex: 0, fixed: true, evidence: 'Correct limit definition.' }],
+          regressions: [],
+        }),
+      );
+    const plan = await designHtmlLessonPlan(input, runtime, author, reviewer);
+    expect(plan.nodes[0].design).toEqual(corrected);
+    expect(author).toHaveBeenCalledTimes(2);
+    expect(reviewer).toHaveBeenCalledTimes(3);
+    expect(reviewer.mock.calls[1][0]).toContain('Correct only the specified teaching errors');
+  });
+
   it('decides one shared style before node workers and persists it in the plan', async () => {
     const plannedDesign = {
       ...design,
@@ -59,16 +119,17 @@ describe('main-agent HTML visual direction', () => {
     };
     const aiCall = vi
       .fn()
-      .mockResolvedValueOnce(JSON.stringify({ visualStyle: presentation.visualStyle }))
+      .mockResolvedValueOnce(JSON.stringify(direction))
       .mockResolvedValueOnce(
         JSON.stringify({ nodes: [{ sceneId: outline.id, design: plannedDesign }] }),
       );
-    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall, reviewCall);
     expect(aiCall).toHaveBeenCalledTimes(2);
     expect(aiCall.mock.calls[0][0]).toContain('main agent');
     expect(aiCall.mock.calls[0][0]).toContain('coverPrompt');
     expect(aiCall.mock.calls[1][1]).toContain(presentation.visualStyle);
     expect(plan.presentation).toEqual(presentation);
+    expect(plan.teachingBrief).toEqual(teachingBrief);
     expect(plan.nodes[0].design).toEqual(plannedDesign);
     expect(lessonPlanSchema.parse(JSON.parse(JSON.stringify(plan))).nodes[0].design).toEqual(
       plannedDesign,
@@ -78,20 +139,20 @@ describe('main-agent HTML visual direction', () => {
     );
   });
 
-  it('retains the main style when node design falls back to the real outline skeleton', async () => {
+  it('rejects an incomplete node design instead of shipping a styled skeleton', async () => {
     const aiCall = vi
       .fn()
-      .mockResolvedValueOnce(JSON.stringify({ visualStyle: presentation.visualStyle }))
+      .mockResolvedValueOnce(JSON.stringify(direction))
       .mockResolvedValueOnce('not a lesson plan');
-    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
-    expect(plan.presentation).toEqual(presentation);
-    expect(plan.nodes.map((node) => node.sceneId)).toEqual(['intro']);
-    expect(plan.nodes[0].design).toBeUndefined();
+    await expect(designHtmlLessonPlan(input, runtime, aiCall, reviewCall)).rejects.toThrow(
+      'Lesson design incomplete: intro',
+    );
+    expect(aiCall).toHaveBeenCalledTimes(2);
   });
 
   it('fails before node generation when the main style is absent or invalid', async () => {
     const aiCall = vi.fn().mockResolvedValue('{}');
-    await expect(designHtmlLessonPlan(input, runtime, aiCall)).rejects.toThrow();
+    await expect(designHtmlLessonPlan(input, runtime, aiCall, reviewCall)).rejects.toThrow();
     expect(aiCall).toHaveBeenCalledTimes(1);
   });
 
@@ -101,11 +162,12 @@ describe('main-agent HTML visual direction', () => {
       .mockResolvedValueOnce(
         JSON.stringify({
           visualStyle: presentation.visualStyle,
+          teachingBrief,
           coverPrompt: 'A 16:9 teal waveform over warm paper.',
         }),
       )
       .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
-    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall, reviewCall);
     expect(plan.presentation).toEqual({
       ...presentation,
       coverPrompt: 'A 16:9 teal waveform over warm paper.',
@@ -115,12 +177,85 @@ describe('main-agent HTML visual direction', () => {
   it('keeps visual direction when coverPrompt is missing or not a string', async () => {
     const aiCall = vi
       .fn()
-      .mockResolvedValueOnce(
-        JSON.stringify({ visualStyle: presentation.visualStyle, coverPrompt: 3 }),
-      )
-      .mockResolvedValueOnce('not a lesson plan');
-    const plan = await designHtmlLessonPlan(input, runtime, aiCall);
+      .mockResolvedValueOnce(JSON.stringify({ ...direction, coverPrompt: 3 }))
+      .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall, reviewCall);
     expect(plan.presentation).toEqual(presentation);
+  });
+
+  it('accepts complete teaching design without an estimated duration', async () => {
+    const brief = { throughline: teachingBrief.throughline };
+    const aiCall = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify({ ...direction, teachingBrief: brief }))
+      .mockResolvedValueOnce(JSON.stringify({ nodes: [{ sceneId: outline.id, design }] }));
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall, reviewCall);
+    expect(plan.teachingBrief).toEqual(brief);
+    expect(plan.nodes[0].design).toEqual(design);
+    expect(aiCall).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, {}, { throughline: 'A plan', estimatedDurationSeconds: 0 }])(
+    'requires a valid course teaching brief before starting node workers (%j)',
+    async (invalidBrief) => {
+      const aiCall = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          visualStyle: presentation.visualStyle,
+          teachingBrief: invalidBrief,
+        }),
+      );
+      await expect(designHtmlLessonPlan(input, runtime, aiCall, reviewCall)).rejects.toThrow();
+      expect(aiCall).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe('quality-first classroom narration', () => {
+  const output = (text: string) =>
+    JSON.stringify([
+      { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+      { type: 'text', content: text },
+    ]);
+
+  it('shares the design without imposing a time or word quota', async () => {
+    const text = '变化'.repeat(2000);
+    const aiCall = vi.fn().mockResolvedValue(output(text));
+    const actions = await generateSceneActions(outline, { html, htmlPresentation: true }, aiCall, {
+      lessonNodeDesign: design,
+    });
+    expect(aiCall).toHaveBeenCalledTimes(1);
+    expect(aiCall.mock.calls[0][1]).toContain(design.explanationPlan);
+    expect(aiCall.mock.calls[0][0]).toContain('cannot click, drag or set control values');
+    expect(aiCall.mock.calls[0][0]).toContain('Do not shorten essential');
+    expect(aiCall.mock.calls[0][1]).not.toContain('Node time budget:');
+    expect(actions.at(-1)).toMatchObject({ text });
+  });
+
+  it('keeps old lessons readable and does not truncate narration', async () => {
+    const text = '变化'.repeat(200);
+    const aiCall = vi.fn().mockResolvedValue(output(text));
+    const actions = await generateSceneActions(outline, { html, htmlPresentation: true }, aiCall, {
+      lessonNodeDesign: design,
+    });
+    expect(aiCall).toHaveBeenCalledTimes(1);
+    expect(actions.at(-1)).toMatchObject({ text });
+  });
+
+  it('uses HTML teaching actions for checkpoint pages instead of the default quiz speech', async () => {
+    const quizOutline: SceneOutline = { ...outline, type: 'quiz' };
+    const text = 'Look at the given options.';
+    const aiCall = vi.fn().mockResolvedValue(output(text));
+    const actions = await generateSceneActions(
+      quizOutline,
+      { html, questions: [], htmlPresentation: true },
+      aiCall,
+      { lessonNodeDesign: design },
+    );
+    expect(aiCall).toHaveBeenCalledTimes(1);
+    expect(actions.map((action) => action.type)).toContain('speech');
+    expect(actions.some((action) => 'text' in action && action.text.includes('小测验'))).toBe(
+      false,
+    );
   });
 });
 
@@ -270,13 +405,21 @@ describe('model-authored classroom pages', () => {
       presentation,
       lessonNodeDesign: design,
     });
-    expect(content).toMatchObject({ html, questions: [question] });
+    expect(content).toMatchObject({ html, questions: [question], htmlPresentation: true });
     expect(aiCall.mock.calls[0][1]).toContain(design.teachingPoints[0]);
     const [system, user] = aiCall.mock.calls[1];
     expect(system).toContain('window.livecourseQuiz.setAnswer');
     expect(system).toContain('livecourse:quiz-state');
+    expect(system).toContain('scroll inside the iframe');
     expect(user).not.toContain(question.analysis);
     expect(user).not.toContain('"answer"');
+    expect(user).not.toContain(design.teachingPoints[0]);
+    expect(user).not.toContain(design.explanationPlan);
+    expect(system).toContain('Do not preload solutions');
+    expect(system).toContain('results is an ARRAY');
+    expect(system).toContain('state.results.find');
+    expect(system).toContain('!state.readOnly');
+    expect(system).toContain('result.answer is the CORRECT ANSWER KEY');
     const scene = content && buildCompleteScene(quizOutline, content, [], 'stage');
     expect(scene?.type).toBe('quiz');
     expect(scene?.content).toMatchObject({ html, questions: [question] });
@@ -394,9 +537,11 @@ describe('model-authored classroom pages', () => {
     const actions = await generateSceneActions(
       outline,
       { html, htmlPresentation: true },
-      vi.fn().mockResolvedValue(
-        JSON.stringify([{ type: 'text', content: 'Speech without a visual cue.' }]),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          JSON.stringify([{ type: 'text', content: 'Speech without a visual cue.' }]),
+        ),
     );
     expect(actions.map((action) => action.type)).toEqual(['widget_highlight', 'speech']);
     expect(actions[0]).toMatchObject({ type: 'widget_highlight', target: '#slope' });
@@ -407,11 +552,13 @@ describe('model-authored classroom pages', () => {
       generateSceneActions(
         outline,
         { html, htmlPresentation: true },
-        vi.fn().mockResolvedValue(
-          JSON.stringify([
-            { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
-          ]),
-        ),
+        vi
+          .fn()
+          .mockResolvedValue(
+            JSON.stringify([
+              { type: 'action', name: 'widget_highlight', params: { target: '#slope' } },
+            ]),
+          ),
       ),
     ).rejects.toMatchObject({ name: 'ClassroomHtmlActionsError', isRetryable: true });
   });
@@ -497,7 +644,9 @@ describe('model-authored classroom pages', () => {
 
   it('accepts a fenced complete document, but rejects truncated and empty pages', () => {
     expect(parseClassroomHtml(`\`\`\`html\n${html}\n\`\`\``)).toBe(html);
-    expect(parseClassroomHtml(html.toUpperCase())).toContain('<HTML>');
+    expect(parseClassroomHtml(html.replace(/<\/?[a-z]+/g, (tag) => tag.toUpperCase()))).toContain(
+      '<HTML>',
+    );
     expect(parseClassroomHtml(html.replace('</html>', ''))).toBe(html);
     expect(parseClassroomHtml(`${html.replace('</body></html>', '')}<p>more</p>`)).toContain(
       '</html>',
@@ -508,6 +657,191 @@ describe('model-authored classroom pages', () => {
     );
     expect(() => parseClassroomHtml('<p>not a document</p>')).toThrow(ClassroomHtmlParseError);
     expect(isRetryableGenerationError(new ClassroomHtmlParseError())).toBe(true);
+  });
+
+  describe('bounded classroom HTML syntax repair', () => {
+    const invalidHtml = html.replace('const x = 1;', 'const x = { value: 1;');
+    const question = {
+      id: 'q1',
+      type: 'single' as const,
+      question: 'What does slope measure?',
+      options: [
+        { value: 'A', label: 'Rate of change' },
+        { value: 'B', label: 'Area' },
+      ],
+      answer: ['A'],
+      analysis: 'PRIVATE grading explanation',
+      commentPrompt: 'PRIVATE grading instructions',
+    };
+
+    it('rejects a complete shell with invalid or truncated executable JavaScript', () => {
+      expect(() => parseClassroomHtml(invalidHtml)).toThrow(ClassroomHtmlSyntaxError);
+      expect(() =>
+        parseClassroomHtml(html.replace('const x = 1;</script></body></html>', 'const x = {')),
+      ).toThrow(ClassroomHtmlSyntaxError);
+    });
+
+    it('does not mistake HTML closing tags in valid JavaScript strings for a shell boundary', () => {
+      const quoted = html.replace('const x = 1;', 'const x = "</html>";');
+      expect(parseClassroomHtml(quoted)).toBe(quoted);
+      expect(parseClassroomHtml(`${quoted}\nThanks`)).toBe(quoted);
+      expect(parseClassroomHtml(quoted.replace('</body></html>', ''))).toBe(quoted);
+    });
+
+    it('repairs only the current quiz HTML once without regenerating or leaking grading facts', async () => {
+      const aiCall = vi
+        .fn()
+        .mockResolvedValueOnce(JSON.stringify([question]))
+        .mockResolvedValueOnce(invalidHtml)
+        .mockResolvedValueOnce(html);
+      const content = await generateSceneContent({ ...outline, type: 'quiz' }, aiCall, {
+        presentation,
+        lessonNodeDesign: design,
+        languageDirective: 'English only',
+      });
+      expect(content).toMatchObject({ html, questions: [question] });
+      expect(aiCall).toHaveBeenCalledTimes(3);
+      const [system, prompt] = aiCall.mock.calls[2];
+      expect(system).toContain('Repair ONLY the JavaScript syntax');
+      for (const context of [
+        invalidHtml,
+        presentation.visualStyle,
+        outline.id,
+        'English only',
+        question.id,
+        'classic script #1',
+        'HTML 1:',
+      ]) {
+        expect(prompt).toContain(context);
+      }
+      for (const call of aiCall.mock.calls.slice(1)) {
+        expect(call[1]).not.toContain(design.teachingPoints[0]);
+        expect(call[1]).not.toContain(design.explanationPlan);
+        expect(call[1]).not.toContain('"answer"');
+        expect(call[1]).not.toContain(question.analysis);
+        expect(call[1]).not.toContain(question.commentPrompt);
+      }
+      expect(content && 'html' in content && content.html).not.toContain(
+        'data-livecourse-quiz-bridge',
+      );
+    });
+
+    it('does not mutate supplied questions or include unexpected option grading metadata', async () => {
+      const supplied = Object.freeze({
+        ...question,
+        answer: Object.freeze(['A']),
+        options: Object.freeze(
+          question.options.map((option) =>
+            Object.freeze({ ...option, correct: true, analysis: 'PRIVATE option metadata' }),
+          ),
+        ),
+      });
+      const questions = Object.freeze([supplied]);
+      const before = JSON.stringify(questions);
+      const aiCall = vi.fn().mockResolvedValueOnce(invalidHtml).mockResolvedValueOnce(html);
+      await generateHtmlClassroomPage(outline, aiCall, {
+        presentation,
+        questions: questions as unknown as import('@/lib/types/stage').QuizQuestion[],
+      });
+      expect(JSON.stringify(questions)).toBe(before);
+      expect(aiCall.mock.calls.every((call) => !call[1].includes('PRIVATE'))).toBe(true);
+      expect(aiCall.mock.calls.every((call) => !call[1].includes('"correct"'))).toBe(true);
+    });
+
+    it.each([invalidHtml, '<p>not a repaired document</p>'])(
+      'stops deterministic repair failure without multiplying outer retries',
+      async (repair) => {
+        const aiCall = vi.fn().mockResolvedValueOnce(invalidHtml).mockResolvedValue(repair);
+        const operation = vi.fn(() => generateHtmlClassroomPage(outline, aiCall, { presentation }));
+        const onRetry = vi.fn();
+        await expect(
+          withGenerationRetry(operation, {
+            label: 'HTML content',
+            maxRetries: 5,
+            sleep: async () => undefined,
+            onRetry,
+          }),
+        ).rejects.toMatchObject({ name: 'ClassroomHtmlGenerationError', isRetryable: false });
+        expect(operation).toHaveBeenCalledTimes(1);
+        expect(aiCall).toHaveBeenCalledTimes(2);
+        expect(onRetry).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      new DOMException('Aborted', 'AbortError'),
+      Object.assign(new Error('rate limited'), { statusCode: 429 }),
+      new TypeError('fetch failed'),
+    ])(
+      'propagates cancellation and transport errors without requesting syntax repair: %s',
+      async (error) => {
+        const aiCall = vi.fn().mockRejectedValue(error);
+        await expect(generateHtmlClassroomPage(outline, aiCall, { presentation })).rejects.toBe(
+          error,
+        );
+        expect(aiCall).toHaveBeenCalledTimes(1);
+        aiCall.mockReset().mockResolvedValueOnce(invalidHtml).mockRejectedValueOnce(error);
+        await expect(generateHtmlClassroomPage(outline, aiCall, { presentation })).rejects.toBe(
+          error,
+        );
+        expect(aiCall).toHaveBeenCalledTimes(2);
+        expect(error).not.toBeInstanceOf(ClassroomHtmlGenerationError);
+      },
+    );
+
+    it('keeps math processing and validates raw, teacher and eventual quiz bridge scripts', async () => {
+      const mathHtml = html.replace('<p>', () => '<p>$$x^2$$ ');
+      for (const questions of [undefined, [question]]) {
+        const aiCall = vi.fn().mockResolvedValue(mathHtml);
+        const result = await generateHtmlClassroomPage(outline, aiCall, {
+          presentation,
+          questions,
+        });
+        expect(result).toContain('katex');
+        expect(() => validateClassroomHtmlSyntax(result)).not.toThrow();
+        expect(() =>
+          validateClassroomHtmlSyntax(
+            questions ? patchQuizHtml(result) : iframePatch.patchHtmlForIframe(result),
+          ),
+        ).not.toThrow();
+        expect(result.includes('data-livecourse-quiz-bridge')).toBe(false);
+        expect(result.includes('data-livecourse-teacher-bridge')).toBe(!questions);
+        expect(aiCall).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it.each(['math', 'teacher', 'quiz', 'iframe'] as const)(
+      'surfaces trusted %s injection bugs without asking the model to repair them',
+      async (phase) => {
+        const spy =
+          phase === 'math'
+            ? vi.spyOn(mathProcessor, 'postProcessInteractiveHtml')
+            : phase === 'teacher'
+              ? vi.spyOn(teacherBridge, 'attachHtmlTeacherBridge')
+              : phase === 'quiz'
+                ? vi.spyOn(quizBridge, 'patchQuizHtml')
+                : vi.spyOn(iframePatch, 'patchHtmlForIframe');
+        spy.mockImplementation((page) =>
+          page.replace('</body>', '<script>const broken = ;</script></body>'),
+        );
+        try {
+          const aiCall = vi.fn().mockResolvedValue(html.replace('<p>', () => '<p>$$x^2$$ '));
+          await expect(
+            generateHtmlClassroomPage(outline, aiCall, {
+              presentation,
+              questions: phase === 'quiz' ? [question] : undefined,
+            }),
+          ).rejects.toMatchObject({
+            isRetryable: false,
+            message: expect.stringContaining('postprocessing introduced invalid JavaScript'),
+            cause: expect.any(ClassroomHtmlSyntaxError),
+          });
+          expect(aiCall).toHaveBeenCalledTimes(1);
+        } finally {
+          spy.mockRestore();
+        }
+      },
+    );
   });
 
   it('extracts a complete document from preface, thinking, JSON, or a missing head', () => {

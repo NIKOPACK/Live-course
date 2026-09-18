@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { getProvider } from '@/lib/ai/providers';
 import {
@@ -8,6 +8,7 @@ import {
   normalizeThinkingConfig,
   supportsConfigurableThinking,
   thinkingConfigForHtmlClassroom,
+  thinkingConfigForTeaching,
 } from '@/lib/ai/thinking-config';
 import type { ProviderId } from '@/lib/types/provider';
 
@@ -99,6 +100,29 @@ describe('thinking config metadata', () => {
 });
 
 describe('thinking config normalization', () => {
+  it('defaults lesson design to reasoning while respecting explicit and global opt-outs', () => {
+    vi.stubEnv('LLM_THINKING_DISABLED', 'false');
+    try {
+      expect(thinkingConfigForTeaching(undefined)).toEqual({ mode: 'enabled', effort: 'high' });
+      expect(thinkingConfigForTeaching({ mode: 'disabled' })).toEqual({ mode: 'disabled' });
+      expect(thinkingConfigForTeaching({ budgetTokens: 4096, mode: 'enabled' })).toEqual({
+        budgetTokens: 4096,
+        mode: 'enabled',
+      });
+      vi.stubEnv('LLM_THINKING_DISABLED', 'true');
+      expect(thinkingConfigForTeaching(undefined)).toEqual({
+        mode: 'disabled',
+        enabled: false,
+      });
+      expect(thinkingConfigForTeaching({ mode: 'enabled', effort: 'high' })).toEqual({
+        mode: 'enabled',
+        effort: 'high',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('forces thinking off for HTML classroom pages', () => {
     expect(thinkingConfigForHtmlClassroom(true, { mode: 'enabled', effort: 'high' })).toEqual({
       mode: 'disabled',

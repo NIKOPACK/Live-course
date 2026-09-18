@@ -112,6 +112,7 @@ function parseThinking(key: string, raw: unknown): ThinkingConfig | undefined {
 export const LLM_STAGES = [
   'scene-outlines-stream',
   'lesson-plan',
+  'classroom-review',
   'scene-content',
   'scene-content:slide',
   'scene-content:quiz',

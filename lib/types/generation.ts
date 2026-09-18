@@ -199,6 +199,8 @@ export interface GeneratedSlideContent {
 export interface GeneratedQuizContent {
   questions: QuizQuestion[];
   html?: string;
+  /** Generation-only marker: use page teaching actions, not the legacy quiz speech. */
+  htmlPresentation?: true;
 }
 
 // ==================== PBL Generation Types ====================

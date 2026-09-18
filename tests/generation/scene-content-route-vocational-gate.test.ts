@@ -94,6 +94,56 @@ describe('scene-content vocational gate', () => {
       expect(completeLLMTextMock.mock.calls[0][0].prompt).toContain(PRESENTATION.visualStyle);
     },
   );
+
+  test('returns an explicit non-auto-retryable syntax failure after one HTML-only repair', async () => {
+    const invalidHtml =
+      '<html><head></head><body><h1>Python checkpoint</h1><script>const question = { id: 1;</script></body></html>';
+    const question = {
+      id: 'q1',
+      type: 'single',
+      question: 'Pick one.',
+      options: [{ value: 'A', label: 'One' }],
+      answer: ['A'],
+      analysis: 'PRIVATE grading explanation',
+    };
+    completeLLMTextMock
+      .mockResolvedValueOnce(JSON.stringify([question]))
+      .mockResolvedValue(invalidHtml);
+    const { POST } = await import('@/app/api/generate/scene-content/route');
+    const response = await POST(
+      mockRequest({ ...createProceduralSkillOutline(), type: 'quiz' }, undefined, PRESENTATION),
+    );
+    const body = await response.json();
+    expect(response.status).toBe(422);
+    expect(body).toMatchObject({
+      success: false,
+      errorCode: 'GENERATION_FAILED',
+      isRetryable: false,
+      error: expect.stringContaining('syntax repair failed'),
+    });
+    expect(body.content).toBeUndefined();
+    expect(completeLLMTextMock).toHaveBeenCalledTimes(3);
+    for (const call of completeLLMTextMock.mock.calls.slice(1)) {
+      expect(call[0].prompt).not.toContain(question.analysis);
+      expect(call[0].prompt).not.toContain('"answer"');
+    }
+  });
+
+  test.each([429, 503])(
+    'keeps transient upstream HTTP %s semantics without syntax repair',
+    async (statusCode) => {
+      completeLLMTextMock.mockRejectedValue(
+        Object.assign(new Error('upstream failed'), { statusCode }),
+      );
+      const { POST } = await import('@/app/api/generate/scene-content/route');
+      const response = await POST(
+        mockRequest(createProceduralSkillOutline(), undefined, PRESENTATION),
+      );
+      expect(response.status).toBe(statusCode);
+      expect((await response.json()).isRetryable).toBeUndefined();
+      expect(completeLLMTextMock).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 function mockRequest(

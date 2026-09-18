@@ -127,6 +127,15 @@ export function thinkingConfigForHtmlClassroom(
   return isHtmlClassroom ? HTML_PAGE_THINKING_CONFIG : userConfig;
 }
 
+export function thinkingConfigForTeaching(config: ThinkingConfig | undefined): ThinkingConfig {
+  return (
+    config ??
+    (process.env.LLM_THINKING_DISABLED === 'true'
+      ? { mode: 'disabled', enabled: false }
+      : { mode: 'enabled', effort: 'high' })
+  );
+}
+
 export function getDefaultThinkingConfig(
   thinking?: ThinkingCapability,
 ): ThinkingConfig | undefined {

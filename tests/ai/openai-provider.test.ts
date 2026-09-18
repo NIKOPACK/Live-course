@@ -87,6 +87,14 @@ describe('OpenAI provider defaults', () => {
     azureMock.createAzure.mockReturnValue(azureMock.model);
   });
 
+  it.each([undefined, 'https://api.openai.com/v1'])(
+    'does not wrap the official OpenAI Responses endpoint (%s)',
+    (baseUrl) => {
+      getModel({ providerId: 'openai', modelId: 'gpt-5.5', apiKey: 'test', baseUrl });
+      expect(openAiMock.createOpenAI.mock.calls.at(-1)?.[0].fetch).toBeUndefined();
+    },
+  );
+
   it.each([
     ['gpt-5.6', 'GPT-5.6 Sol'],
     ['gpt-5.6-terra', 'GPT-5.6 Terra'],

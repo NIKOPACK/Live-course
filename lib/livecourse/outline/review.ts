@@ -23,12 +23,12 @@ export interface RepairInput extends ReviewInput {
   issues: OutlineReviewIssue[];
 }
 
-const REVIEW_SYSTEM_PROMPT = `You are the review agent of a self-paced course generator. You review scene outlines for ONE 15-30 minute self-study lesson.
+const REVIEW_SYSTEM_PROMPT = `You are the review agent of a self-paced course generator. You review scene outlines for one self-study lesson. Honor the learner's selected scope and depth; do not cut necessary teaching to fit a default duration or page quota.
 
 Check, in order:
 1. Scope coverage: when the learner selected topics, every selected topic must be covered and nothing outside the selected scope may be taught.
 2. Pedagogical order: scenes must progress from prerequisite to advanced concepts; quizzes must come after the content they assess.
-3. Constraints: quiz scenes carry quizConfig; interactive scenes are limited to 1-2 and carry widgetType + widgetOutline.
+3. Constraints: quiz scenes carry quizConfig. Scene types express teaching intent for model-authored HTML, not fixed widget layouts; do not impose a widget count or require legacy widget templates.
 
 Return ONLY a JSON object, no markdown, no explanation:
 

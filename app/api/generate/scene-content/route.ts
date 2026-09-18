@@ -23,6 +23,7 @@ import { llmApiError } from '@/lib/server/llm-error-response';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 import { sortDocumentImagesForVision } from '@/lib/document/bundle';
+import { ClassroomHtmlGenerationError } from '@/lib/livecourse/html/syntax-validator';
 import {
   lessonNodeDesignSchema,
   lessonPresentationSchema,
@@ -226,6 +227,11 @@ export async function POST(req: NextRequest) {
       `Scene content generation failed [scene="${outlineTitle ?? 'unknown'}", model=${resolvedModelString ?? 'unknown'}]:`,
       error,
     );
+    if (error instanceof ClassroomHtmlGenerationError) {
+      return apiError('GENERATION_FAILED', 422, error.message, undefined, {
+        isRetryable: error.isRetryable,
+      });
+    }
     return llmApiError(error);
   }
 }

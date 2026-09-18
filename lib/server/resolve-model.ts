@@ -127,9 +127,13 @@ export async function resolveModel(params: {
   //  - routed + no thinking  → routed model uses its own default; client thinking
   //    is dropped (it belonged to the client's other model).
   //  - unrouted              → honor the client's thinking config.
+  //  - unrouted classroom-review → drop client thinking so the reviewer
+  //    defaults to teaching reasoning instead of the author's setting.
   const thinkingConfig: ThinkingConfig | undefined = routed
     ? stageRoute?.thinking
-    : params.thinkingConfig;
+    : params.stage === 'classroom-review'
+      ? undefined
+      : params.thinkingConfig;
 
   return {
     model,

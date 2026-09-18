@@ -180,6 +180,20 @@ it('threads only earlier speech into a gap retry, never a later completed segmen
   expect(JSON.parse(String(actionRequest?.[1]?.body)).previousSpeeches).toEqual(['Speech 0']);
 });
 
+it('stop during a failed-segment retry keeps that segment retryable on the same course', async () => {
+  await failFirstSegment();
+  const response = deferred<Response>();
+  fetchMock.mockImplementationOnce(() => response.promise);
+  const retry = generator.retrySingleOutline('outline-0');
+  generator.stop();
+  response.resolve(failed());
+  await retry;
+  expect(useStageStore.getState().failedOutlines.map((outline) => outline.id)).toEqual([
+    'outline-0',
+  ]);
+  expect(useStageStore.getState().generationStatus).toBe('paused');
+});
+
 it('stop aborts a retry request and prevents late results from touching another stage', async () => {
   await failFirstSegment();
   const response = deferred<Response>();

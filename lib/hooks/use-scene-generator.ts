@@ -71,6 +71,7 @@ interface SceneContentResult {
   error?: string;
   errorCode?: string;
   statusCode?: number;
+  isRetryable?: boolean;
 }
 
 interface SceneActionsResult {
@@ -127,20 +128,22 @@ async function readJsonResponse(response: Response): Promise<Record<string, unkn
 
 function createHttpError(
   response: Response,
-  data: { details?: unknown; error?: unknown; errorCode?: unknown },
+  data: { details?: unknown; error?: unknown; errorCode?: unknown; isRetryable?: unknown },
   fallback: string,
-): Error & { errorCode?: string; statusCode?: number } {
+): Error & Pick<SceneContentResult, 'errorCode' | 'statusCode' | 'isRetryable'> {
   const message =
     typeof data.details === 'string'
       ? data.details
       : typeof data.error === 'string'
         ? data.error
         : `${fallback}: HTTP ${response.status}`;
-  const error = new Error(message) as Error & { errorCode?: string; statusCode?: number };
+  const error = new Error(message) as Error &
+    Pick<SceneContentResult, 'errorCode' | 'statusCode' | 'isRetryable'>;
   if (typeof data.errorCode === 'string') {
     error.errorCode = data.errorCode;
   }
   error.statusCode = response.status;
+  if (typeof data.isRetryable === 'boolean') error.isRetryable = data.isRetryable;
   return error;
 }
 
@@ -148,12 +151,15 @@ function messageFromError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-function errorMeta(error: unknown): Pick<SceneContentResult, 'errorCode' | 'statusCode'> {
+function errorMeta(
+  error: unknown,
+): Pick<SceneContentResult, 'errorCode' | 'statusCode' | 'isRetryable'> {
   if (!error || typeof error !== 'object') return {};
-  const record = error as { errorCode?: unknown; statusCode?: unknown };
+  const record = error as { errorCode?: unknown; statusCode?: unknown; isRetryable?: unknown };
   return {
     ...(typeof record.errorCode === 'string' ? { errorCode: record.errorCode } : {}),
     ...(typeof record.statusCode === 'number' ? { statusCode: record.statusCode } : {}),
+    ...(typeof record.isRetryable === 'boolean' ? { isRetryable: record.isRetryable } : {}),
   };
 }
 
@@ -232,6 +238,7 @@ export async function fetchSceneActions(
     previousSpeeches?: string[];
     userProfile?: string;
     languageDirective?: string;
+    lessonNodeDesign?: LessonNodeDesign;
   },
   signal?: AbortSignal,
   retryOptions?: ClientRetryOptions<SceneActionsResult>,
@@ -726,6 +733,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
               previousSpeeches,
               userProfile: params.userProfile,
               languageDirective: params.languageDirective,
+              lessonNodeDesign: lessonNodeDesignForOutline(outline),
             },
             signal,
           );
@@ -778,6 +786,13 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         // AbortError is expected when stop() is called — don't treat as failure
         if (isAbortError(err)) {
           log.info('Generation aborted');
+          if (
+            retryOutlineId &&
+            currentOutline &&
+            store.getState().stage?.id === run.stageId
+          ) {
+            store.getState().addFailedOutline(currentOutline);
+          }
         } else {
           log.error('Generation run failed:', err);
           if (isCurrentRun() && currentOutline) {

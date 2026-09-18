@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { extractBalancedJsonText, parseJsonResponse } from '@/lib/generation/json-repair';
 
 describe('json-repair targeted fixes', () => {
   it('repairs quoted key-value fragments such as "height: 76"', () => {
@@ -132,5 +132,15 @@ describe('json-repair targeted fixes', () => {
 
     expect(parseJsonResponse(raw)).toEqual({ teachingPoints: ['a'], explanationPlan: 'c' });
     expect(parseJsonResponse(valid)).toEqual({ teachingPoints: ['a'], explanationPlan: 'c' });
+  });
+});
+
+describe('extractBalancedJsonText', () => {
+  it('returns a complete JSON object embedded in prose', () => {
+    expect(extractBalancedJsonText('The plan is {"nodes":[]}')).toBe('{"nodes":[]}');
+  });
+
+  it('does not close a truncated array', () => {
+    expect(extractBalancedJsonText('{"checks":["ok"],"issues":[')).toBeUndefined();
   });
 });

@@ -67,7 +67,7 @@ Produce a **`courseTitle`** (required): a concise, human-readable name for the *
 - **Quiz Scene**: Supports single-choice, multiple-choice, and short-answer (text) questions
 - **Interactive Scene**: Self-contained interactive HTML page rendered in an iframe, ideal for simulations and visualizations
 - **PBL Scene**: Complete project-based learning module with roles, issues, and collaboration workflow. Ideal for complex projects, engineering practice, and research tasks
-- **Duration Control**: Each scene should be 1-3 minutes (PBL scenes are longer, typically 15-30 minutes)
+- **Duration Estimates**: Estimate each node's duration from the explanations, examples, practice and checks it actually needs. Set `estimatedDuration` in seconds; it is not a content cap. Respect explicit learner preferences, but do not sacrifice selected scope or essential reasoning to a default duration or page count.
 
 ### Instructional Design Principles
 
@@ -381,7 +381,7 @@ Omit `scenarioRoleplay` and `scenarioBrief` entirely for ordinary build-an-artef
 5. `quiz` scenes must include `quizConfig`.
 6. `interactive` scenes must include `widgetType` and `widgetOutline` (preferred). `interactiveConfig` is deprecated and only accepted for backwards compatibility.
 7. `pbl` scenes must include `pblConfig` with `projectTopic`, `projectDescription`, `targetSkills`, `issueCount`.
-8. Arrange scenes by inferred duration (typically 1-2 scenes per minute). Insert quizzes at appropriate points. Use interactive scenes sparingly (max 1-2 per course).
+8. Arrange scenes by learning progression and coverage, NOT a fixed number of scenes per minute. Estimate time for explanation, questions, interaction and quizzes without truncating necessary content. Use interactive scenes sparingly (max 1-2 per course).
 9. **Language**: Infer from the user's requirement text and context. Output all scene content in the inferred language.
 10. Regardless of information completeness, always output conforming JSON - do not ask questions or request more information
 11. **No teacher identity on slides**: Scene titles and keyPoints must be neutral and topic-focused. Never include the teacher's name or role (e.g., avoid "Teacher Wang's Tips", "Teacher's Wishes"). Use generic labels like "Tips", "Summary", "Key Takeaways" instead.

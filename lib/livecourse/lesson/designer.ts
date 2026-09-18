@@ -12,7 +12,7 @@
  * null —— 没有教案的旧流程（只读大纲）照常跑。
  */
 
-import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { extractBalancedJsonText, parseJsonResponse } from '@/lib/generation/json-repair';
 import { isAbortError } from '@/lib/generation/generation-retry';
 import { createLogger } from '@/lib/logger';
 import {
@@ -21,6 +21,7 @@ import {
   type LessonNode,
   type LessonNodeDesign,
   type LessonPlan,
+  type LessonTeachingBrief,
 } from '@/lib/livecourse/domain/schemas';
 import {
   runSubagentPool,
@@ -44,6 +45,30 @@ const log = createLogger('Lesson Designer');
 
 export type LessonDesignAICall = (system: string, user: string) => Promise<string>;
 
+export class TeachingOutputError extends Error {
+  readonly isRetryable = false;
+  override readonly name = 'TeachingOutputError';
+}
+
+export function completeTeachingText(result: {
+  text: string;
+  finishReason?: string;
+  reasoningText?: string;
+}): string {
+  if (result.finishReason === 'length') {
+    throw new TeachingOutputError('Teaching output was truncated by the model output limit');
+  }
+  if (result.text.trim()) return result.text;
+  const recovered = extractBalancedJsonText(result.reasoningText ?? '');
+  if (recovered) {
+    log.warn(
+      `Empty teaching text; using balanced JSON from reasoning (${recovered.length} chars)`,
+    );
+    return recovered;
+  }
+  throw new TeachingOutputError('Teaching generation did not return a final answer');
+}
+
 export interface DesignLessonPlanInput {
   stageId: string;
   /** Stable course identity. Legacy callers may omit it and use stageId. */
@@ -59,9 +84,26 @@ export interface DesignLessonPlanInput {
   clarificationAnswers?: ClarifyAnswer[];
   selectedTopics?: string[];
   visualStyle?: string;
+  teachingBrief?: LessonTeachingBrief;
   /** 测试注入用；缺省取当前时间。 */
   now?: string;
 }
+
+const TEACHING_GUIDANCE = `Follow the shared course throughline, notation and worked example. Read the
+whole course's teaching boundaries: do not reteach a neighbor's core explanation or consume its
+example. Give this node a substantial explanation and worked examples exposing useful distinctions,
+not a miniature complete course. Treat extra examples, anticipated Q&A and secondary misconceptions
+as support for learner questions, not a checklist to recite.
+Quality and completeness take precedence over brevity. Use as much explanation and as many useful
+examples as this learner needs. Duration estimates are informational, not word or teaching limits;
+never drop selected topics, derivations or essential reasoning to meet an arbitrary budget.
+Check your worked answers before returning them. State assumptions, units, domains, integration
+bounds and normalization wherever needed; never present a special case as a universal rule.
+For exact mathematical plots, waveforms, formulas and algorithm traces, plan inline SVG/Canvas/text,
+not AI-generated pictures. Request an image only when an illustration adds distinct teaching value.
+The teacher can highlight, annotate and reveal existing regions, NOT click buttons, drag sliders or
+set simulation parameters. Plan narrated before/after states as revealable regions. Label optional
+learner exploration explicitly; never assume its controls have already been operated.`;
 
 const SYSTEM_PROMPT = `You are the lesson design agent of a self-paced course generator — a backstage worker. You never talk to the learner.
 
@@ -73,18 +115,21 @@ Given a course requirement and its scene outlines, design the teaching plan for 
 - anticipatedQuestions (optional, 1-3 items): the questions a self-learner is most likely to get stuck on at this node, each with a prepared response.
 - misconceptions (optional): common mistakes or misconceptions that checkpoints should verify.
 - oralQuestion (instruction nodes): prepare one short oral reasoning question about the first half of this node, with {"question":"what the teacher asks aloud","guidance":"teacher-only reasoning, likely misconceptions and hints"}. Omit for introductions, recaps and checkpoints. This is a brief formative conversation, not a graded checkpoint. Do not ask about content that has not yet been taught.
-- visualAids (optional, at most 3 items, instruction nodes only): declarative image intents for slides where a static visual genuinely helps understanding (diagrams, charts, process illustrations). Omit entirely when text suffices. Each item:
+- visualAids (optional, at most 3 items, instruction nodes only): generated illustrations only when an image adds value that precise inline SVG/Canvas or supplied source images cannot provide. Omit for formulas, mathematical plots and algorithm traces; an empty array is appropriate. Each item:
   - id: a globally unique placeholder, format "lesson_img_<sceneId>_<n>" (n starts at 1). Reusing the same id in a later node reuses the same image — do not request near-identical images.
   - prompt: a clear, specific description for the image generation model. If the image contains text, labels, or annotations, the prompt MUST explicitly state that all text in the image is in the course language.
   - purpose (optional): what this image helps the learner understand.
   - aspectRatio (optional): one of "1:1", "16:9", "9:16", "4:3" (default "16:9").
 
+${TEACHING_GUIDANCE}
+
 Write ALL content in the language required by the language directive, or in the language of the requirement when no directive is given.
 
 Return ONLY a JSON object, no markdown, no explanation:
-{"nodes":[{"sceneId":"<outline id>","design":{"teachingPoints":["..."],"explanationPlan":"...","examples":["..."],"anticipatedQuestions":[{"question":"...","response":"..."}],"misconceptions":["..."],"visualAids":[{"id":"lesson_img_<sceneId>_1","prompt":"...","purpose":"...","aspectRatio":"16:9"}]}}]}
+{"nodes":[{"sceneId":"<outline id>","design":{"teachingPoints":["..."],"explanationPlan":"...","examples":["..."],"anticipatedQuestions":[{"question":"...","response":"..."}],"misconceptions":["..."],"oralQuestion":{"question":"...","guidance":"..."},"visualAids":[]}}]}
 
-Every outline must appear exactly once, keyed by its sceneId.`;
+Every outline must appear exactly once, keyed by its sceneId. oralQuestion is an OBJECT, not an
+array; close it with } before the next property. Omit it on introductions, recaps and checkpoints.`;
 
 /**
  * A4 按节点 fan-out 时每个 subagent 的系统 prompt：只为一个节点产出完整
@@ -101,18 +146,42 @@ You are designing the teaching plan for ONE scene node of a lesson. Produce a co
 - anticipatedQuestions (required): the questions a self-learner is most likely to get stuck on at this node, each with a prepared response. 2-4 items.
 - misconceptions (required): common mistakes or misconceptions that checkpoints should verify.
 - oralQuestion (instruction nodes): prepare one short oral reasoning question about the first half of this node, with {"question":"what the teacher asks aloud","guidance":"teacher-only reasoning, likely misconceptions and hints"}. Omit for introductions, recaps and checkpoints. This is a brief formative conversation, not a graded checkpoint. Do not ask about content that has not yet been taught.
-- visualAids (optional, at most 3 items, instruction nodes only): declarative image intents for slides where a static visual genuinely helps understanding (diagrams, charts, process illustrations). Omit entirely when text suffices. Each item:
+- visualAids (optional, at most 3 items, instruction nodes only): generated illustrations only when an image adds value that precise inline SVG/Canvas or supplied source images cannot provide. Omit for formulas, mathematical plots and algorithm traces; an empty array is appropriate. Each item:
   - id: a globally unique placeholder, format "lesson_img_<sceneId>_<n>" (n starts at 1 for this node).
   - prompt: a clear, specific description for the image generation model. If the image contains text, labels, or annotations, the prompt MUST explicitly state that all text in the image is in the course language.
   - purpose (optional): what this image helps the learner understand.
   - aspectRatio (optional): one of "1:1", "16:9", "9:16", "4:3" (default "16:9").
 
-You are given this node's outline entry plus the titles of the previous and next nodes. Teach THIS node only: connect smoothly to its neighbors without repeating their content.
+You are given this node's outline entry and the whole course's teaching boundaries. Teach THIS node only.
+
+${TEACHING_GUIDANCE}
 
 Write ALL content in the language required by the language directive, or in the language of the course requirement when no directive is given.
 
 Return ONLY the design JSON object, no markdown, no explanation:
-{"teachingPoints":["..."],"explanationPlan":"...","examples":["..."],"anticipatedQuestions":[{"question":"...","response":"..."}],"misconceptions":["..."],"visualAids":[{"id":"lesson_img_<sceneId>_1","prompt":"...","purpose":"...","aspectRatio":"16:9"}]}`;
+{"teachingPoints":["..."],"explanationPlan":"...","examples":["..."],"anticipatedQuestions":[{"question":"...","response":"..."}],"misconceptions":["..."],"oralQuestion":{"question":"...","guidance":"..."},"visualAids":[]}
+oralQuestion is an OBJECT, not an array; close it with } before the next property. Omit it on
+introductions, recaps and checkpoints.`;
+
+function courseTeachingContext(input: DesignLessonPlanInput): string {
+  return [
+    input.teachingBrief
+      ? `Shared course teaching brief:\n${JSON.stringify(input.teachingBrief)}`
+      : '',
+    `Whole-course teaching boundaries (context only; design only the requested nodes):\n${JSON.stringify(
+      [...input.outlines]
+        .sort((a, b) => a.order - b.order)
+        .map((outline) => ({
+          sceneId: outline.id,
+          title: outline.title,
+          keyPoints: outline.keyPoints,
+          teachingObjective: outline.teachingObjective,
+        })),
+    )}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 function buildUserPrompt(input: DesignLessonPlanInput, ordered: SceneOutline[]): string {
   const outlineLines = ordered
@@ -136,6 +205,7 @@ function buildUserPrompt(input: DesignLessonPlanInput, ordered: SceneOutline[]):
     input.courseTitle?.trim() ? `Course title: ${input.courseTitle.trim()}` : '',
     input.languageDirective?.trim() ? `Language directive: ${input.languageDirective.trim()}` : '',
     contextBlocks,
+    courseTeachingContext(input),
     input.visualStyle
       ? `Course-wide visual direction (set by the main agent):\n${input.visualStyle}`
       : '',
@@ -159,9 +229,12 @@ function extractDesignsBySceneId(raw: unknown): Map<string, LessonNodeDesign> | 
   for (const entry of nodes) {
     if (!entry || typeof entry !== 'object') return null;
     const { sceneId, design } = entry as Record<string, unknown>;
-    if (typeof sceneId !== 'string' || !sceneId.trim()) return null;
+    if (typeof sceneId !== 'string' || !sceneId.trim() || designs.has(sceneId)) return null;
     const parsed = lessonNodeDesignSchema.safeParse(design);
-    if (!parsed.success) return null;
+    if (!parsed.success) {
+      log.warn(`Invalid lesson design for "${sceneId}"`, parsed.error.issues);
+      return null;
+    }
     designs.set(sceneId, parsed.data);
   }
   return designs;
@@ -256,6 +329,7 @@ function buildNodeTask(
     input.courseTitle?.trim() ? `Course title: ${input.courseTitle.trim()}` : '',
     input.languageDirective?.trim() ? `Language directive: ${input.languageDirective.trim()}` : '',
     contextBlocks,
+    courseTeachingContext(input),
     input.visualStyle
       ? `Course-wide visual direction (set by the main agent):\n${input.visualStyle}`
       : '',
@@ -284,6 +358,7 @@ function parseNodeDesignOutput(raw: string): LessonNodeDesign | null {
       ? (parsed as Record<string, unknown>).design
       : parsed;
   const result = lessonNodeDesignSchema.safeParse(candidate);
+  if (!result.success) log.warn('Invalid lesson node design', result.error.issues);
   return result.success ? result.data : null;
 }
 
@@ -401,7 +476,7 @@ export function formatLessonNodeDesignForPrompt(design: LessonNodeDesign | undef
     lines.push('', '例子 (Examples):', ...design.examples.map((example) => `- ${example}`));
   }
   if (design.anticipatedQuestions?.length) {
-    lines.push('', '预设学生提问与回应 (Anticipated student questions and planned responses):');
+    lines.push('', '预设学生提问与回应 (Support for learner questions, NOT mandatory narration):');
     for (const qa of design.anticipatedQuestions) {
       lines.push(`- Q: ${qa.question}`, `  A: ${qa.response}`);
     }
@@ -409,7 +484,7 @@ export function formatLessonNodeDesignForPrompt(design: LessonNodeDesign | undef
   if (design.misconceptions?.length) {
     lines.push(
       '',
-      '易错点 (Common misconceptions — address them proactively):',
+      '易错点 (Prioritize the central misconception; keep the rest for feedback or questions):',
       ...design.misconceptions.map((misconception) => `- ${misconception}`),
     );
   }

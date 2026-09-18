@@ -1,12 +1,118 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, stepCountIs, streamText, tool } from 'ai';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { resolveThinkingProviderOptions } from '@/lib/ai/llm';
 import { getModel } from '@/lib/ai/providers';
+import { normalizeResponsesMetadata } from '@/lib/ai/openai-responses-compat';
 
 describe('OpenAI SDK integration', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('accepts missing annotations from a custom Responses proxy without changing text or usage', async () => {
+    const response = {
+      id: 'resp_proxy',
+      object: 'response',
+      created_at: 1,
+      model: 'gpt-5.5',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          id: 'msg_proxy',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: '{"checks":["verified"],"issues":[]}' }],
+        },
+      ],
+      usage: { input_tokens: 62, output_tokens: 269, total_tokens: 331 },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify(response), {
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    const { model } = getModel({
+      providerId: 'openai',
+      modelId: 'gpt-5.5',
+      apiKey: 'test',
+      baseUrl: 'https://proxy.example/v1',
+    });
+    const result = await generateText({ model, prompt: 'Review', maxRetries: 0 });
+    expect(result.text).toBe(response.output[0].content[0].text);
+    expect(result.finishReason).toBe('stop');
+    expect(result.usage).toMatchObject({ inputTokens: 62, outputTokens: 269, totalTokens: 331 });
+  });
+
+  it.each([
+    {
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'x', annotations: null }] },
+      ],
+    },
+    { error: { message: 'upstream error' } },
+  ])('does not hide invalid fields or upstream errors (%j)', async (body) => {
+    const response = new Response(JSON.stringify(body), {
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(await normalizeResponsesMetadata(response)).toBe(response);
+  });
+
+  it('preserves incomplete status, known annotations, usage and response headers', async () => {
+    const annotated = {
+      type: 'output_text',
+      text: 'Known citation',
+      annotations: [{ type: 'url_citation', url: 'https://example.com' }],
+    };
+    const body = {
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [{ type: 'message', content: [annotated, { type: 'output_text', text: 'partial' }] }],
+      usage: { output_tokens: 32768 },
+    };
+    const response = await normalizeResponsesMetadata(
+      new Response(JSON.stringify(body), {
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'req_test',
+          'content-length': '1',
+        },
+      }),
+    );
+    expect(await response.json()).toEqual({
+      ...body,
+      output: [
+        {
+          type: 'message',
+          content: [annotated, { type: 'output_text', text: 'partial', annotations: [] }],
+        },
+      ],
+    });
+    expect(response.headers.get('x-request-id')).toBe('req_test');
+    expect(response.headers.has('content-length')).toBe(false);
+  });
+
+  it('leaves invalid JSON, HTTP errors and SSE available to the original SDK handler', async () => {
+    for (const response of [
+      new Response('{', { headers: { 'content-type': 'application/json' } }),
+      new Response('{"error":"failed"}', {
+        status: 502,
+        headers: { 'content-type': 'application/json' },
+      }),
+      new Response('data: {"type":"response.created"}\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    ]) {
+      const original = await response.clone().text();
+      expect(await normalizeResponsesMetadata(response)).toBe(response);
+      expect(await response.text()).toBe(original);
+    }
+  });
   it('accepts GPT-5.6 max reasoning effort and sends it to the Responses API', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetchMock = async (_input: RequestInfo | URL, init?: RequestInit) => {

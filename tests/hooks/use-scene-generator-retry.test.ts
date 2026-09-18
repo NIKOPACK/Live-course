@@ -172,6 +172,94 @@ describe('browser scene generation retry wrappers', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
+  it.each([422, 502])(
+    'does not restart authoring after a bounded review failure (%s)',
+    async (status) => {
+      const { fetchSceneActions } = await import('@/lib/hooks/use-scene-generator');
+      mockFetch.mockResolvedValue(
+        jsonResponse(status, {
+          success: false,
+          error: 'Review could not finish this segment.',
+          isRetryable: false,
+        }),
+      );
+      const result = await fetchSceneActions(
+        {
+          outline,
+          allOutlines: [outline],
+          content: { html: '<html></html>' },
+          stageId: 'stage-1',
+        },
+        undefined,
+        { ...retryOptions, maxRetries: 5 },
+      );
+      expect(result).toMatchObject({ success: false, isRetryable: false });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('sends the shared teaching design to the action endpoint', async () => {
+    const { fetchSceneActions } = await import('@/lib/hooks/use-scene-generator');
+    const lessonNodeDesign = {
+      teachingPoints: ['Retry only transient failures'],
+      explanationPlan: 'One representative example.',
+    };
+    mockFetch.mockResolvedValue(
+      jsonResponse(200, { success: true, scene: { id: 'scene-1', actions: [] } }),
+    );
+    const result = await fetchSceneActions(
+      {
+        outline,
+        allOutlines: [outline],
+        content: { html: '<html></html>' },
+        stageId: 'stage-1',
+        lessonNodeDesign,
+      },
+      undefined,
+      { ...retryOptions, maxRetries: 5 },
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).lessonNodeDesign).toEqual(lessonNodeDesign);
+    expect(result).toMatchObject({ success: true });
+  });
+
+  it.each([422, 500])(
+    'preserves an explicit syntax failure at HTTP %s without automatic retries, allowing a fresh manual call',
+    async (status) => {
+      const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
+      const { apiError } = await import('@/lib/server/api-response');
+      mockFetch
+        .mockResolvedValueOnce(
+          apiError('GENERATION_FAILED', status, 'Classroom HTML syntax repair failed', undefined, {
+            isRetryable: false,
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(200, { success: true, content: { html: '<html>repaired</html>' } }),
+        );
+      const params = {
+        outline,
+        allOutlines: [outline],
+        stageId: 'stage-1',
+        stageInfo: { name: 'Retry Course' },
+        presentation,
+      };
+      const options = { ...retryOptions, maxRetries: 5 };
+      const result = await fetchSceneContent(params, undefined, options);
+      expect(result).toMatchObject({
+        success: false,
+        errorCode: 'GENERATION_FAILED',
+        statusCode: status,
+        isRetryable: false,
+        error: 'Classroom HTML syntax repair failed',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(await fetchSceneContent(params, undefined, options)).toMatchObject({ success: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).presentation).toEqual(presentation);
+    },
+  );
+
   it('preserves scene content error metadata for localized UI messages', async () => {
     const { fetchSceneContent } = await import('@/lib/hooks/use-scene-generator');
     mockFetch.mockResolvedValue(

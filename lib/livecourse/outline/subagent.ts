@@ -13,6 +13,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { LanguageModel } from 'ai';
 import { buildAgent } from '@/lib/agent/runtime/build-agent';
 import { createCallLlmStreamFn } from '@/lib/agent/runtime/stream-fn';
+import { extractBalancedJsonText } from '@/lib/generation/json-repair';
 import type { ThinkingConfig } from '@/lib/types/provider';
 import { createLogger } from '@/lib/logger';
 
@@ -22,6 +23,7 @@ export interface SubagentRuntime {
   /** resolveModelFromRequest 解析出的模型实例 */
   languageModel: LanguageModel;
   thinkingConfig?: ThinkingConfig;
+  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
 }
 
@@ -38,6 +40,17 @@ function lastAssistantText(messages: AgentMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.role !== 'assistant') continue;
+    if ('stopReason' in message && message.stopReason === 'length') {
+      throw new Error('Subagent output was truncated by the model output limit');
+    }
+    if (
+      'stopReason' in message &&
+      (message.stopReason === 'error' || message.stopReason === 'aborted')
+    ) {
+      const error = new Error(message.errorMessage || 'Subagent did not complete');
+      if (message.stopReason === 'aborted') error.name = 'AbortError';
+      throw error;
+    }
     const content = (message as { content?: unknown }).content;
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
@@ -49,6 +62,17 @@ function lastAssistantText(messages: AgentMessage[]): string {
         .map((part) => part.text)
         .join('');
       if (text.trim()) return text;
+      const thinking = content
+        .filter(
+          (
+            part,
+          ): part is { type: 'thinking'; thinking?: string; text?: string } =>
+            !!part && typeof part === 'object' && (part as { type?: string }).type === 'thinking',
+        )
+        .map((part) => part.thinking || part.text || '')
+        .join('');
+      const recovered = extractBalancedJsonText(thinking);
+      if (recovered) return recovered;
     }
   }
   return '';
@@ -63,7 +87,7 @@ export async function runSubagent(task: SubagentTask, runtime: SubagentRuntime):
     streamFn: createCallLlmStreamFn({
       languageModel: runtime.languageModel,
       thinkingConfig: runtime.thinkingConfig,
-      maxOutputTokens: task.maxOutputTokens,
+      maxOutputTokens: task.maxOutputTokens ?? runtime.maxOutputTokens,
       source: `outline-subagent:${task.name}`,
       abortSignal: runtime.abortSignal,
     }),

@@ -7,10 +7,9 @@
  */
 
 import { NextRequest } from 'next/server';
-import { completeLLMText } from '@/lib/ai/llm';
+import { collectStreamedCompletion, completeLLMText } from '@/lib/ai/llm';
 import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
 import {
-  generateSceneActions,
   buildCompleteScene,
   buildVisionUserContent,
   type SceneGenerationContext,
@@ -30,10 +29,14 @@ import { normalizeLegacyPBLContent } from '@/lib/pbl/legacy/read';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { llmApiError } from '@/lib/server/llm-error-response';
 import { resolveModelFromRequest } from '@/lib/server/resolve-model';
+import { lessonNodeDesignSchema } from '@/lib/livecourse/domain/schemas';
+import { completeTeachingText } from '@/lib/livecourse/lesson/designer';
+import { generateReviewedTeachingMaterial } from '@/lib/generation/reviewed-scene';
+import { createClassroomReviewer } from '@/lib/server/classroom-review';
 
 const log = createLogger('Scene Actions API');
 
-export const maxDuration = 60;
+export const maxDuration = 600;
 
 export async function POST(req: NextRequest) {
   let outlineTitle: string | undefined;
@@ -49,6 +52,7 @@ export async function POST(req: NextRequest) {
       previousSpeeches: incomingPreviousSpeeches,
       userProfile,
       languageDirective,
+      lessonNodeDesign: rawLessonNodeDesign,
     } = body as {
       outline: SceneOutline;
       allOutlines: SceneOutline[];
@@ -63,6 +67,7 @@ export async function POST(req: NextRequest) {
       previousSpeeches?: string[];
       userProfile?: string;
       languageDirective?: string;
+      lessonNodeDesign?: unknown;
     };
 
     // Validate required fields
@@ -82,6 +87,14 @@ export async function POST(req: NextRequest) {
     if (!stageId) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'stageId is required');
     }
+    const parsedDesign =
+      rawLessonNodeDesign === undefined
+        ? undefined
+        : lessonNodeDesignSchema.safeParse(rawLessonNodeDesign);
+    if (parsedDesign && !parsedDesign.success) {
+      return apiError('INVALID_REQUEST', 400, 'Invalid lesson node design');
+    }
+    const lessonNodeDesign = parsedDesign?.data;
 
     // ── Model resolution from request headers/body ──
     const {
@@ -99,7 +112,7 @@ export async function POST(req: NextRequest) {
       typeof content === 'object' &&
       content !== null &&
       ('htmlPresentation' in content || 'html' in content);
-    const pageThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinkingConfig);
+    const actionThinking = thinkingConfigForHtmlClassroom(htmlClassroom, thinkingConfig);
 
     // AI call function (actions typically don't use vision, but kept for consistency)
     const aiCall = async (
@@ -107,37 +120,29 @@ export async function POST(req: NextRequest) {
       userPrompt: string,
       images?: Array<{ id: string; src: string }>,
     ): Promise<string> => {
-      if (images?.length && hasVision) {
-        return completeLLMText(
-          {
-            model: languageModel,
-            system: systemPrompt,
-            messages: [
-              {
-                role: 'user' as const,
-                content: buildVisionUserContent(userPrompt, images),
-              },
-            ],
-            maxOutputTokens: modelInfo?.outputWindow,
-            maxRetries: 0,
-            abortSignal: req.signal,
-          },
-          'scene-actions',
-          pageThinking,
+      const params = {
+        model: languageModel,
+        system: systemPrompt,
+        ...(images?.length && hasVision
+          ? {
+              messages: [
+                {
+                  role: 'user' as const,
+                  content: buildVisionUserContent(userPrompt, images),
+                },
+              ],
+            }
+          : { prompt: userPrompt }),
+        maxOutputTokens: modelInfo?.outputWindow,
+        maxRetries: 0,
+        abortSignal: req.signal,
+      };
+      if (htmlClassroom) {
+        return completeTeachingText(
+          await collectStreamedCompletion(params, 'scene-actions', actionThinking),
         );
       }
-      return completeLLMText(
-        {
-          model: languageModel,
-          system: systemPrompt,
-          prompt: userPrompt,
-          maxOutputTokens: modelInfo?.outputWindow,
-          maxRetries: 0,
-          abortSignal: req.signal,
-        },
-        'scene-actions',
-        pageThinking,
-      );
+      return completeLLMText(params, 'scene-actions', actionThinking);
     };
 
     // ── Build cross-scene context ──
@@ -161,17 +166,37 @@ export async function POST(req: NextRequest) {
       | GeneratedInteractiveContent
       | GeneratedPBLContent;
 
-    const actions = await generateSceneActions(outline, generationContent, aiCall, {
-      ctx,
-      agents,
-      userProfile,
-      languageDirective,
-    });
+    const reviewCall = createClassroomReviewer(
+      () => resolveModelFromRequest(req, body, 'classroom-review'),
+      req.signal,
+    );
+    const reviewed = await generateReviewedTeachingMaterial(
+      outline,
+      generationContent,
+      aiCall,
+      {
+        ctx,
+        agents,
+        userProfile,
+        languageDirective,
+        lessonNodeDesign,
+      },
+      {
+        signal: req.signal,
+        reviewCall,
+        repairHtmlCall: createClassroomReviewer(
+          () => resolveModelFromRequest(req, body, 'classroom-review'),
+          req.signal,
+          'html-repair',
+        ),
+      },
+    );
+    const { actions } = reviewed;
 
     log.info(`Generated ${actions.length} actions for: "${outline.title}"`);
 
     // ── Build complete scene ──
-    const scene = buildCompleteScene(outline, generationContent, actions, stageId);
+    const scene = buildCompleteScene(outline, reviewed.content, actions, stageId);
 
     if (!scene) {
       log.error(`Failed to build scene: "${outline.title}"`);
