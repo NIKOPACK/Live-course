@@ -43,6 +43,51 @@ export { buildLessonPlanSkeleton } from './skeleton';
 
 const log = createLogger('Lesson Designer');
 
+const generatedNodeDesignSchema = lessonNodeDesignSchema
+  .extend({
+    oralQuestion: lessonNodeDesignSchema.shape.oralQuestion.unwrap().strip().optional(),
+    anticipatedQuestions: lessonNodeDesignSchema.shape.anticipatedQuestions
+      .unwrap()
+      .element.strip()
+      .array()
+      .optional(),
+  })
+  .strip();
+
+function nonemptyStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
+}
+
+function sanitizeGeneratedDesign(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const next = { ...(raw as Record<string, unknown>) };
+  const teachingPoints = nonemptyStrings(next.teachingPoints);
+  if (teachingPoints) next.teachingPoints = teachingPoints;
+  const examples = nonemptyStrings(next.examples);
+  if (examples) {
+    if (examples.length) next.examples = examples;
+    else delete next.examples;
+  }
+  const misconceptions = nonemptyStrings(next.misconceptions);
+  if (misconceptions) {
+    if (misconceptions.length) next.misconceptions = misconceptions;
+    else delete next.misconceptions;
+  }
+  return next;
+}
+
+function parseGeneratedDesign(raw: unknown) {
+  const sanitized = sanitizeGeneratedDesign(raw);
+  const parsed = generatedNodeDesignSchema.safeParse(sanitized);
+  if (parsed.success && !lessonNodeDesignSchema.safeParse(sanitized).success) {
+    log.warn('Ignored extra model metadata in a node design; required teaching fields retained');
+  }
+  return parsed;
+}
+
 export type LessonDesignAICall = (system: string, user: string) => Promise<string>;
 
 export class TeachingOutputError extends Error {
@@ -61,9 +106,7 @@ export function completeTeachingText(result: {
   if (result.text.trim()) return result.text;
   const recovered = extractBalancedJsonText(result.reasoningText ?? '');
   if (recovered) {
-    log.warn(
-      `Empty teaching text; using balanced JSON from reasoning (${recovered.length} chars)`,
-    );
+    log.warn(`Empty teaching text; using balanced JSON from reasoning (${recovered.length} chars)`);
     return recovered;
   }
   throw new TeachingOutputError('Teaching generation did not return a final answer');
@@ -227,17 +270,17 @@ function extractDesignsBySceneId(raw: unknown): Map<string, LessonNodeDesign> | 
 
   const designs = new Map<string, LessonNodeDesign>();
   for (const entry of nodes) {
-    if (!entry || typeof entry !== 'object') return null;
+    if (!entry || typeof entry !== 'object') continue;
     const { sceneId, design } = entry as Record<string, unknown>;
-    if (typeof sceneId !== 'string' || !sceneId.trim() || designs.has(sceneId)) return null;
-    const parsed = lessonNodeDesignSchema.safeParse(design);
+    if (typeof sceneId !== 'string' || !sceneId.trim() || designs.has(sceneId)) continue;
+    const parsed = parseGeneratedDesign(design);
     if (!parsed.success) {
       log.warn(`Invalid lesson design for "${sceneId}"`, parsed.error.issues);
-      return null;
+      continue;
     }
     designs.set(sceneId, parsed.data);
   }
-  return designs;
+  return designs.size > 0 ? designs : null;
 }
 
 function orderedOutlines(input: DesignLessonPlanInput): SceneOutline[] | null {
@@ -299,7 +342,7 @@ export async function designLessonPlan(
       return null;
     }
 
-    return assembleLessonPlan(input, ordered, designsBySceneId, true);
+    return assembleLessonPlan(input, ordered, designsBySceneId, false);
   } catch (error) {
     if (isAbortError(error)) throw error;
     log.warn('Lesson plan design failed, degrading to no lesson plan:', error);
@@ -357,7 +400,7 @@ function parseNodeDesignOutput(raw: string): LessonNodeDesign | null {
     'design' in (parsed as Record<string, unknown>)
       ? (parsed as Record<string, unknown>).design
       : parsed;
-  const result = lessonNodeDesignSchema.safeParse(candidate);
+  const result = parseGeneratedDesign(candidate);
   if (!result.success) log.warn('Invalid lesson node design', result.error.issues);
   return result.success ? result.data : null;
 }
@@ -398,6 +441,7 @@ export async function designLessonPlanWithSubagents(
 
     const tasks: SubagentTask[] = ordered.map((outline, index) => ({
       name: `lesson-node:${outline.id}`,
+      jsonOutput: true,
       systemPrompt: NODE_SYSTEM_PROMPT,
       task: buildNodeTask(input, ordered, index),
     }));

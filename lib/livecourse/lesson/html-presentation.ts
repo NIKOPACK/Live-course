@@ -16,6 +16,7 @@ import {
 } from '@/lib/livecourse/domain/schemas';
 import type { SubagentRuntime } from '@/lib/livecourse/outline/subagent';
 import {
+  buildLessonPlanSkeleton,
   designLessonPlanWithSubagents,
   formatLessonNodeDesignForPrompt,
   type DesignLessonPlanInput,
@@ -95,16 +96,21 @@ export async function designHtmlLessonPlan(
     visualStyle: direction?.visualStyle,
     ...(coverPrompt ? { coverPrompt } : {}),
   });
-  const plan = await designLessonPlanWithSubagents(
+  const designed = await designLessonPlanWithSubagents(
     { ...input, visualStyle: presentation.visualStyle, teachingBrief },
     runtime,
     aiCall,
   );
+  const plan =
+    designed ??
+    buildLessonPlanSkeleton({ ...input, visualStyle: presentation.visualStyle, teachingBrief });
   const missing = input.outlines.filter(
-    (outline) => !plan?.nodes.some((node) => node.sceneId === outline.id && node.design),
+    (outline) => !plan.nodes.some((node) => node.sceneId === outline.id && node.design),
   );
-  if (!plan || missing.length) {
-    throw new Error(`Lesson design incomplete: ${missing.map((outline) => outline.id).join(', ')}`);
+  if (missing.length) {
+    log.warn(
+      `Proceeding without node designs after one fallback: ${missing.map((outline) => outline.id).join(', ')}`,
+    );
   }
   return reviewLessonPlan(
     { ...plan, presentation, teachingBrief },
@@ -436,8 +442,14 @@ export async function repairHtmlClassroomPage(
   checkedFacts?: string[],
 ): Promise<string> {
   const source = stripHtmlTeacherBridge(html);
+  const actionsOnly = issues.every((issue) => issue.target === 'actions');
   const system = `You repair an unpublished classroom page with minimal exact-text edits, not a full rewrite.
 Correct the listed errors and their necessary consequences in prose, labels, SVG/Canvas and code.
+An actions finding may depend on broken page state: uncalled animation hooks, data-step transitions,
+or hidden descendants that the host cannot operate. Repair such dependencies with visible core
+content or independently revealable existing states. Do not add another uncallable hook.
+If an issue can be fixed ONLY by correcting narration or targeting/revealing existing elements,
+do not change the page. ${actionsOnly ? 'Return {"edits":[]} when no HTML change is needed.' : 'The reported HTML errors require a nonempty patch.'}
 Keep the full teaching scope, useful examples, language, visual style, stable teaching IDs,
 media references and working interactions. Do not remove an example or explanation to avoid a finding.
 For incorrect quantitative plots, sample the actual function over its actual interval. Fix EVERY
@@ -489,7 +501,7 @@ ${questions ? QUIZ_PAGE_CONTRACT : ''}`;
             })
             .strict(),
         )
-        .min(1),
+        .min(actionsOnly ? 0 : 1),
     })
     .strict();
   let response = await aiCall(system, JSON.stringify(material));
@@ -500,6 +512,7 @@ ${questions ? QUIZ_PAGE_CONTRACT : ''}`;
     if (!parsed.success) {
       failure = parsed.error;
     } else {
+      if (parsed.data.edits.length === 0) return html;
       try {
         repaired = applyHtmlEdits(source, parsed.data.edits, 'the unpublished classroom page');
       } catch (error) {

@@ -139,15 +139,16 @@ describe('main-agent HTML visual direction', () => {
     );
   });
 
-  it('rejects an incomplete node design instead of shipping a styled skeleton', async () => {
+  it('keeps visual direction and continues when some node designs are missing', async () => {
     const aiCall = vi
       .fn()
       .mockResolvedValueOnce(JSON.stringify(direction))
       .mockResolvedValueOnce('not a lesson plan');
-    await expect(designHtmlLessonPlan(input, runtime, aiCall, reviewCall)).rejects.toThrow(
-      'Lesson design incomplete: intro',
-    );
+    const plan = await designHtmlLessonPlan(input, runtime, aiCall, reviewCall);
     expect(aiCall).toHaveBeenCalledTimes(2);
+    expect(plan.presentation).toEqual(presentation);
+    expect(plan.teachingBrief).toEqual(teachingBrief);
+    expect(plan.nodes[0].design).toBeUndefined();
   });
 
   it('fails before node generation when the main style is absent or invalid', async () => {

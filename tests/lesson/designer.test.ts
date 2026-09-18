@@ -99,6 +99,30 @@ function input(overrides: Partial<DesignLessonPlanInput> = {}): DesignLessonPlan
 }
 
 describe('designLessonPlan', () => {
+  test('ignores extra author metadata without discarding valid teaching content', async () => {
+    const plan = await designLessonPlan(input(), async () =>
+      JSON.stringify({
+        nodes: outlines.map((outline) => ({
+          sceneId: outline.id,
+          design: {
+            ...designFor(outline.id),
+            extraModelNote: 'not part of the teaching schema',
+            anticipatedQuestions: [
+              { question: 'Why?', response: 'Because.', guidance: 'Extra hint.' },
+            ],
+            oralQuestion: {
+              question: 'What changed?',
+              guidance: 'Compare the values.',
+              visualAids: [],
+            },
+          },
+        })),
+      }),
+    );
+    expect(plan?.nodes).toHaveLength(3);
+    expect(plan?.nodes[0].design?.teachingPoints).toEqual(designFor('scene-intro').teachingPoints);
+    expect(() => lessonPlanSchema.parse(plan)).not.toThrow();
+  });
   test('保留显式 courseId/stageId 身份，旧调用仍以 stageId 兼容', async () => {
     const plan = await designLessonPlan(
       input({ courseId: 'course-stable', lessonId: 'lesson-stable' }),
@@ -168,7 +192,7 @@ describe('designLessonPlan', () => {
     expect(plan!.nodes.every((n) => n.goalIds.join() === 'goal:stage-abc:lesson')).toBe(true);
   });
 
-  test('某节点缺 teachingPoints 返回 null', async () => {
+  test('某节点缺 teachingPoints 时保留其余节点', async () => {
     const payload = JSON.stringify({
       nodes: [
         { sceneId: 'scene-intro', design: designFor('a') },
@@ -181,14 +205,38 @@ describe('designLessonPlan', () => {
     });
 
     const plan = await designLessonPlan(input(), async () => payload);
-    expect(plan).toBeNull();
+    expect(plan?.nodes).toHaveLength(3);
+    expect(plan?.nodes.find((node) => node.sceneId === 'scene-intro')?.design).toEqual(
+      designFor('a'),
+    );
+    expect(plan?.nodes.find((node) => node.sceneId === 'scene-check')?.design).toBeUndefined();
+    expect(plan?.nodes.find((node) => node.sceneId === 'scene-lab')?.design).toEqual(
+      designFor('c'),
+    );
   });
 
-  test('LLM 漏掉某个节点返回 null', async () => {
+  test('LLM 漏掉某个节点时其余节点仍可组装', async () => {
     const plan = await designLessonPlan(input(), async () =>
       llmPayload(['scene-intro', 'scene-check']),
     );
-    expect(plan).toBeNull();
+    expect(plan?.nodes).toHaveLength(3);
+    expect(plan?.nodes.find((node) => node.sceneId === 'scene-lab')?.design).toBeUndefined();
+    expect(plan?.nodes.find((node) => node.sceneId === 'scene-intro')?.design).toBeTruthy();
+  });
+
+  test('空字符串教学要点去掉后仍保留该节点', async () => {
+    const payload = JSON.stringify({
+      nodes: outlines.map((outline, index) => ({
+        sceneId: outline.id,
+        design: {
+          ...designFor(outline.id),
+          teachingPoints:
+            index === 0 ? ['导数是瞬时变化率', ' ', ''] : designFor(outline.id).teachingPoints,
+        },
+      })),
+    });
+    const plan = await designLessonPlan(input(), async () => payload);
+    expect(plan?.nodes[0].design?.teachingPoints).toEqual(['导数是瞬时变化率']);
   });
 
   test('垃圾输出返回 null', async () => {
@@ -205,7 +253,7 @@ describe('designLessonPlan', () => {
     expect(plan).toBeNull();
   });
 
-  test('design 带多余字段（strict schema）返回 null', async () => {
+  test('design 的无关额外字段不会阻断生成，也不会写入持久化教案', async () => {
     const payload = JSON.stringify({
       nodes: outlines.map((o) => ({
         sceneId: o.id,
@@ -213,7 +261,8 @@ describe('designLessonPlan', () => {
       })),
     });
     const plan = await designLessonPlan(input(), async () => payload);
-    expect(plan).toBeNull();
+    expect(plan?.nodes).toHaveLength(outlines.length);
+    expect(plan?.nodes[0].design).toEqual(designFor(outlines[0].id));
   });
 
   test('retains substantial explanations and worked examples instead of rejecting character budgets', async () => {
@@ -408,6 +457,7 @@ describe('designLessonPlanWithSubagents', () => {
       designFor('repaired').teachingPoints,
     );
     for (const task of vi.mocked(pool).mock.calls[0][0]) {
+      expect(task.jsonOutput).toBe(true);
       expect(task.task).toContain('One moving secant');
       expect(task.task).toContain('和差积商求导');
       expect(task.task).not.toContain('Node time budget:');
