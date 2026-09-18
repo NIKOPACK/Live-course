@@ -39,7 +39,6 @@ import {
 } from './vendor/airi/interaction';
 import { AiriVrmLipSync } from './vendor/airi/lip-sync';
 import { createAiriVrmLoader } from './vendor/airi/loader';
-import { SpeakingGestures } from './speaking-gestures';
 
 export type AiriVrmAvatarStatus = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported';
 export type AiriVrmLookAt = 'student' | 'slides' | 'whiteboard' | 'camera';
@@ -246,8 +245,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
   #blink = new BlinkController();
   #eyeSaccade = new EyeSaccadeController();
   #lipSync = new AiriVrmLipSync();
-  #gestures: SpeakingGestures | null = null;
-  #motionPreference: MediaQueryList | null = null;
   #lookAt: AiriVrmLookAt = 'student';
   #lookAtTarget = lookAtPosition('student');
   #baseGroupY = 0;
@@ -437,7 +434,7 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
       return;
     }
     void this.#lipSync.connect(audioNode).catch((error: unknown) => {
-      console.warn('Teacher lip-sync and speaking gestures unavailable', error);
+      console.warn('Teacher lip-sync unavailable', error);
       this.dispatchEvent(
         new CustomEvent('airi-vrm-warning', {
           detail: { message: `Speech animation unavailable: ${String(error)}` },
@@ -450,10 +447,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
     this.#lipSync.disconnect();
     clearMouthExpressions(this.#vrm?.expressionManager);
   }
-
-  #onMotionPreferenceChange = (): void => {
-    if (this.#motionPreference?.matches) this.#gestures?.reset();
-  };
 
   #mount(): void {
     if (this.#renderer || typeof document === 'undefined') return;
@@ -495,8 +488,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
 
     this.#resizeObserver = new ResizeObserver(() => this.#resize());
     this.#resizeObserver.observe(this);
-    this.#motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    this.#motionPreference.addEventListener('change', this.#onMotionPreferenceChange);
     this.#canvas.addEventListener('pointerdown', this.#onPointerDown);
     this.#canvas.addEventListener('pointerup', this.#onPointerUp);
     window.addEventListener('pointermove', this.#onPointerMove, { passive: true });
@@ -511,8 +502,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
     this.#frameHandle = null;
     this.#resizeObserver?.disconnect();
     this.#resizeObserver = null;
-    this.#motionPreference?.removeEventListener('change', this.#onMotionPreferenceChange);
-    this.#motionPreference = null;
     this.#canvas?.removeEventListener('pointerdown', this.#onPointerDown);
     this.#canvas?.removeEventListener('pointerup', this.#onPointerUp);
     window.removeEventListener('pointermove', this.#onPointerMove);
@@ -600,7 +589,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
       vrm.springBoneManager?.reset();
       this.#vrm = vrm;
       this.#group = group;
-      this.#gestures = new SpeakingGestures(vrm.humanoid);
       this.#expression = new AiriVrmEmote(vrm);
       this.#colliders = createVrmInteractionColliders(vrm);
       this.#fitCamera();
@@ -631,8 +619,6 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
   }
 
   #disposeModel(): void {
-    this.#gestures?.reset();
-    this.#gestures = null;
     this.#mixer?.stopAllAction();
     this.#mixer = null;
     this.#colliders?.dispose();
@@ -693,15 +679,11 @@ export class AiriVrmAvatarElement extends HTMLElementBase implements AiriVrmAvat
     if (!this.#renderer || !this.#scene || !this.#camera) return;
     const delta = Math.min(0.1, Math.max(0, (time - this.#lastFrameAt) / 1000));
     this.#lastFrameAt = time;
-    this.#gestures?.restorePose();
     this.#mixer?.update(delta);
     this.#applyProceduralIdle(delta);
 
     const vrm = this.#vrm;
     if (vrm) {
-      if (!this.#motionPreference?.matches) {
-        this.#gestures?.update(delta, this.#lipSync.isSpeaking);
-      }
       // AIRI frame order (VRMModel.vue): humanoid → lookAt → blink → emote → lipSync.
       vrm.humanoid?.update();
       this.#applyLookAt(delta);

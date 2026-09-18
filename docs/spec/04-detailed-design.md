@@ -24,9 +24,7 @@
 - 检查页的字幕层只挂在题面区域，不覆盖宿主的开始答题、提交或重试区域；长字幕和持续保留的检查引导也不得拦截这些按钮。课堂与 replay 沿用同一字幕投影，预览默认不显示；保留字幕条内的滚动阅读，不以禁用整个题面交互绕过遮挡。检查页 HTML 在 iframe 内滚动阅读；开始答题前不得把题面整页 `inert` / `pointer-events: none`。作答仍只在 `phase === "answering"` 经 `setAnswer` 生效。
 - 才新写（A2）：未完成课堂只由「暂时离开课堂」调用幂等 `saveAndLeaveSession`：显示保存中，成功时严格先关闭本趟 Realtime 教师会话（先注销全局口型音频桥，再关闭 transport / 麦克风 / 模型侧对话），再写 `C` 恢复点、再销毁 `W`、最后导航首页；关闭实时教师或任一步保存失败都留在课堂可重试。实时会话不是 W / C / L，卸载时的 `close` 只是备份。浏览器 / 标签卸载只允许 best-effort 保存，不算成功状态迁移
 - 改角色（A2 离开闭环）：`TeacherSpeechPort.close` 是离开前必须等待的会话拆除。`PlaybackChromeRoot` 在 `onPrepareLeave` 里调用它；首页 `TeacherAvatar` 默认不订阅课堂口型桥，课堂 `TeacherAvatarHost` 才显式打开 lip-sync
-- 才新写（J3.1 讲课手势）：`lib/livecourse/avatar/speaking-gestures.ts` 在现有 VRM 归一化上半身骨骼上混合少量程序化手势，沿用 `airi-vrm-element.ts` 的渲染循环。每帧先恢复上次手势前的骨骼姿态，再更新待机动画、叠加本帧手势，最后同步 humanoid；不累计旋转，不覆盖口型、表情、视线或下半身。仅使用既有 `vendor/airi/lip-sync.ts` 的真实音频活动检测结果，不用连接状态、讲稿计时器或 `avatar.speech_start` 冒充发声；不增加分析音频的第二通道
-  - 手势有起手、停留、收回和间隔；静音、暂停、打断、断开后平滑收回。`prefers-reduced-motion` 初始值与动态变化都关闭新增手势，模型切换与卸载清理骨骼引用和监听。缺少可用手臂时报告 warning 并保留原待机和口型，不使课堂失败
-  - 这是 J3 视觉表现，不消费或新增语义 `avatar.gesture` 动作，不指向课件坐标，不调用模型、不写 W / C / L、不产生证据，也不参与教学动作完成握手。首页没有课堂音频输入，因此不得触发讲课手势；现有 Three.js / VRM / AIRI 技术栈与模型配置不变
+- 改角色（J3.1）：讲课不再叠加程序化抬手 / 伸手。老师形象只保留待机、口型、表情和视线；不消费 `avatar.gesture`，不写 W / C / L
 - 才新写（A2）：唯一 `finalizeSession` 在进入 `finalizing` 后幂等归档 `W → C`、把合法 learner-only candidate 经 policy 写 `L`；全部成功后才销毁 `W` 并进入课后选择。失败停在 `finalizing`、保留 `W` 与待归档状态并显示重试。J4.3「离开」仅导航，不得再次调用保存 / 归档 / 销毁
   - C 的可选 `lifecycle.finalization` 使用 `version: 1`，保存固定归档 key 与 `pending / memory-finalized` 阶段；归档先写 pending，C/L 全部完成后先持久化 memory-finalized，再清理 action W 与 working-memory W。阶段确认版本不算再次归档，销毁 W 后不再尝试必要的 C/L 或阶段写入；阶段确认失败后重试沿用原归档时间，避免重复刷新同一 learner 贡献的时间戳。
   - 重新打开课堂时校验原归档身份并检查两份 teaching W，不计 replay W。memory-finalized 且两份 W 都缺席才进入课后；残留 W 或 pending 只恢复同一 finalizing，不挂载教学 Stage、不启动教学动作。旧 archived 无阶段字段也必须定位原 W 并确认两份都缺席；未知原归档身份、读取失败或恢复资料缺失均显示可重试错误，不静默当作完成。

@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   audible: false,
-  reducedMotion: false,
   order: [] as string[],
   updateGesture: vi.fn(),
   restoreGesture: vi.fn(),
@@ -72,20 +71,6 @@ vi.mock('@/lib/livecourse/avatar/vendor/airi/lip-sync', () => ({
   },
 }));
 
-vi.mock('@/lib/livecourse/avatar/speaking-gestures', () => ({
-  SpeakingGestures: class {
-    restorePose() {
-      state.order.push('restore');
-      state.restoreGesture();
-    }
-    update(delta: number, speaking: boolean) {
-      state.order.push('gesture');
-      state.updateGesture(delta, speaking);
-    }
-    reset = state.resetGesture;
-  },
-}));
-
 import {
   ensureAiriVrmAvatarElement,
   type AiriVrmAvatarElementApi,
@@ -94,27 +79,13 @@ import {
 let avatar: AiriVrmAvatarElementApi;
 let frame: FrameRequestCallback | undefined;
 let clock: number;
-let motionListeners: Set<() => void>;
-let removeMotionListener: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   state.audible = false;
-  state.reducedMotion = false;
   state.order = [];
   clock = performance.now();
   frame = undefined;
-  motionListeners = new Set();
-  removeMotionListener = vi.fn((_type: string, listener: () => void) => {
-    motionListeners.delete(listener);
-  });
-  vi.stubGlobal('matchMedia', () => ({
-    get matches() {
-      return state.reducedMotion;
-    },
-    addEventListener: (_type: string, listener: () => void) => motionListeners.add(listener),
-    removeEventListener: removeMotionListener,
-  }));
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -152,67 +123,35 @@ function tick(): void {
   frame?.(clock);
 }
 
-describe('VRM gesture wiring (J3.1)', () => {
-  it('gates gestures on real audio, restores before animation, and applies before humanoid sync', async () => {
+describe('VRM lecture rendering without speaking arm gestures', () => {
+  it('updates idle, humanoid and lip-sync without overlaying arm poses', async () => {
     await mount();
-    tick();
-    expect(state.updateGesture).toHaveBeenLastCalledWith(expect.any(Number), false);
     state.order = [];
     state.audible = true;
     tick();
-    expect(state.updateGesture).toHaveBeenLastCalledWith(expect.any(Number), true);
-    expect(state.order).toEqual(['restore', 'gesture', 'humanoid', 'lip-sync']);
-
-    state.audible = false;
-    tick();
-    expect(state.updateGesture).toHaveBeenLastCalledWith(expect.any(Number), false);
+    expect(state.order).toEqual(['humanoid', 'lip-sync']);
+    expect(state.updateGesture).not.toHaveBeenCalled();
+    expect(state.restoreGesture).not.toHaveBeenCalled();
   });
 
-  it('disconnects audio without snapping the gesture, allowing the next frames to return to idle', async () => {
+  it('keeps lip-sync after audio disconnect', async () => {
     await mount();
     state.audible = true;
     tick();
-    state.resetGesture.mockClear();
     avatar.disconnectAudio();
+    state.order = [];
     tick();
-    expect(state.updateGesture).toHaveBeenLastCalledWith(expect.any(Number), false);
+    expect(state.order).toEqual(['humanoid', 'lip-sync']);
     expect(state.resetGesture).not.toHaveBeenCalled();
   });
 
-  it('honors reduced motion on mount and when the preference changes in either direction', async () => {
-    state.reducedMotion = true;
+  it('cleans up the animation loop on unmount', async () => {
     await mount();
-    state.audible = true;
-    tick();
-    expect(state.updateGesture).not.toHaveBeenCalled();
-    expect(state.order).toContain('lip-sync');
-    expect(state.order).toContain('humanoid');
-
-    state.reducedMotion = false;
-    motionListeners.forEach((listener) => listener());
-    tick();
-    expect(state.updateGesture).toHaveBeenLastCalledWith(expect.any(Number), true);
-
-    state.reducedMotion = true;
-    motionListeners.forEach((listener) => listener());
-    expect(state.resetGesture).toHaveBeenCalled();
-    state.updateGesture.mockClear();
-    tick();
-    expect(state.updateGesture).not.toHaveBeenCalled();
-  });
-
-  it('cleans up gesture state on model changes and listeners on unmount', async () => {
-    await mount();
-    state.resetGesture.mockClear();
     avatar.modelSrc = '';
-    expect(state.resetGesture).toHaveBeenCalledOnce();
-    state.updateGesture.mockClear();
     tick();
     expect(state.updateGesture).not.toHaveBeenCalled();
 
     avatar.remove();
-    expect(removeMotionListener).toHaveBeenCalledOnce();
-    expect(motionListeners.size).toBe(0);
     expect(cancelAnimationFrame).toHaveBeenCalled();
     expect(state.disconnectAudio).toHaveBeenCalled();
   });
@@ -228,7 +167,7 @@ describe('VRM gesture wiring (J3.1)', () => {
       avatar.connectAudio({} as AudioNode);
       await Promise.resolve();
       expect(warn).toHaveBeenCalledWith(
-        'Teacher lip-sync and speaking gestures unavailable',
+        'Teacher lip-sync unavailable',
         error,
       );
       expect(warning).toHaveBeenCalledOnce();
