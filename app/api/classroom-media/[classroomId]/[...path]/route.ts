@@ -1,7 +1,10 @@
 import { promises as fs, createReadStream } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
-import { CLASSROOMS_DIR, isValidClassroomId } from '@/lib/server/classroom-storage';
+import {
+  isValidClassroomId,
+  resolveSafeClassroomMediaFile,
+} from '@/lib/server/classroom-storage';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('ClassroomMedia');
@@ -26,37 +29,27 @@ export async function GET(
 ) {
   const { classroomId, path: pathSegments } = await params;
 
-  // Validate classroomId
   if (!isValidClassroomId(classroomId)) {
     return NextResponse.json({ error: 'Invalid classroom ID' }, { status: 400 });
   }
 
-  // Validate path segments — no traversal
   const joined = pathSegments.join('/');
-  if (joined.includes('..') || pathSegments.some((s) => s.includes('\0'))) {
-    return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
+  let realPath: string | null;
+  try {
+    realPath = await resolveSafeClassroomMediaFile(classroomId, pathSegments);
+  } catch (error) {
+    log.error(
+      `Classroom media serving failed [classroomId=${classroomId}, path=${joined}]:`,
+      error,
+    );
+    return NextResponse.json({ error: 'Failed to serve file' }, { status: 500 });
   }
-
-  // Only allow media/ and audio/ subdirectories
-  const subDir = pathSegments[0];
-  if (subDir !== 'media' && subDir !== 'audio') {
-    return NextResponse.json({ error: 'Invalid path' }, { status: 404 });
+  if (!realPath) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
-
-  const filePath = path.join(CLASSROOMS_DIR, classroomId, ...pathSegments);
-  const resolvedBase = path.resolve(CLASSROOMS_DIR, classroomId);
 
   try {
-    // Resolve symlinks and verify the real path stays within the classroom dir
-    const realPath = await fs.realpath(filePath);
-    if (!realPath.startsWith(resolvedBase + path.sep) && realPath !== resolvedBase) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
     const stat = await fs.stat(realPath);
-    if (!stat.isFile()) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
 
     const ext = path.extname(realPath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';

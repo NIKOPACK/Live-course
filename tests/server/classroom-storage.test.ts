@@ -10,6 +10,7 @@ import {
   isValidClassroomId,
   persistClassroom,
   readClassroom,
+  resolveSafeClassroomMediaFile,
 } from '@/lib/server/classroom-storage';
 
 const createdFiles: string[] = [];
@@ -137,6 +138,22 @@ describe('classroom file storage', () => {
 
   it('rejects path traversal on delete before touching the filesystem', async () => {
     await expect(deleteClassroom('../outside')).rejects.toThrow(/invalid classroom id/i);
+  });
+
+  it('follows a classroom-directory symlink when resolving media', async () => {
+    const id = `storage-media-link-${Date.now()}`;
+    const linkDir = path.join(CLASSROOMS_DIR, id);
+    const realDir = path.join(CLASSROOMS_DIR, `${id}-real`);
+    createdDirs.push(linkDir, realDir);
+    await fs.mkdir(path.join(realDir, 'media'), { recursive: true });
+    const filePath = path.join(realDir, 'media', 'cover.png');
+    await fs.writeFile(filePath, 'png');
+    await fs.symlink(realDir, linkDir);
+
+    await expect(resolveSafeClassroomMediaFile(id, ['media', 'cover.png'])).resolves.toBe(
+      await fs.realpath(filePath),
+    );
+    await expect(resolveSafeClassroomMediaFile(id, ['media', '..', 'cover.png'])).resolves.toBeNull();
   });
 
   it('refuses to delete the showcase classroom before any unlink', async () => {

@@ -58,6 +58,41 @@ export function isValidClassroomId(id: unknown): id is string {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
 }
 
+/**
+ * Resolve a classroom media/audio file, following directory symlinks
+ * (production `standalone/data` → `shared/data`) while still refusing
+ * files that escape the classroom directory.
+ */
+export async function resolveSafeClassroomMediaFile(
+  classroomId: string,
+  pathSegments: string[],
+): Promise<string | null> {
+  if (!isValidClassroomId(classroomId)) return null;
+  const joined = pathSegments.join('/');
+  if (joined.includes('..') || pathSegments.some((segment) => segment.includes('\0'))) {
+    return null;
+  }
+  const subDir = pathSegments[0];
+  if (subDir !== 'media' && subDir !== 'audio') return null;
+
+  const classroomDir = path.join(CLASSROOMS_DIR, classroomId);
+  const filePath = path.join(classroomDir, ...pathSegments);
+  try {
+    const [resolvedBase, realPath] = await Promise.all([
+      fs.realpath(classroomDir),
+      fs.realpath(filePath),
+    ]);
+    if (realPath !== resolvedBase && !realPath.startsWith(resolvedBase + path.sep)) {
+      return null;
+    }
+    const stat = await fs.stat(realPath);
+    return stat.isFile() ? realPath : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 function assertValidClassroomId(id: unknown): asserts id is string {
   if (!isValidClassroomId(id)) {
     throw new Error(
