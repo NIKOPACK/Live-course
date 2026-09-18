@@ -1,4 +1,4 @@
-import { ScanLine, Search, FileText, LayoutPanelLeft, Clapperboard } from 'lucide-react';
+import { ScanLine, Search, FileText, BookOpen, LayoutPanelLeft } from 'lucide-react';
 import type {
   SceneOutline,
   UserRequirements,
@@ -79,8 +79,15 @@ export interface GenerationSessionState {
   taskEngineMode?: boolean;
 }
 
+export type GenerationStepId =
+  | 'pdf-analysis'
+  | 'web-search'
+  | 'outline'
+  | 'lesson-plan'
+  | 'slide-content';
+
 export type GenerationStep = {
-  id: string;
+  id: GenerationStepId;
   title: string;
   description: string;
   icon: React.ElementType;
@@ -147,17 +154,17 @@ export const ALL_STEPS: GenerationStep[] = [
     type: 'writing',
   },
   {
+    id: 'lesson-plan',
+    title: 'generation.designingLessonPlan',
+    description: 'lessonPlan.preparing',
+    icon: BookOpen,
+    type: 'writing',
+  },
+  {
     id: 'slide-content',
     title: 'generation.generatingSlideContent',
     description: 'generation.generatingSlideContentDesc',
     icon: LayoutPanelLeft,
-    type: 'visual',
-  },
-  {
-    id: 'actions',
-    title: 'generation.generatingActions',
-    description: 'generation.generatingActionsDesc',
-    icon: Clapperboard,
     type: 'visual',
   },
 ];
@@ -165,10 +172,7 @@ export const ALL_STEPS: GenerationStep[] = [
 export const getActiveSteps = (session: GenerationSessionState | null) => {
   return ALL_STEPS.filter((step) => {
     if (step.id === 'pdf-analysis') {
-      return Boolean(
-        session?.pdfStorageKey ||
-        ((session?.documentSources?.length ?? 0) > 0 && !session?.pdfText),
-      );
+      return Boolean(session?.pdfStorageKey || (session?.documentSources?.length ?? 0) > 0);
     }
     if (step.id === 'web-search') return !!session?.requirements?.webSearch;
     return true;

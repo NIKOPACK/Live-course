@@ -4,19 +4,25 @@ import { Check } from 'lucide-react';
 import { GameLoader } from '@/components/livecourse/GameLoader';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils';
-import { getGenerationStepText, type GenerationSessionState, type GenerationStep } from '../types';
+import {
+  getGenerationStepText,
+  type GenerationSessionState,
+  type GenerationStep,
+  type GenerationStepId,
+} from '../types';
 
 export function PreparationSteps({
   steps,
-  currentIndex,
+  currentStepId,
   session,
 }: {
   steps: readonly GenerationStep[];
-  currentIndex: number;
+  currentStepId: GenerationStepId;
   session: GenerationSessionState | null;
 }) {
   const { t } = useI18n();
   if (steps.length === 0) return null;
+  const currentIndex = steps.findIndex((step) => step.id === currentStepId);
 
   return (
     <ol className="min-w-0" data-testid="preparation-steps">
@@ -30,8 +36,9 @@ export function PreparationSteps({
             key={step.id}
             data-step={step.id}
             data-current={current ? 'true' : undefined}
+            aria-current={current ? 'step' : undefined}
             className={cn(
-              'relative flex min-w-0 items-start gap-3 pb-4 text-sm leading-relaxed last:pb-0',
+              'relative flex min-w-0 items-start gap-3 pb-4 text-sm leading-relaxed transition-colors motion-reduce:transition-none last:pb-0',
               current ? 'text-foreground' : 'text-muted-foreground',
             )}
           >

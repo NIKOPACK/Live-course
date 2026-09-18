@@ -5,6 +5,7 @@ import { Check } from 'lucide-react';
 import { GameLoader } from '@/components/livecourse/GameLoader';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { Button } from '@/components/ui/button';
+import { PreparationTransition } from './preparation-transition';
 import { cn } from '@/lib/utils';
 import type { ClarifyAnswer, ClarifyQuestion } from '@/lib/livecourse/outline/types';
 
@@ -34,7 +35,18 @@ export function ClarifyCard({ questions, submitting, onSkip, onContinue }: Clari
   const hasAnswers = Object.values(selections).some((ids) => ids.length > 0);
 
   useEffect(() => {
-    questionRef.current?.focus();
+    const heading = questionRef.current;
+    heading?.focus({ preventScroll: true });
+    if (!heading) return;
+    const rect = heading.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+      heading.scrollIntoView({
+        block: 'nearest',
+        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+          ? 'instant'
+          : 'smooth',
+      });
+    }
   }, [question?.id]);
 
   const toggleOption = (question: ClarifyQuestion, optionId: string) => {
@@ -89,99 +101,106 @@ export function ClarifyCard({ questions, submitting, onSkip, onContinue }: Clari
       <h2 className="text-xl font-semibold leading-snug tracking-tight">{t('clarify.title')}</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{t('clarify.subtitle')}</p>
 
-      {question && (
-        <div className="lc-rise mt-6" key={question.id}>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground" role="status">
-              {t('clarify.questionProgress', {
-                current: questionIndex + 1,
-                total: questions.length,
-              })}
-            </p>
-            <span className="flex items-center gap-1.5" aria-hidden="true">
-              {questions.map((item, dotIndex) => (
-                <span
-                  key={item.id}
-                  className={cn(
-                    'h-1.5 rounded-full transition-all duration-300 motion-reduce:transition-none',
-                    dotIndex === questionIndex
-                      ? 'w-5 bg-primary'
-                      : dotIndex < questionIndex
-                        ? 'w-1.5 bg-primary/50'
-                        : 'w-1.5 bg-border',
-                  )}
-                />
-              ))}
-            </span>
-          </div>
-          <h3
-            ref={questionRef}
-            id={questionId}
-            tabIndex={-1}
-            className="mt-2 text-base font-semibold leading-relaxed outline-none"
-          >
-            {question.question}
-          </h3>
-          <p
-            id={`${questionId}-hint`}
-            className="mt-2 text-sm leading-relaxed text-muted-foreground"
-          >
-            {t(question.multiSelect ? 'clarify.chooseMultiple' : 'clarify.chooseOne')}
-          </p>
-          <div
-            role="group"
-            aria-labelledby={questionId}
-            aria-describedby={`${questionId}-hint`}
-            className="mt-4 grid min-w-0 gap-2"
-          >
-            {question.options.map((option) => {
-              const selected = (selections[question.id] ?? []).includes(option.id);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  aria-pressed={selected}
-                  title={option.description}
-                  disabled={busy}
-                  onClick={() => toggleOption(question, option.id)}
-                  className={cn(
-                    'flex min-h-11 w-full min-w-0 items-start gap-3 whitespace-normal rounded-xl border px-4 py-3 text-left text-sm leading-relaxed transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60',
-                    selected
-                      ? 'border-primary bg-accent text-foreground'
-                      : 'border-border bg-card text-foreground hover:bg-accent/50',
-                  )}
-                >
+      <PreparationTransition transitionKey={question?.id ?? 'empty'} className="mt-6">
+        {question && (
+          <div className="lc-preparation-enter" key={question.id}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground" role="status">
+                {t('clarify.questionProgress', {
+                  current: questionIndex + 1,
+                  total: questions.length,
+                })}
+              </p>
+              <span className="flex items-center gap-1.5" aria-hidden="true">
+                {questions.map((item, dotIndex) => (
                   <span
-                    aria-hidden
+                    key={item.id}
                     className={cn(
-                      'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded border',
+                      'h-1.5 rounded-full transition-all duration-300 motion-reduce:transition-none',
+                      dotIndex === questionIndex
+                        ? 'w-5 bg-primary'
+                        : dotIndex < questionIndex
+                          ? 'w-1.5 bg-primary/50'
+                          : 'w-1.5 bg-border',
+                    )}
+                  />
+                ))}
+              </span>
+            </div>
+            <h3
+              ref={questionRef}
+              id={questionId}
+              tabIndex={-1}
+              className="mt-2 text-base font-semibold leading-relaxed outline-none"
+            >
+              {question.question}
+            </h3>
+            <p
+              id={`${questionId}-hint`}
+              className="mt-2 text-sm leading-relaxed text-muted-foreground"
+            >
+              {t(question.multiSelect ? 'clarify.chooseMultiple' : 'clarify.chooseOne')}
+            </p>
+            <div
+              role="group"
+              aria-labelledby={questionId}
+              aria-describedby={`${questionId}-hint`}
+              className="mt-4 grid min-w-0 gap-2"
+            >
+              {question.options.map((option) => {
+                const selected = (selections[question.id] ?? []).includes(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={selected}
+                    title={option.description}
+                    disabled={busy}
+                    onClick={() => toggleOption(question, option.id)}
+                    className={cn(
+                      'flex min-h-11 w-full min-w-0 items-start gap-3 whitespace-normal rounded-xl border px-4 py-3 text-left text-sm leading-relaxed transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60',
                       selected
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border',
+                        ? 'border-primary bg-accent text-foreground'
+                        : 'border-border bg-card text-foreground hover:bg-accent/50',
                     )}
                   >
-                    {selected && <Check className="lc-pop size-4" />}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block">{option.label}</span>
-                    {option.description && (
-                      <span className="mt-1 block text-sm text-muted-foreground">
-                        {option.description}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
+                    <span
+                      aria-hidden
+                      className={cn(
+                        'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded border',
+                        selected
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border',
+                      )}
+                    >
+                      {selected && <Check className="lc-pop size-4" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block">{option.label}</span>
+                      {option.description && (
+                        <span className="mt-1 block text-sm text-muted-foreground">
+                          {option.description}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </PreparationTransition>
 
-      {hasAnswers && (
-        <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-          {t('preparationVisual.answersKept')}
-        </p>
-      )}
+      <p
+        className={cn(
+          'mt-4 text-sm leading-relaxed text-muted-foreground',
+          !hasAnswers && 'invisible',
+        )}
+        aria-live="polite"
+        aria-hidden={!hasAnswers}
+      >
+        {t('preparationVisual.answersKept')}
+      </p>
       <div className="mt-6 grid min-w-0 gap-2 border-t border-border pt-4 sm:flex sm:flex-wrap sm:justify-end">
         <Button
           type="button"

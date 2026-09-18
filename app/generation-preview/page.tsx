@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, Suspense, useRef } from 'react';
+import { useEffect, useMemo, useState, Suspense, useRef, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, ArrowLeft } from 'lucide-react';
 import { GameLoader } from '@/components/livecourse/GameLoader';
@@ -49,6 +49,7 @@ import type {
 } from '@/lib/types/generation';
 import { ClarifyCard } from '@/components/generation/clarify-card';
 import { ScopePicker } from '@/components/generation/scope-picker';
+import { PreparationTransition } from '@/components/generation/preparation-transition';
 import type {
   ClarifyAnswer,
   ClarifyQuestion,
@@ -64,6 +65,7 @@ import { createLogger } from '@/lib/logger';
 import { cn } from '@/lib/utils';
 import {
   type GenerationSessionState,
+  type GenerationStepId,
   resolveGenerationIdentity,
   withGenerationIdentity,
   ALL_STEPS,
@@ -180,12 +182,10 @@ function GenerationPreviewContent() {
   const generationStatus = useStageStore((state) => state.generationStatus);
   const failedOutlines = useStageStore((state) => state.failedOutlines);
   const generatingOutlines = useStageStore((state) => state.generatingOutlines);
-  const [generatingPhase, setGeneratingPhase] = useState<{
-    outlineId: string;
-    phase: GeneratingPhase;
-  } | null>(null);
+  const [generatingPhases, setGeneratingPhases] = useState<Record<string, GeneratingPhase>>({});
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
-    onPhaseChange: (phase, outline) => setGeneratingPhase({ outlineId: outline.id, phase }),
+    onPhaseChange: (phase, outline) =>
+      setGeneratingPhases((current) => ({ ...current, [outline.id]: phase })),
   });
 
   const [session, setSession] = useState<GenerationSessionState | null>(null);
@@ -193,8 +193,8 @@ function GenerationPreviewContent() {
   const [sessionLoadFailed, setSessionLoadFailed] = useState(false);
   const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [currentStepId, setCurrentStepId] = useState<GenerationStepId>('outline');
+  const [statusMessageKey, setStatusMessageKey] = useState('');
   const [enteringClassroom, setEnteringClassroom] = useState(false);
   const [enterError, setEnterError] = useState<string | null>(null);
   const [pendingEnterFailed, setPendingEnterFailed] = useState(false);
@@ -218,21 +218,22 @@ function GenerationPreviewContent() {
   const segments = useMemo(
     () =>
       deriveSegmentProgress({
-        outlines: hasSessionStage && outlines.length > 0 ? outlines : (streamingOutlines ?? []),
+        outlines:
+          hasSessionStage && outlines.length > 0 ? outlines : (session?.sceneOutlines ?? []),
         scenes: hasSessionStage ? scenes : [],
         failedOutlines: hasSessionStage ? failedOutlines : [],
         generatingOutlines: hasSessionStage ? generatingOutlines : [],
         lessonPlan,
-        generatingPhase,
+        generatingPhases,
       }),
     [
       failedOutlines,
       generatingOutlines,
-      generatingPhase,
+      generatingPhases,
       lessonPlan,
       outlines,
       scenes,
-      streamingOutlines,
+      session?.sceneOutlines,
       hasSessionStage,
     ],
   );
@@ -649,20 +650,20 @@ function GenerationPreviewContent() {
     let currentSession = generationSession;
 
     setError(null);
-    setCurrentStepIndex(0);
+    setGeneratingPhases({});
 
     try {
-      // Compute active steps for this session (recomputed after session mutations)
-      let activeSteps = getActiveSteps(currentSession);
-
       // Determine if we need the document analysis step
       const documentSources = legacySourceFromSession(currentSession);
       const hasPdfToAnalyze = documentSources.length > 0 && !currentSession.pdfText;
       // If no document to analyze, skip to the next available step
-      if (!hasPdfToAnalyze) {
-        const firstNonPdfIdx = activeSteps.findIndex((s) => s.id !== 'pdf-analysis');
-        setCurrentStepIndex(Math.max(0, firstNonPdfIdx));
-      }
+      setCurrentStepId(
+        hasPdfToAnalyze
+          ? 'pdf-analysis'
+          : currentSession.requirements.webSearch
+            ? 'web-search'
+            : 'outline',
+      );
 
       // Step 0: Extract uploaded course material if needed
       if (hasPdfToAnalyze) {
@@ -817,13 +818,11 @@ function GenerationPreviewContent() {
 
         // Reassign local reference for subsequent steps
         currentSession = updatedSession;
-        activeSteps = getActiveSteps(currentSession);
       }
 
       // Step: Web Search (if enabled)
-      const webSearchStepIdx = activeSteps.findIndex((s) => s.id === 'web-search');
-      if (currentSession.requirements.webSearch && webSearchStepIdx >= 0) {
-        setCurrentStepIndex(webSearchStepIdx);
+      if (currentSession.requirements.webSearch) {
+        setCurrentStepId('web-search');
         setWebSearchSources([]);
 
         const wsSettings = useSettingsStore.getState();
@@ -858,7 +857,6 @@ function GenerationPreviewContent() {
         };
         persistSession(updatedSessionWithSearch);
         currentSession = updatedSessionWithSearch;
-        activeSteps = getActiveSteps(currentSession);
       }
 
       // Load imageMapping early (needed for both outline and scene generation)
@@ -916,8 +914,7 @@ function GenerationPreviewContent() {
       let languageDirective = currentSession.languageDirective;
       let courseTitle = currentSession.courseTitle;
 
-      const outlineStepIdx = activeSteps.findIndex((s) => s.id === 'outline');
-      setCurrentStepIndex(outlineStepIdx >= 0 ? outlineStepIdx : 0);
+      setCurrentStepId('outline');
       const needsOutlineGeneration = !outlines || outlines.length === 0;
       if (needsOutlineGeneration) {
         // ── A3 课前确认（生成教案之前，docs/spec/02 生成预览节）──
@@ -969,8 +966,11 @@ function GenerationPreviewContent() {
         });
         const outlineResult = await readOutlineStream(outlineResponse, {
           signal,
-          onOutlines: setStreamingOutlines,
-          onRetry: () => setStatusMessage(t('generation.outlineRetrying')),
+          onOutlines: (outlines) => {
+            setStreamingOutlines(outlines);
+            if (outlines.length > 0) setStatusMessageKey('');
+          },
+          onRetry: () => setStatusMessageKey('generation.outlineRetrying'),
           messages: {
             failed: t('generation.outlineGenerateFailed'),
             empty: t('generation.outlineEmptyResponse'),
@@ -1016,6 +1016,7 @@ function GenerationPreviewContent() {
       // persisted plan wins; only a missing plan invokes the API. New lessons
       // require a main-agent visual direction before page generation. Node
       // design can degrade server-side, but a missing direction stays retryable.
+      setCurrentStepId('lesson-plan');
       let generatedLessonPlan: LessonPlan;
       if (currentSession.lessonPlan !== undefined && currentSession.lessonPlan !== null) {
         generatedLessonPlan = resolveGenerationLessonPlan({
@@ -1029,7 +1030,7 @@ function GenerationPreviewContent() {
       } else {
         let apiCandidate: unknown;
         try {
-          setStatusMessage(t('lessonPlan.preparing'));
+          setStatusMessageKey('lessonPlan.preparing');
           const lessonPlanRes = await fetch('/api/generate/lesson-plan', {
             method: 'POST',
             headers: getApiHeaders(),
@@ -1054,7 +1055,7 @@ function GenerationPreviewContent() {
             throw new Error(t('generation.generationFailed'));
           }
         } finally {
-          setStatusMessage('');
+          setStatusMessageKey('');
         }
         generatedLessonPlan = resolveGenerationLessonPlan({
           session: currentSession,
@@ -1086,7 +1087,7 @@ function GenerationPreviewContent() {
       outlines = applyVisualAidsToOutlines(generatedLessonPlan, outlines);
 
       // Move to next step
-      setStatusMessage('');
+      setStatusMessageKey('');
       stage.taskEngineMode = currentSession.taskEngineMode === true;
 
       // Store languageDirective on the stage
@@ -1106,7 +1107,7 @@ function GenerationPreviewContent() {
       stage.agentIds = agents.map((a) => a.id);
 
       // Move to scene generation step
-      setStatusMessage('');
+      setStatusMessageKey('');
       if (!outlines || outlines.length === 0) {
         throw new Error(t('generation.outlineEmptyResponse'));
       }
@@ -1167,8 +1168,7 @@ function GenerationPreviewContent() {
       store.setCoursePlan(courseSnapshot.coursePlan);
 
       // Advance to slide-content step
-      const contentStepIdx = activeSteps.findIndex((s) => s.id === 'slide-content');
-      if (contentStepIdx >= 0) setCurrentStepIndex(contentStepIdx);
+      setCurrentStepId('slide-content');
 
       // Build stageInfo and userProfile for API call
       const stageInfo = {
@@ -1248,6 +1248,7 @@ function GenerationPreviewContent() {
         log.error('Failed to preserve generation session after generation error:', persistError);
         // Do not mask the original generation failure with a persistence error.
       }
+      setStreamingOutlines(null);
       setError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -1282,7 +1283,7 @@ function GenerationPreviewContent() {
 
     setSession(retrySession);
     setError(null);
-    setStatusMessage('');
+    setStatusMessageKey('');
     setConfirmStep({ kind: 'idle' });
     hasStartedRef.current = true;
     void startGeneration(retrySession);
@@ -1323,19 +1324,18 @@ function GenerationPreviewContent() {
 
   if (!sessionLoaded) {
     return (
-      <main className="lc-preview-shell flex min-h-[100dvh] items-center justify-center bg-background p-4 text-foreground">
-        <GameLoader size="lg" label={t('common.loading')} />
-      </main>
+      <PreviewShell phase="loading" onBack={goBackToHome}>
+        <div className="flex min-h-40 items-center justify-center">
+          <GameLoader size="lg" label={t('common.loading')} />
+        </div>
+      </PreviewShell>
     );
   }
 
   if (sessionLoadFailed) {
     return (
-      <main className="lc-preview-shell min-h-[100dvh] bg-background p-4 text-foreground sm:p-6 lg:p-8">
-        <section className="lc-preview-card lc-rise mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4 rounded-2xl bg-card p-4 [overflow-wrap:anywhere] sm:p-6">
-          <h1 className="text-[28px] font-semibold leading-tight tracking-tight sm:text-[32px]">
-            {t('preparationVisual.title')}
-          </h1>
+      <PreviewShell phase="load-error" onBack={goBackToHome}>
+        <div className="flex min-w-0 flex-col gap-4">
           <p className="text-sm leading-relaxed text-destructive" role="alert">
             {t('generation.sessionLoadFailed')}
           </p>
@@ -1348,19 +1348,19 @@ function GenerationPreviewContent() {
           >
             {t('clarify.retry')}
           </Button>
-        </section>
-      </main>
+        </div>
+      </PreviewShell>
     );
   }
 
   if (!session) {
     return (
-      <main className="lc-preview-shell flex min-h-[100dvh] items-center justify-center bg-background p-4 text-foreground">
-        <section className="lc-preview-card lc-rise flex w-full min-w-0 max-w-md flex-col gap-4 rounded-2xl bg-card p-4 [overflow-wrap:anywhere] sm:p-6">
+      <PreviewShell phase="missing-session" onBack={goBackToHome}>
+        <div className="flex min-w-0 flex-col gap-4">
           <AlertCircle aria-hidden className="size-8 text-muted-foreground" />
-          <h1 className="text-[28px] font-semibold leading-tight tracking-tight sm:text-[32px]">
+          <h2 className="text-xl font-semibold leading-tight tracking-tight">
             {t('generation.sessionNotFound')}
-          </h1>
+          </h2>
           <p className="text-sm leading-relaxed text-muted-foreground">
             {t('generation.sessionNotFoundDesc')}
           </p>
@@ -1371,28 +1371,245 @@ function GenerationPreviewContent() {
             <ArrowLeft aria-hidden className="size-4" />
             {t('generation.backToHome')}
           </Button>
-        </section>
-      </main>
+        </div>
+      </PreviewShell>
     );
   }
 
-  const activeStep =
-    activeSteps.length > 0
-      ? activeSteps[Math.min(currentStepIndex, activeSteps.length - 1)]
-      : ALL_STEPS[0];
+  const activeStep = activeSteps.find((step) => step.id === currentStepId) ?? ALL_STEPS[2];
   const activeStepText = getGenerationStepText(activeStep, session);
   const enterClassroomError =
     enterError ?? (pendingEnterFailed ? t('generation.enterClassroomFailed') : null);
 
+  const phase = error
+    ? 'error'
+    : confirmStep.kind !== 'idle'
+      ? confirmStep.kind
+      : deckReady
+        ? 'ready'
+        : `${currentStepId}-${showSegmentWorkspace ? 'segments' : 'preparing'}`;
+  const failedSegmentIds = segments
+    .filter((segment) => segment.status === 'failed')
+    .map((segment) => segment.outlineId)
+    .join(',');
+
+  const footer = (
+    <>
+      {error ? (
+        <Button
+          size="lg"
+          className="lc-rise h-auto min-h-11 min-w-0 max-w-full rounded-xl px-6 py-3 whitespace-normal [overflow-wrap:anywhere] motion-reduce:transition-none"
+          onClick={retryGeneration}
+        >
+          {t('clarify.retry')}
+        </Button>
+      ) : deckReady && confirmStep.kind === 'idle' ? (
+        <Button
+          size="lg"
+          className="lc-rise h-auto min-h-12 min-w-0 max-w-full gap-2 rounded-2xl px-8 py-3 text-base whitespace-normal [overflow-wrap:anywhere] motion-reduce:transition-none sm:min-w-56"
+          data-testid="enter-classroom"
+          disabled={enteringClassroom}
+          aria-busy={enteringClassroom}
+          onClick={() => void enterClassroom()}
+        >
+          {enteringClassroom && <GameLoader size="sm" />}
+          {t(enteringClassroom ? 'generation.enteringClassroom' : 'generation.enterClassroom')}
+        </Button>
+      ) : null}
+      {enterClassroomError && (
+        <p
+          data-testid="enter-classroom-error"
+          className="text-sm leading-relaxed text-destructive"
+          role="alert"
+        >
+          {enterClassroomError}
+        </p>
+      )}
+    </>
+  );
+
+  return (
+    <PreviewShell
+      phase={phase}
+      transitionKey={`${phase}:${lessonPlan?.id ?? 'pending-plan'}:${failedSegmentIds}`}
+      onBack={goBackToHome}
+      footer={footer}
+    >
+      {confirmStep.kind !== 'idle' && !error ? (
+        <div className="min-w-0">
+          {(confirmStep.kind === 'loading-clarify' || confirmStep.kind === 'loading-scope') && (
+            <div className="flex min-w-0 items-start gap-4 py-4" role="status" aria-busy="true">
+              <GameLoader size="md" className="shrink-0" />
+              <h2 className="min-w-0 text-xl font-semibold leading-snug tracking-tight">
+                {t(
+                  confirmStep.kind === 'loading-clarify'
+                    ? 'clarify.loading'
+                    : 'clarify.loadingScope',
+                )}
+              </h2>
+            </div>
+          )}
+          {confirmStep.kind === 'questions' && (
+            <ClarifyCard
+              questions={confirmStep.questions}
+              onSkip={() => settleConfirm({ type: 'skip' })}
+              onContinue={(answers) => settleConfirm({ type: 'continue', answers })}
+            />
+          )}
+          {confirmStep.kind === 'scope' && (
+            <ScopePicker
+              knowledgeMap={confirmStep.knowledgeMap}
+              submitting={confirmStep.submitting}
+              error={confirmStep.error}
+              onSkip={() => settleConfirm({ type: 'skip' })}
+              onStart={(selectedTopics) => settleConfirm({ type: 'start', selectedTopics })}
+            />
+          )}
+          {(confirmStep.kind === 'clarify-error' || confirmStep.kind === 'scope-error') && (
+            <ConfirmationFailurePanel
+              kind={confirmStep.kind}
+              onRetry={() => settleConfirm({ type: 'retry' })}
+              onSkip={() => settleConfirm({ type: 'skip' })}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="min-w-0 space-y-6">
+          <div role={error ? 'alert' : 'status'} className="min-w-0 space-y-4">
+            <div className="flex size-11 items-center justify-center">
+              {error || hasFailedSegments ? (
+                <span className="flex size-11 items-center justify-center rounded-2xl bg-destructive/10">
+                  <AlertCircle aria-hidden className="size-5 text-destructive" />
+                </span>
+              ) : !deckReady ? (
+                <GameLoader size="lg" />
+              ) : (
+                <span className="lc-success-mark">
+                  <svg viewBox="0 0 24 24" fill="none" className="size-5" aria-hidden="true">
+                    <path
+                      className="lc-check-path"
+                      d="M5 12.5l4.5 4.5L19 7.5"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      pathLength={1}
+                    />
+                  </svg>
+                </span>
+              )}
+            </div>
+            <div className="min-w-0 space-y-2">
+              <h2
+                data-testid="preview-status-title"
+                className="text-xl font-semibold leading-snug tracking-tight"
+              >
+                {error
+                  ? t('generation.generationFailed')
+                  : deckReady
+                    ? t('generation.generationComplete')
+                    : hasFailedSegments
+                      ? t('preparationVisual.segmentsFailedTitle')
+                      : t('generation.preparationTitle')}
+              </h2>
+              <p
+                className={cn(
+                  'text-sm leading-relaxed',
+                  error ? 'text-destructive' : 'text-muted-foreground',
+                )}
+              >
+                {error ||
+                  (deckReady
+                    ? t('generation.classroomReady')
+                    : hasFailedSegments
+                      ? t('preparationVisual.segmentsFailedHelp')
+                      : t(statusMessageKey || activeStepText.description))}
+              </p>
+            </div>
+          </div>
+          {activeStep.id === 'web-search' && webSearchSources.length > 0 && !error && (
+            <ul className="space-y-2 text-sm leading-relaxed text-muted-foreground">
+              {webSearchSources.slice(0, 4).map((source, index) => (
+                <li key={index}>{source.title}</li>
+              ))}
+            </ul>
+          )}
+          {truncationWarnings.length > 0 && !error && !deckReady && (
+            <ul className="space-y-2 border-s-2 border-border ps-4 text-sm leading-relaxed text-muted-foreground">
+              {truncationWarnings.map((warning, index) => (
+                <li key={index}>{warning}</li>
+              ))}
+            </ul>
+          )}
+          {!error && !deckReady && currentStepId !== 'slide-content' && (
+            <PreparationSteps steps={activeSteps} currentStepId={currentStepId} session={session} />
+          )}
+          {!error && !showSegmentWorkspace && currentStepId === 'outline' && (
+            <PreparationTransition transitionKey={`outline-${streamingOutlines?.length ?? 0}`}>
+              <div data-testid="outline-stream-preview" className="min-h-28" aria-busy="true">
+                {streamingOutlines?.length ? (
+                  <ol className="space-y-2 text-sm leading-relaxed text-muted-foreground">
+                    {streamingOutlines.slice(-4).map((outline) => (
+                      <li key={outline.id} className="lc-preparation-enter flex min-w-0 gap-3">
+                        <span className="shrink-0 tabular-nums">{outline.order + 1}.</span>
+                        <span className="min-w-0">{outline.title}</span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <div aria-hidden="true" className="space-y-3 py-1">
+                    {[75, 90, 60].map((width) => (
+                      <div
+                        key={width}
+                        className="h-3 rounded bg-muted"
+                        style={{ width: `${width}%` }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </PreparationTransition>
+          )}
+          {lessonPlan && confirmStep.kind === 'idle' ? (
+            <LessonPlanPanel plan={lessonPlan} compact={showSegmentWorkspace} />
+          ) : null}
+          {showSegmentWorkspace && (
+            <SegmentList
+              segments={segments}
+              onRetry={(outlineId) => void retrySegment(outlineId)}
+              retryingId={retryingSegmentId}
+              generationBusy={generationStatus === 'generating'}
+            />
+          )}
+        </div>
+      )}
+    </PreviewShell>
+  );
+}
+
+function PreviewShell({
+  phase,
+  transitionKey = phase,
+  onBack,
+  children,
+  footer,
+}: {
+  phase: string;
+  transitionKey?: string;
+  onBack: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  const { t } = useI18n();
   return (
     <main className="lc-preview-shell min-h-[100dvh] w-full bg-background p-4 text-left text-foreground sm:p-6 lg:p-8">
       <div className="mx-auto w-full min-w-0 max-w-3xl space-y-6 [overflow-wrap:anywhere]">
-        <header className="lc-rise min-w-0 space-y-3">
+        <header className="min-w-0 space-y-3">
           <Button
             variant="ghost"
             size="sm"
-            className="h-auto min-h-11 min-w-0 max-w-full gap-2 rounded-xl px-3 py-3 whitespace-normal [overflow-wrap:anywhere] motion-reduce:transition-none"
-            onClick={goBackToHome}
+            className="h-auto min-h-11 gap-2 rounded-xl px-3 py-3 whitespace-normal motion-reduce:transition-none"
+            onClick={onBack}
           >
             <ArrowLeft aria-hidden className="size-4" />
             {t('generation.backToHome')}
@@ -1406,165 +1623,20 @@ function GenerationPreviewContent() {
             </h1>
           </div>
         </header>
-
-        <section className="lc-preview-card lc-rise lc-rise-1 min-w-0 rounded-2xl bg-card p-4 sm:p-6 lg:p-8">
-          {confirmStep.kind !== 'idle' && !error ? (
-            <div className="min-w-0">
-              {(confirmStep.kind === 'loading-clarify' || confirmStep.kind === 'loading-scope') && (
-                <div className="flex min-w-0 items-start gap-4 py-4" role="status" aria-busy="true">
-                  <GameLoader size="md" className="shrink-0" />
-                  <h2 className="min-w-0 text-xl font-semibold leading-snug tracking-tight">
-                    {t(
-                      confirmStep.kind === 'loading-clarify'
-                        ? 'clarify.loading'
-                        : 'clarify.loadingScope',
-                    )}
-                  </h2>
-                </div>
-              )}
-              {confirmStep.kind === 'questions' && (
-                <ClarifyCard
-                  questions={confirmStep.questions}
-                  onSkip={() => settleConfirm({ type: 'skip' })}
-                  onContinue={(answers) => settleConfirm({ type: 'continue', answers })}
-                />
-              )}
-              {confirmStep.kind === 'scope' && (
-                <ScopePicker
-                  knowledgeMap={confirmStep.knowledgeMap}
-                  submitting={confirmStep.submitting}
-                  error={confirmStep.error}
-                  onSkip={() => settleConfirm({ type: 'skip' })}
-                  onStart={(selectedTopics) => settleConfirm({ type: 'start', selectedTopics })}
-                />
-              )}
-              {(confirmStep.kind === 'clarify-error' || confirmStep.kind === 'scope-error') && (
-                <ConfirmationFailurePanel
-                  kind={confirmStep.kind}
-                  onRetry={() => settleConfirm({ type: 'retry' })}
-                  onSkip={() => settleConfirm({ type: 'skip' })}
-                />
-              )}
-            </div>
-          ) : (
-            <div className="min-w-0 space-y-6">
-              <div role={error ? 'alert' : 'status'} className="min-w-0 space-y-4">
-                {error || hasFailedSegments ? (
-                  <span className="flex size-11 items-center justify-center rounded-2xl bg-destructive/10">
-                    <AlertCircle aria-hidden className="size-5 text-destructive" />
-                  </span>
-                ) : !deckReady ? (
-                  <GameLoader size="lg" />
-                ) : (
-                  <span className="lc-success-mark">
-                    <svg viewBox="0 0 24 24" fill="none" className="size-5" aria-hidden="true">
-                      <path
-                        className="lc-check-path"
-                        d="M5 12.5l4.5 4.5L19 7.5"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        pathLength={1}
-                      />
-                    </svg>
-                  </span>
-                )}
-                <div className="min-w-0 space-y-2">
-                  <h2
-                    data-testid="preview-status-title"
-                    className="text-xl font-semibold leading-snug tracking-tight"
-                  >
-                    {error
-                      ? t('generation.generationFailed')
-                      : deckReady
-                        ? t('generation.generationComplete')
-                        : hasFailedSegments
-                          ? t('preparationVisual.segmentsFailedTitle')
-                          : t('generation.preparationTitle')}
-                  </h2>
-                  <p
-                    className={cn(
-                      'text-sm leading-relaxed',
-                      error ? 'text-destructive' : 'text-muted-foreground',
-                    )}
-                  >
-                    {error ||
-                      (deckReady
-                        ? t('generation.classroomReady')
-                        : hasFailedSegments
-                          ? t('preparationVisual.segmentsFailedHelp')
-                          : statusMessage || t(activeStepText.description))}
-                  </p>
-                </div>
-              </div>
-              {activeStep.id === 'web-search' && webSearchSources.length > 0 && !error && (
-                <ul className="space-y-2 text-sm leading-relaxed text-muted-foreground">
-                  {webSearchSources.slice(0, 4).map((source, index) => (
-                    <li key={index}>{source.title}</li>
-                  ))}
-                </ul>
-              )}
-              {truncationWarnings.length > 0 && !error && !deckReady && (
-                <ul className="space-y-2 border-s-2 border-border ps-4 text-sm leading-relaxed text-muted-foreground">
-                  {truncationWarnings.map((warning, index) => (
-                    <li key={index}>{warning}</li>
-                  ))}
-                </ul>
-              )}
-              {!error && !deckReady && !showSegmentWorkspace && (
-                <PreparationSteps
-                  steps={activeSteps}
-                  currentIndex={currentStepIndex}
-                  session={session}
-                />
-              )}
-              {lessonPlan && confirmStep.kind === 'idle' ? (
-                <LessonPlanPanel plan={lessonPlan} compact={showSegmentWorkspace} />
-              ) : null}
-              {showSegmentWorkspace && (
-                <SegmentList
-                  segments={segments}
-                  onRetry={(outlineId) => void retrySegment(outlineId)}
-                  retryingId={retryingSegmentId}
-                  generationBusy={generationStatus === 'generating'}
-                />
-              )}
-            </div>
-          )}
+        <section
+          data-testid="preparation-surface"
+          data-phase={phase}
+          className="lc-preview-card min-w-0 rounded-2xl bg-card p-4 sm:p-6 lg:p-8"
+        >
+          <PreparationTransition
+            transitionKey={transitionKey}
+            pending={phase === 'loading' || phase.startsWith('loading-')}
+          >
+            {children}
+          </PreparationTransition>
         </section>
-
-        <div className="lc-rise lc-rise-2 flex min-w-0 flex-col items-stretch gap-3 pb-4 sm:items-end">
-          {error ? (
-            <Button
-              size="lg"
-              className="h-auto min-h-11 min-w-0 max-w-full rounded-xl px-6 py-3 whitespace-normal [overflow-wrap:anywhere] motion-reduce:transition-none"
-              onClick={retryGeneration}
-            >
-              {t('clarify.retry')}
-            </Button>
-          ) : deckReady && confirmStep.kind === 'idle' ? (
-            <Button
-              size="lg"
-              className="h-auto min-h-12 min-w-0 max-w-full gap-2 rounded-2xl px-8 py-3 text-base whitespace-normal [overflow-wrap:anywhere] motion-reduce:transition-none sm:min-w-56"
-              data-testid="enter-classroom"
-              disabled={enteringClassroom}
-              aria-busy={enteringClassroom}
-              onClick={() => void enterClassroom()}
-            >
-              {enteringClassroom && <GameLoader size="sm" />}
-              {t(enteringClassroom ? 'generation.enteringClassroom' : 'generation.enterClassroom')}
-            </Button>
-          ) : null}
-          {enterClassroomError && (
-            <p
-              data-testid="enter-classroom-error"
-              className="text-sm leading-relaxed text-destructive"
-              role="alert"
-            >
-              {enterClassroomError}
-            </p>
-          )}
+        <div className="flex min-h-16 min-w-0 flex-col items-stretch gap-3 pb-4 sm:items-end">
+          {footer}
         </div>
       </div>
     </main>
@@ -1572,18 +1644,16 @@ function GenerationPreviewContent() {
 }
 
 export default function GenerationPreviewPage() {
+  const router = useRouter();
+  const { t } = useI18n();
   return (
     <Suspense
       fallback={
-        <div
-          className="lc-preview-shell min-h-[100dvh] bg-background p-4 sm:p-6 lg:p-8"
-          aria-busy="true"
-        >
-          <div className="mx-auto max-w-3xl space-y-4 motion-safe:animate-pulse">
-            <div className="h-8 w-40 rounded bg-muted" />
-            <div className="h-40 w-full rounded-xl bg-muted" />
+        <PreviewShell phase="loading" onBack={() => router.push('/')}>
+          <div className="flex min-h-40 items-center justify-center">
+            <GameLoader size="lg" label={t('common.loading')} />
           </div>
-        </div>
+        </PreviewShell>
       }
     >
       <GenerationPreviewContent />

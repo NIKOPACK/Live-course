@@ -37,12 +37,12 @@ export function LessonPlanPanel({
         <ChevronDown
           aria-hidden
           className={cn(
-            'size-4 shrink-0 text-muted-foreground transition-transform',
+            'size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
             open && 'rotate-180',
           )}
         />
       </CollapsibleTrigger>
-      <CollapsibleContent>
+      <CollapsibleContent className="lc-preview-collapse">
         <div
           className="min-w-0 space-y-3 pb-2 ps-1"
           data-testid="lesson-plan-readonly"

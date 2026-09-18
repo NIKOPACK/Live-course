@@ -24,6 +24,8 @@ import type { SegmentProgress } from '@/app/generation-preview/segment-status';
 import { SegmentClassroomPreview } from '@/app/generation-preview/components/segment-classroom-preview';
 import { LessonPlanPanel } from '@/app/generation-preview/components/lesson-plan-panel';
 import { ConfirmationFailurePanel } from '@/app/generation-preview/components/confirmation-failure';
+import { PreparationSteps } from '@/app/generation-preview/components/preparation-steps';
+import { getActiveSteps, type GenerationSessionState } from '@/app/generation-preview/types';
 import type { LessonPlan } from '@/lib/livecourse/domain/schemas';
 import type { Scene } from '@/lib/types/stage';
 
@@ -131,6 +133,98 @@ async function click(element: HTMLButtonElement) {
 function assertReadOnly(root: ParentNode = container) {
   expect(root.querySelector('input, textarea, select, [contenteditable="true"]')).toBeNull();
 }
+
+it('keeps parsed-material steps and addresses the active stage by identity', async () => {
+  const session: GenerationSessionState = {
+    sessionId: 'steps',
+    currentStep: 'generating',
+    requirements: { requirement: 'Physics', webSearch: true },
+    pdfText: '',
+    documentSources: [
+      {
+        id: 'source',
+        name: 'notes.pdf',
+        size: 20,
+        mimeType: 'application/pdf',
+        order: 1,
+        storageKey: 'notes',
+      },
+    ],
+  };
+  const initialSteps = getActiveSteps(session);
+  const parsedSession = { ...session, pdfText: 'Extracted notes' };
+  expect(getActiveSteps(parsedSession).map(({ id }) => id)).toEqual(
+    initialSteps.map(({ id }) => id),
+  );
+  expect(initialSteps.map(({ id }) => id)).toEqual([
+    'pdf-analysis',
+    'web-search',
+    'outline',
+    'lesson-plan',
+    'slide-content',
+  ]);
+  await render(
+    createElement(PreparationSteps, {
+      steps: getActiveSteps(parsedSession),
+      currentStepId: 'web-search',
+      session: parsedSession,
+    }),
+  );
+  expect(container.querySelector('[data-step="pdf-analysis"] svg')).not.toBeNull();
+  expect(container.querySelector('[aria-current="step"]')?.getAttribute('data-step')).toBe(
+    'web-search',
+  );
+});
+
+it('reserves the answer feedback slot before selection so action buttons do not jump', async () => {
+  await render(createElement(ClarifyCard, { questions, onContinue: vi.fn(), onSkip: vi.fn() }));
+  const hint = container.querySelector('[aria-live="polite"]');
+  expect(hint?.className).toContain('invisible');
+  expect(hint?.getAttribute('aria-hidden')).toBe('true');
+  const submit = button('clarify.continue');
+  await click(button('Prepare for an exam'));
+  expect(container.querySelector('[aria-live="polite"]')).toBe(hint);
+  expect(hint?.textContent).toBe('preparationVisual.answersKept');
+  expect(hint?.className).not.toContain('invisible');
+  expect(hint?.getAttribute('aria-hidden')).toBe('false');
+  expect(button('clarify.continue')).toBe(submit);
+});
+
+it('retains an open material preview while other segment states change', async () => {
+  const complete: SegmentProgress = {
+    outlineId: 'complete',
+    title: 'Complete',
+    order: 0,
+    status: 'completed',
+    scene: {
+      id: 'complete-scene',
+      stageId: 'stage-1',
+      type: 'interactive',
+      title: 'Complete',
+      order: 0,
+      content: { type: 'interactive', html: '<main>Completed material</main>' },
+    },
+  };
+  const other: SegmentProgress = { outlineId: 'next', title: 'Next', order: 1, status: 'waiting' };
+  const show = (next: SegmentProgress) =>
+    render(
+      createElement(SegmentList, {
+        segments: [complete, next],
+        onRetry: vi.fn(),
+        retryingId: null,
+      }),
+    );
+  await show(other);
+  await click(
+    container.querySelector<HTMLButtonElement>('[data-testid="preview-segment-toggle"]')!,
+  );
+  const iframe = container.querySelector('iframe');
+  expect(iframe).not.toBeNull();
+  await show({ ...other, status: 'generating', generatingPhase: 'content' });
+  expect(container.querySelector('iframe')).toBe(iframe);
+  await show({ ...other, status: 'failed' });
+  expect(container.querySelector('iframe')).toBe(iframe);
+});
 
 it('retains automatic segment expansion after completion and respects manual closure on retries', async () => {
   const first: SegmentProgress = {

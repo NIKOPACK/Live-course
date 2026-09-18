@@ -7,16 +7,26 @@ import { SlideThumbnail } from '@/components/slide-renderer/SlideThumbnail';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import type { Scene } from '@/lib/types/stage';
 import { HtmlPagePreview } from '@/components/scene-renderers/html-page-preview';
+import { cn } from '@/lib/utils';
 
-export function SegmentClassroomPending({ message }: { message: string }) {
+export function SegmentClassroomPending({
+  message,
+  busy = true,
+}: {
+  message: string;
+  busy?: boolean;
+}) {
   const { t } = useI18n();
   return (
     <div data-testid="segment-classroom-pending" data-readonly="true" className="min-w-0">
       <p className="mb-2 text-sm font-medium text-foreground">{t('generation.classroomPreview')}</p>
       <div
         role="status"
-        aria-busy="true"
-        className="lc-active-sheen relative flex aspect-video w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-lg bg-muted px-3 text-center sm:px-6"
+        aria-busy={busy}
+        className={cn(
+          'relative flex aspect-video w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-lg bg-muted px-3 text-center sm:px-6',
+          busy && 'lc-active-sheen',
+        )}
       >
         <BookOpen className="size-5 text-muted-foreground" aria-hidden />
         <p className="text-pretty text-sm font-medium leading-relaxed text-foreground">{message}</p>

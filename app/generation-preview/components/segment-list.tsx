@@ -73,10 +73,9 @@ export function SegmentList({
               data-testid="preview-segment"
               data-status={segment.status}
               className={cn(
-                'lc-rise min-w-0 border-b border-border/50 last:border-b-0',
-                segment.status === 'generating' && 'rounded-xl border-b-0 bg-accent/20',
+                'lc-preparation-enter min-w-0 border-b border-border/50 transition-colors motion-reduce:transition-none last:border-b-0',
+                segment.status === 'generating' && 'rounded-xl border-b-transparent bg-accent/20',
               )}
-              style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
             >
               <Collapsible
                 open={open}
@@ -94,7 +93,7 @@ export function SegmentList({
                         title: segment.title,
                       })}
                       className={cn(
-                        'grid min-h-11 w-full min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 rounded-xl py-3 text-start',
+                        'grid min-h-11 w-full min-w-0 cursor-pointer grid-cols-[1.5rem_minmax(0,1fr)_1rem] items-start gap-x-2 gap-y-2 rounded-xl py-3 text-start sm:grid-cols-[2rem_minmax(0,1fr)_auto_1rem] sm:gap-x-3',
                         'hover:bg-muted/60',
                         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
                         'active:translate-y-px',
@@ -107,34 +106,32 @@ export function SegmentList({
                       <h3 className="min-w-0 text-base font-medium leading-snug text-foreground">
                         {segment.title}
                       </h3>
-                      <span className="flex shrink-0 items-center gap-2 pt-0.5">
-                        <span
-                          role="status"
-                          data-tone={
-                            segment.status === 'failed'
-                              ? 'error'
-                              : segment.status === 'completed'
-                                ? 'done'
-                                : segment.status === 'generating'
-                                  ? 'active'
-                                  : 'idle'
-                          }
-                          className="lc-status-pill"
-                        >
-                          <span className="sr-only">{segment.title}: </span>
-                          {statusLabel(segment.status, t)}
-                        </span>
-                        <ChevronDown
-                          aria-hidden
-                          className={cn(
-                            'size-4 shrink-0 text-muted-foreground transition-transform',
-                            open && 'rotate-180',
-                          )}
-                        />
+                      <span
+                        role="status"
+                        data-tone={
+                          segment.status === 'failed'
+                            ? 'error'
+                            : segment.status === 'completed'
+                              ? 'done'
+                              : segment.status === 'generating'
+                                ? 'active'
+                                : 'idle'
+                        }
+                        className="lc-status-pill col-start-2 row-start-2 justify-self-start sm:col-start-3 sm:row-start-1 sm:min-w-24 sm:justify-center"
+                      >
+                        <span className="sr-only">{segment.title}: </span>
+                        {statusLabel(segment.status, t)}
                       </span>
+                      <ChevronDown
+                        aria-hidden
+                        className={cn(
+                          'col-start-3 row-start-1 mt-1 size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none sm:col-start-4',
+                          open && 'rotate-180',
+                        )}
+                      />
                     </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div className="min-w-0 ps-[2.75rem]">
+                    <CollapsibleContent className="lc-preview-collapse">
+                      <div className="min-w-0 sm:ps-[2.75rem]">
                         <SegmentDetail segment={segment} />
                       </div>
                     </CollapsibleContent>
@@ -178,10 +175,11 @@ function SegmentDetail({ segment }: { segment: SegmentProgress }) {
         : t('generation.segmentContentGenerating')
       : segment.status === 'waiting'
         ? t('generation.segmentWaitingDetail')
-        : null;
+        : segment.status === 'failed'
+          ? t('generation.segmentFailed')
+          : null;
   const teachingPoints = segment.design?.teachingPoints ?? [];
-  const waitingForClassroom =
-    !segment.scene && (segment.status === 'generating' || segment.status === 'waiting');
+  const waitingForClassroom = !segment.scene && segment.status !== 'completed';
   const classroom = segment.scene ? (
     <div className="min-w-0 space-y-2">
       {phaseCopy ? (
@@ -192,7 +190,10 @@ function SegmentDetail({ segment }: { segment: SegmentProgress }) {
       <SegmentClassroomPreview scene={segment.scene} />
     </div>
   ) : waitingForClassroom ? (
-    <SegmentClassroomPending message={phaseCopy ?? t('generation.noClassroomYet')} />
+    <SegmentClassroomPending
+      message={phaseCopy ?? t('generation.noClassroomYet')}
+      busy={segment.status === 'generating'}
+    />
   ) : null;
 
   return (

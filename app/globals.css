@@ -664,6 +664,60 @@
 
 /* Preview is the quiet foyer before class. These hooks are
    deliberately additive so all existing loading/error semantics remain. */
+html:has(.lc-preview-shell) {
+  scrollbar-gutter: stable;
+}
+
+@keyframes lc-preview-expand {
+  from {
+    height: 0;
+    opacity: 0.4;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+@keyframes lc-preview-collapse {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+@keyframes lc-preparation-enter {
+  from {
+    opacity: 0.4;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.lc-preparation-enter {
+  animation: lc-preparation-enter 180ms ease-out;
+}
+.lc-preview-collapse {
+  overflow: hidden;
+}
+.lc-preview-collapse[data-state='open'] {
+  animation: lc-preview-expand 240ms ease-in-out;
+}
+.lc-preview-collapse[data-state='closed'] {
+  animation: lc-preview-collapse 180ms ease-in-out;
+}
+.lc-preview-shell .lc-loader-rotor {
+  animation-timing-function: linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lc-preparation-enter,
+  .lc-preview-collapse[data-state] {
+    animation: none;
+  }
+}
+
 .lc-preview-shell {
   background-color: var(--background) !important;
   background-image:

@@ -28,7 +28,7 @@ export function deriveSegmentProgress(input: {
   failedOutlines: readonly SceneOutline[];
   generatingOutlines: readonly SceneOutline[];
   lessonPlan?: LessonPlan | null;
-  generatingPhase?: { outlineId: string; phase: GeneratingPhase } | null;
+  generatingPhases?: Readonly<Record<string, GeneratingPhase>>;
 }): SegmentProgress[] {
   const completedOrders = new Set(input.scenes.map((scene) => scene.order));
   const failedIds = new Set(input.failedOutlines.map((outline) => outline.id));
@@ -47,7 +47,7 @@ export function deriveSegmentProgress(input: {
         ? 'completed'
         : failedIds.has(outline.id)
           ? 'failed'
-          : generatingIds.has(outline.id)
+          : generatingIds.has(outline.id) && input.generatingPhases?.[outline.id]
             ? 'generating'
             : 'waiting';
       return {
@@ -57,10 +57,7 @@ export function deriveSegmentProgress(input: {
         status,
         design,
         scene,
-        generatingPhase:
-          status === 'generating' && input.generatingPhase?.outlineId === outline.id
-            ? input.generatingPhase.phase
-            : undefined,
+        generatingPhase: status === 'generating' ? input.generatingPhases?.[outline.id] : undefined,
       };
     });
 }

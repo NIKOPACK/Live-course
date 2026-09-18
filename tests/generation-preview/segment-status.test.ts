@@ -54,6 +54,7 @@ describe('deriveSegmentProgress', () => {
       scenes: [scene('scene-a', 0)],
       failedOutlines: [outlines[1]],
       generatingOutlines: [outlines[2]],
+      generatingPhases: { c: 'content' },
     });
 
     expect(segments.map((segment) => segment.status)).toEqual([
@@ -93,10 +94,12 @@ describe('deriveSegmentProgress', () => {
       scenes: [scene('scene-a', 0)],
       failedOutlines: [],
       generatingOutlines: outlines,
+      generatingPhases: { a: 'actions', b: 'content' },
     });
 
     expect(segments[0].status).toBe('completed');
     expect(segments[1].status).toBe('generating');
+    expect(segments[2].status).toBe('waiting');
   });
 
   it('attaches the generated scene and the current generating sub-step', () => {
@@ -106,12 +109,36 @@ describe('deriveSegmentProgress', () => {
       scenes: [completed],
       failedOutlines: [],
       generatingOutlines: [outlines[1]],
-      generatingPhase: { outlineId: 'b', phase: 'actions' },
+      generatingPhases: { b: 'actions' },
     });
 
     expect(segments[0].scene).toBe(completed);
     expect(segments[1].generatingPhase).toBe('actions');
     expect(segments[2].generatingPhase).toBeUndefined();
+  });
+
+  it('keeps queued segments waiting and preserves each concurrent worker sub-step', () => {
+    const segments = deriveSegmentProgress({
+      outlines,
+      scenes: [],
+      failedOutlines: [],
+      generatingOutlines: outlines,
+      generatingPhases: { a: 'actions', b: 'content' },
+    });
+    expect(segments.map(({ status, generatingPhase }) => [status, generatingPhase])).toEqual([
+      ['generating', 'actions'],
+      ['generating', 'content'],
+      ['waiting', undefined],
+    ]);
+    expect(
+      deriveSegmentProgress({
+        outlines,
+        scenes: [],
+        failedOutlines: [],
+        generatingOutlines: [],
+        generatingPhases: { a: 'actions', b: 'content' },
+      }).map(({ status }) => status),
+    ).toEqual(['waiting', 'waiting', 'waiting']);
   });
 
   it('attaches the matching lesson-plan design without changing status', () => {

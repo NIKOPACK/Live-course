@@ -135,6 +135,53 @@ it('does not persist a truncated outline stream or start lesson planning from pa
   expect(savedSession().sceneOutlines).toBeUndefined();
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="segments"]')).toBeNull();
+  expect(container.textContent).not.toContain(outline.title);
+});
+
+it('keeps streamed drafts and retries in one preparation surface until the outline is complete', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  fetchMock
+    .mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+      ),
+    )
+    .mockImplementationOnce(() => new Promise(() => undefined));
+  await render();
+  const surface = container.querySelector('[data-testid="preparation-surface"]');
+  const skeleton = container.querySelector('[data-testid="outline-stream-preview"]');
+  const header = container.querySelector('header');
+  const enqueue = async (event: unknown) => {
+    await act(async () => {
+      stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    });
+  };
+  await enqueue({ type: 'outline', data: outline });
+  expect(container.querySelector('[data-testid="segments"]')).toBeNull();
+  expect(skeleton?.textContent).toContain(outline.title);
+  expect(container.querySelector('[data-testid="preparation-steps"]')).not.toBeNull();
+  await enqueue({ type: 'retry' });
+  expect(container.querySelector('[data-testid="preparation-surface"]')).toBe(surface);
+  expect(container.querySelector('[data-testid="outline-stream-preview"]')).toBe(skeleton);
+  expect(skeleton?.textContent).not.toContain(outline.title);
+  expect(container.textContent).toContain('generation.outlineRetrying');
+  await enqueue({ type: 'outline', data: outline });
+  expect(container.textContent).not.toContain('generation.outlineRetrying');
+  await enqueue({ type: 'done', outlines: [outline] });
+  expect(container.querySelector('[data-testid="preparation-surface"]')).toBe(surface);
+  expect(container.querySelector('header')).toBe(header);
+  expect(container.querySelector('[data-testid="outline-stream-preview"]')).toBeNull();
+  expect(container.querySelector('[data-testid="segments"]')?.textContent).toContain(outline.title);
+  expect(container.querySelector('[aria-current="step"]')?.getAttribute('data-step')).toBe(
+    'lesson-plan',
+  );
+  expect(container.querySelector('[data-testid="enter-classroom"]')).toBeNull();
+  expect(savedSession().sceneOutlines).toEqual([outline]);
 });
 
 it('surfaces completed-session hydration failure and supports retry in the preview', async () => {
