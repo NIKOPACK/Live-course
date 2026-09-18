@@ -127,6 +127,13 @@ function checkbox(title: string): HTMLButtonElement {
   if (!result) throw new Error(`Missing checkbox: ${title}`);
   return result;
 }
+function scopeToggle(id: string): HTMLButtonElement {
+  const result = container
+    .querySelector(`[data-scope-topic="${id}"]`)
+    ?.querySelector<HTMLButtonElement>('button[aria-expanded]');
+  if (!result) throw new Error(`Missing scope disclosure: ${id}`);
+  return result;
+}
 async function click(element: HTMLButtonElement) {
   await act(async () => element.click());
 }
@@ -420,10 +427,124 @@ describe('ClarifyCard sequential answers', () => {
 // docs/spec/01 J2.0b: a loaded map owns both the current selection and cached
 // recommendations; a failed submission rerenders that same picker.
 describe('ScopePicker confirmation and recovery', () => {
+  it('preserves collapse animation identity when reducing motion mid-transition', () => {
+    const css = readFileSync('app/globals.css', 'utf8');
+    const reducedCollapse = css.match(/\.lc-preview-collapse\[data-state\]\s*\{([^}]+)\}/)?.[1];
+    expect(reducedCollapse).toBeDefined();
+    expect(reducedCollapse).toContain('animation-duration: 0.01ms');
+    expect(reducedCollapse).not.toMatch(/\banimation(?:-name)?:/);
+  });
+
+  it('starts a large tree collapsed and submits hidden recommendations in their original order', async () => {
+    const topics = Array.from({ length: 5 }, (_, group) => ({
+      id: `group-${group}`,
+      title: `Topic ${group}`,
+      summary: `Long description for topic ${group}`,
+      recommended: false,
+      children: Array.from({ length: 8 }, (_, child) => ({
+        id: `${group}-${child}`,
+        title: `Learning point ${group}-${child}`,
+        recommended: child < 3,
+      })),
+    }));
+    const onStart = vi.fn();
+    const onSkip = vi.fn();
+    await render(
+      createElement(ScopePicker, {
+        knowledgeMap: { subject: 'Fourier transform', topics },
+        onStart,
+        onSkip,
+      }),
+    );
+    expect(container.querySelectorAll('[role="checkbox"]')).toHaveLength(5);
+    expect(container.textContent).not.toContain('Learning point');
+    expect(container.textContent).not.toContain('Long description');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('"count":15');
+    expect(container.querySelector('[data-scope-selection-count]')?.textContent).toContain(
+      '"selected":3,"total":8',
+    );
+    expect(scopeToggle('group-0').getAttribute('aria-expanded')).toBe('false');
+    expect(scopeToggle('group-0').getAttribute('aria-controls')).toBeTruthy();
+    await click(button('clarify.startClass'));
+    expect(onStart).toHaveBeenCalledExactlyOnceWith(
+      topics.flatMap((topic) =>
+        topic.children.filter((child) => child.recommended).map((child) => child.title),
+      ),
+    );
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it('keeps expansion and parent selection independent from selected descendants', async () => {
+    const onStart = vi.fn();
+    await render(createElement(ScopePicker, { knowledgeMap, onStart, onSkip: vi.fn() }));
+    await click(checkbox('Mechanics'));
+    expect(scopeToggle('mechanics').getAttribute('aria-expanded')).toBe('false');
+    await click(scopeToggle('mechanics'));
+    expect(checkbox('Motion and forces').getAttribute('aria-checked')).toBe('true');
+    expect(checkbox(customTitle).getAttribute('aria-checked')).toBe('false');
+    await click(checkbox('Motion and forces'));
+    expect(checkbox('Mechanics').getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-scope-selection-count]')?.textContent).toContain(
+      '"selected":0,"total":2',
+    );
+    await click(scopeToggle('mechanics'));
+    expect(container.querySelectorAll('[role="checkbox"]')).toHaveLength(1);
+    await click(button('clarify.startClass'));
+    expect(onStart).toHaveBeenCalledExactlyOnceWith(['Mechanics']);
+  });
+
+  it('retains nested expansion after collapsing its parent and after submission errors', async () => {
+    const nestedMap: KnowledgeMap = {
+      subject: 'Physics',
+      topics: [
+        {
+          id: 'root',
+          title: 'Physics',
+          recommended: false,
+          children: [
+            {
+              id: 'branch',
+              title: 'Mechanics',
+              recommended: false,
+              children: [
+                {
+                  id: 'leaf',
+                  title: 'Forces',
+                  summary: 'A detailed explanation of forces.',
+                  recommended: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const onStart = vi.fn();
+    const onSkip = vi.fn();
+    const props = { knowledgeMap: nestedMap, onStart, onSkip };
+    await render(createElement(ScopePicker, props));
+    await click(scopeToggle('root'));
+    await click(scopeToggle('branch'));
+    await click(scopeToggle('leaf'));
+    expect(container.textContent).toContain('A detailed explanation of forces.');
+    await click(scopeToggle('root'));
+    await render(createElement(ScopePicker, { ...props, submitting: true }));
+    expect(scopeToggle('root').disabled).toBe(true);
+    await render(createElement(ScopePicker, { ...props, error: 'Save failed' }));
+    await click(scopeToggle('root'));
+    expect(scopeToggle('branch').getAttribute('aria-expanded')).toBe('true');
+    expect(scopeToggle('leaf').getAttribute('aria-expanded')).toBe('true');
+    expect(checkbox('Forces').getAttribute('aria-checked')).toBe('true');
+    expect(container.textContent).toContain('A detailed explanation of forces.');
+    expect(onStart).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
   it('preselects recommendations, blocks empty scope, and directly submits cached recommendations', async () => {
     const onStart = vi.fn();
     const onSkip = vi.fn();
     await render(createElement(ScopePicker, { knowledgeMap, onStart, onSkip }));
+    await click(scopeToggle('mechanics'));
     expect(checkbox('Motion and forces').getAttribute('aria-checked')).toBe('true');
     await click(checkbox('Motion and forces'));
     expect(button('clarify.startClass').disabled).toBe(true);
@@ -441,6 +562,7 @@ describe('ScopePicker confirmation and recovery', () => {
     const onSkip = vi.fn();
     const props = { knowledgeMap, onStart, onSkip };
     await render(createElement(ScopePicker, props));
+    await click(scopeToggle('mechanics'));
     await click(checkbox('Motion and forces'));
     await click(checkbox(customTitle));
     await click(button('clarify.startClass'));
@@ -450,6 +572,11 @@ describe('ScopePicker confirmation and recovery', () => {
       true,
     );
     await render(createElement(ScopePicker, { ...props, error: 'Scope could not be saved' }));
+    expect(
+      container
+        .querySelector('[data-testid="scope-actions"]')
+        ?.contains(container.querySelector('[role="alert"]')),
+    ).toBe(true);
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('Scope could not be saved');
     expect(checkbox(customTitle).getAttribute('aria-checked')).toBe('true');
     expect(checkbox('Motion and forces').getAttribute('aria-checked')).toBe('false');
@@ -467,6 +594,7 @@ describe('ScopePicker confirmation and recovery', () => {
     const onSkip = vi.fn();
     const props = { knowledgeMap, onStart, onSkip };
     await render(createElement(ScopePicker, props));
+    await click(scopeToggle('mechanics'));
     await click(checkbox('Motion and forces'));
     await click(checkbox(customTitle));
     await render(createElement(ScopePicker, { ...props, error: 'Save failed. '.repeat(80) }));
