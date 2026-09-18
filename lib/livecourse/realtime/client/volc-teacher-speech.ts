@@ -354,8 +354,6 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     if (this.#muted) session.mute(true);
     if (this.#options.readOnly) session.setInputEnabled(false);
     try {
-      await session.preparePlayback();
-      if (this.#session !== session || this.#closing) throw speechAbortError();
       const instructions = this.#currentInstructions();
       await session.connect(instructions);
       if (this.#session !== session || this.#closing) {
@@ -364,6 +362,9 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
       }
       this.#instructions = instructions;
       this.connected = true;
+      // AudioContext.resume can hang without a user gesture. Never block the
+      // Volc handshake on it; first audio will retry prepare.
+      void session.preparePlayback().catch(() => undefined);
     } catch (error) {
       if (this.#session === session && !this.#closing) {
         this.connected = false;

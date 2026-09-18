@@ -361,8 +361,13 @@ export function RealtimeTeacherControls({
       throw new Error('Classroom voice is not ready');
     }
     setError(null);
-    await useSettingsStore.getState().fetchServerProviders();
-    const transport = selectClassroomRealtimeTransport(useSettingsStore.getState());
+    // Do not await the network on the user-gesture path if Volc is already known.
+    // Firefox drops the gesture after the first await, then AudioContext.resume hangs.
+    let transport = selectClassroomRealtimeTransport(useSettingsStore.getState());
+    if (!transport) {
+      await useSettingsStore.getState().fetchServerProviders();
+      transport = selectClassroomRealtimeTransport(useSettingsStore.getState());
+    }
     if (!transport) {
       throw new Error(t('livecourse.voiceRequired'));
     }

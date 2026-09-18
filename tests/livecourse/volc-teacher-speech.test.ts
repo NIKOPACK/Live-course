@@ -537,6 +537,18 @@ describe('VolcTeacherSpeechSession', () => {
     await session.close();
   });
 
+  it('finishes connecting even when AudioContext resume never resolves', async () => {
+    sessionMocks.preparePlayback.mockImplementationOnce(() => new Promise(() => undefined));
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Teach.',
+      speechRetry: instantRetry,
+    });
+    await expect(session.connect()).resolves.toBeUndefined();
+    expect(session.connected).toBe(true);
+    expect(sessionMocks.connect).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
   it('connects through the Volc relay and speaks narration', async () => {
     const events: string[] = [];
     const session = new VolcTeacherSpeechSession({
@@ -545,6 +557,7 @@ describe('VolcTeacherSpeechSession', () => {
     });
 
     await session.connect();
+    expect(sessionMocks.connect).toHaveBeenCalledOnce();
     expect(sessionMocks.preparePlayback).toHaveBeenCalledOnce();
     expect(sessionMocks.connect).toHaveBeenCalledWith(
       buildRealtimeTeacherInstructions('Teach photosynthesis.'),

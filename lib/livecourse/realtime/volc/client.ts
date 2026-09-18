@@ -103,7 +103,16 @@ async function activatePlaybackContext(): Promise<AudioContext> {
   if (!sharedPlaybackContext || sharedPlaybackContext.state === 'closed') {
     sharedPlaybackContext = new AudioContext({ sampleRate: VOLC_OUTPUT_SAMPLE_RATE });
   }
-  if (sharedPlaybackContext.state === 'suspended') await sharedPlaybackContext.resume();
+  if (sharedPlaybackContext.state === 'suspended') {
+    // Firefox never resolves resume() without a user gesture. Auto-start
+    // must not wait forever before the Volc relay handshake.
+    await Promise.race([
+      sharedPlaybackContext.resume(),
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 1_500);
+      }),
+    ]);
+  }
   return sharedPlaybackContext;
 }
 
