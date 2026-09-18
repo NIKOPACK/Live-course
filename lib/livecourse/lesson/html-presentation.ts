@@ -102,8 +102,7 @@ export async function designHtmlLessonPlan(
     aiCall,
   );
   const plan =
-    designed ??
-    buildLessonPlanSkeleton({ ...input, visualStyle: presentation.visualStyle, teachingBrief });
+    designed ?? buildLessonPlanSkeleton(input);
   const missing = input.outlines.filter(
     (outline) => !plan.nodes.some((node) => node.sceneId === outline.id && node.design),
   );
