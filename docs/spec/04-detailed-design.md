@@ -181,7 +181,7 @@
 
 - 沿用：`packages/@livecourse/generation`、`lib/server/classroom-generation.ts`、`app/generation-preview/`、`lib/web-search` 供应商矩阵与 `/api/web-search`。设置里配置检索供应商、密钥与联网开关（默认关）；生成预览在开关打开且所选供应商已配置时检索。供应商含知乎全网搜索（`zhihu`，`GET https://developer.zhihu.com/api/v1/content/global_search`），可选 Filter / SearchDB 只写配置存储
 - 改角色：预览为每个段维护 `waiting / generating / completed / failed`；只有失败段暴露「重试该段」。重试沿用同一 segment identity / idempotency key，成功段不重新排队、不被覆盖
-- 改角色：正常生成或已完成的段可展开只读查看该段教案设计与已生成课堂材料（幻灯片缩略图 / 题面 / 互动页）；生成中的段显示当前子步骤。展开不写入 W / C / L，也不重做成功段
+- 改角色：正常生成或已完成的段可展开只读查看该段课堂画面与教案设计；生成中先显示预留画板与当前子步骤，教案按讲什么 / 怎么讲 / 例子 / 预设问答分区扫读。展开不写入 W / C / L，也不重做成功段
 - 改角色：全部段 `completed` 后只把「进入课堂」置为可用，不自动导航。课堂加载失败保留预览与成功产物，可再次进入；页面恢复也不能把 `failed` 假装成 `completed`
 - 生成恢复边界：大纲流只有显式 `done` 携带的完整结果才能落盘；上游断流、数组未闭合或超出缓冲上限时丢弃该次草稿，重试耗尽发 `error`，禁止把部分大纲当成成功。预览读取支持跨字节分块、CRLF 与末尾无换行，取消时释放 reader。
 - 生成运行所有权：批次生成与失败段重试复用同一运行锁、取消信号和 stage/epoch 校验；离开或换课后，迟到结果不得写场景、失败列表或新课状态。暂停清除运行标记；重试成功后等待未开始段继续完成，其他失败段仍需显式重试，已成功段不重做；讲稿衔接只读取该段之前的材料。

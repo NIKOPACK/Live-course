@@ -492,9 +492,11 @@ it('lets a normally generating or completed segment open its classroom generatio
       design: {
         teachingPoints: ['First point', 'Second point'],
         explanationPlan: 'Introduce then work an example.',
+        examples: ['Differentiate sin(2x).'],
         anticipatedQuestions: [
           { question: 'What is the chain rule?', response: 'A derivative of a composition.' },
         ],
+        misconceptions: ['Treating the inner function as a constant.'],
       },
     },
     {
@@ -502,6 +504,10 @@ it('lets a normally generating or completed segment open its classroom generatio
       title: 'Check',
       order: 1,
       status: 'completed' as const,
+      design: {
+        teachingPoints: ['Check the derivative of a composition.'],
+        explanationPlan: 'Ask one question, then show the worked step.',
+      },
       scene: {
         id: 'quiz-scene',
         stageId: 'stage-1',
@@ -516,25 +522,45 @@ it('lets a normally generating or completed segment open its classroom generatio
     },
   ];
   await render(createElement(SegmentList, { segments, onRetry: vi.fn(), retryingId: null }));
-  expect(
-    container.querySelector('[data-status="generating"] [data-testid="segment-detail"]'),
-  ).not.toBeNull();
-  expect(container.textContent).toContain('generation.segmentContentGenerating');
+  const generatingDetail = container.querySelector(
+    '[data-status="generating"] [data-testid="segment-detail"]',
+  );
+  expect(generatingDetail).not.toBeNull();
+  const pending = generatingDetail!.querySelector('[data-testid="segment-classroom-pending"]');
+  const teachingPoints = generatingDetail!.querySelector('[data-testid="segment-teaching-points"]');
+  expect(pending).not.toBeNull();
+  expect(pending?.getAttribute('data-readonly')).toBe('true');
+  expect(pending?.textContent).toContain('generation.segmentContentGenerating');
+  expect(generatingDetail!.textContent).not.toContain('generation.noClassroomYet');
+  expect(generatingDetail!.innerHTML.indexOf('segment-classroom-pending')).toBeLessThan(
+    generatingDetail!.innerHTML.indexOf('segment-teaching-points'),
+  );
+  expect(teachingPoints?.querySelector('ul')?.className).toContain('list-disc');
   expect(container.textContent).toContain('Second point');
-  expect(container.textContent).toContain('What is the chain rule?');
-  expect(container.textContent).toContain('A derivative of a composition.');
+  expect(container.textContent).toContain('Differentiate sin(2x).');
+  expect(generatingDetail!.querySelector('dt')?.textContent).toContain('What is the chain rule?');
+  expect(generatingDetail!.querySelector('dd')?.textContent).toContain(
+    'A derivative of a composition.',
+  );
+  expect(container.textContent).toContain('Treating the inner function as a constant.');
   expect(
     container.querySelector('[data-status="generating"] [data-testid="retry-segment"]'),
   ).toBeNull();
-  assertReadOnly(container.querySelector('[data-testid="segment-detail"]')!);
+  assertReadOnly(generatingDetail!);
 
   const completedToggle = container.querySelector<HTMLButtonElement>(
     '[data-status="completed"] [data-testid="preview-segment-toggle"]',
   )!;
   await click(completedToggle);
+  const completedDetail = container.querySelector(
+    '[data-status="completed"] [data-testid="segment-detail"]',
+  )!;
   expect(
     container.querySelector('[data-testid="segment-classroom-preview"]')?.textContent,
   ).toContain('What is the chain rule?');
+  expect(completedDetail.innerHTML.indexOf('segment-classroom-preview')).toBeLessThan(
+    completedDetail.innerHTML.indexOf('segment-teaching-points'),
+  );
   expect(container.querySelector('[data-status="completed"]')?.getAttribute('data-status')).toBe(
     'completed',
   );

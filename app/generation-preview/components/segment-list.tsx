@@ -12,7 +12,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils';
 import { canRetrySegment, type SegmentProgress, type SegmentStatus } from '../segment-status';
-import { SegmentClassroomPreview } from './segment-classroom-preview';
+import { SegmentClassroomPending, SegmentClassroomPreview } from './segment-classroom-preview';
 
 function statusLabel(status: SegmentStatus, t: (key: string) => string): string {
   switch (status) {
@@ -74,7 +74,7 @@ export function SegmentList({
               data-status={segment.status}
               className={cn(
                 'lc-rise min-w-0 border-b border-border/50 last:border-b-0',
-                segment.status === 'generating' && 'rounded-xl border-b-0 bg-accent/40',
+                segment.status === 'generating' && 'rounded-xl border-b-0 bg-accent/20',
               )}
               style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
             >
@@ -179,67 +179,113 @@ function SegmentDetail({ segment }: { segment: SegmentProgress }) {
       : segment.status === 'waiting'
         ? t('generation.segmentWaitingDetail')
         : null;
-
-  return (
-    <div
-      className="min-w-0 space-y-4 px-1 pb-3 pt-1"
-      data-testid="segment-detail"
-      data-readonly="true"
-    >
+  const teachingPoints = segment.design?.teachingPoints ?? [];
+  const waitingForClassroom =
+    !segment.scene && (segment.status === 'generating' || segment.status === 'waiting');
+  const classroom = segment.scene ? (
+    <div className="min-w-0 space-y-2">
       {phaseCopy ? (
         <p className="text-sm leading-relaxed text-muted-foreground" role="status">
           {phaseCopy}
         </p>
       ) : null}
-      {segment.design?.teachingPoints?.length ? (
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium text-foreground">{t('lessonPlan.teachingPoints')}</p>
-          <ul className="space-y-1 text-sm leading-relaxed text-muted-foreground">
-            {segment.design.teachingPoints.map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
+      <SegmentClassroomPreview scene={segment.scene} />
+    </div>
+  ) : waitingForClassroom ? (
+    <SegmentClassroomPending message={phaseCopy ?? t('generation.noClassroomYet')} />
+  ) : null;
+
+  return (
+    <div
+      className="min-w-0 space-y-5 px-1 pb-3 pt-1"
+      data-testid="segment-detail"
+      data-readonly="true"
+    >
+      <div
+        className={cn(
+          'grid min-w-0 gap-5',
+          classroom &&
+            teachingPoints.length > 0 &&
+            'md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:items-start',
+        )}
+      >
+        {classroom}
+        {teachingPoints.length > 0 ? (
+          <section data-testid="segment-teaching-points" className="min-w-0 space-y-2">
+            <h4 className="text-sm font-medium text-foreground">
+              {t('lessonPlan.teachingPoints')}
+            </h4>
+            <ul className="list-disc space-y-1.5 ps-5 text-sm leading-relaxed text-muted-foreground marker:text-muted-foreground/80">
+              {teachingPoints.map((point) => (
+                <li key={point} className="min-w-0 ps-0.5">
+                  {point}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+      {segment.design?.explanationPlan ||
+      segment.design?.examples?.length ||
+      segment.design?.anticipatedQuestions?.length ||
+      segment.design?.misconceptions?.length ? (
+        <div className="min-w-0 divide-y divide-border/60">
+          {segment.design?.explanationPlan ? (
+            <section className="min-w-0 space-y-2 py-4 first:pt-0">
+              <h4 className="text-sm font-medium text-foreground">
+                {t('lessonPlan.explanationPlan')}
+              </h4>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {segment.design.explanationPlan}
+              </p>
+            </section>
+          ) : null}
+          {segment.design?.examples?.length ? (
+            <section className="min-w-0 space-y-2 py-4 first:pt-0">
+              <h4 className="text-sm font-medium text-foreground">{t('lessonPlan.examples')}</h4>
+              <ul className="list-disc space-y-1.5 ps-5 text-sm leading-relaxed text-muted-foreground marker:text-muted-foreground/80">
+                {segment.design.examples.map((example) => (
+                  <li key={example} className="min-w-0 ps-0.5">
+                    {example}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+          {segment.design?.anticipatedQuestions?.length ? (
+            <section className="min-w-0 space-y-2 py-4 first:pt-0">
+              <h4 className="text-sm font-medium text-foreground">
+                {t('lessonPlan.anticipatedQuestions')}
+              </h4>
+              <dl className="space-y-3">
+                {segment.design.anticipatedQuestions.map((item) => (
+                  <div key={item.question} className="min-w-0 space-y-1">
+                    <dt className="text-sm font-medium leading-relaxed text-foreground">
+                      {item.question}
+                    </dt>
+                    <dd className="border-s-2 border-border ps-3 text-sm leading-relaxed text-muted-foreground">
+                      {item.response}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+          {segment.design?.misconceptions?.length ? (
+            <section className="min-w-0 space-y-2 py-4 first:pt-0">
+              <h4 className="text-sm font-medium text-foreground">
+                {t('lessonPlan.misconceptions')}
+              </h4>
+              <ul className="list-disc space-y-1.5 ps-5 text-sm leading-relaxed text-muted-foreground marker:text-muted-foreground/80">
+                {segment.design.misconceptions.map((item) => (
+                  <li key={item} className="min-w-0 ps-0.5">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </div>
-      ) : null}
-      {segment.design?.explanationPlan ? (
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium text-foreground">{t('lessonPlan.explanationPlan')}</p>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            {segment.design.explanationPlan}
-          </p>
-        </div>
-      ) : null}
-      {segment.design?.examples?.length ? (
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium text-foreground">{t('lessonPlan.examples')}</p>
-          <ul className="space-y-1 text-sm leading-relaxed text-muted-foreground">
-            {segment.design.examples.map((example) => (
-              <li key={example}>{example}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {segment.design?.anticipatedQuestions?.length ? (
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium text-foreground">
-            {t('lessonPlan.anticipatedQuestions')}
-          </p>
-          <ul className="space-y-2 text-sm leading-relaxed text-muted-foreground">
-            {segment.design.anticipatedQuestions.map((item) => (
-              <li key={item.question}>
-                <span className="block text-foreground">{item.question}</span>
-                <span className="mt-1 block">{item.response}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {segment.scene ? (
-        <SegmentClassroomPreview scene={segment.scene} />
-      ) : segment.status === 'generating' || segment.status === 'waiting' ? (
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          {t('generation.noClassroomYet')}
-        </p>
       ) : null}
     </div>
   );
