@@ -37,7 +37,7 @@ import { resolveCoverPrompt } from '@/lib/livecourse/lesson/course-cover';
 import { withGenerationRetry } from '@/lib/generation/generation-retry';
 import { buildVideoManifestFromOutlines } from '@/lib/media/video-manifest';
 import { designHtmlLessonPlan } from '@/lib/livecourse/lesson/html-presentation';
-import { completeTeachingText, TeachingOutputError } from '@/lib/livecourse/lesson/designer';
+import { completeTeachingText } from '@/lib/livecourse/lesson/designer';
 import { createClassroomReviewer } from '@/lib/server/classroom-review';
 import { generateReviewedTeachingMaterial } from '@/lib/generation/reviewed-scene';
 import { ClassroomHtmlRequiredError } from '@/lib/livecourse/lesson/html-classroom';

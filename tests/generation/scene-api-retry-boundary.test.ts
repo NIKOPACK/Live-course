@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/ai/llm', () => ({
   callLLM: mocks.callLLM,
   completeLLMText: mocks.callLLM,
+  collectStreamedCompletion: mocks.callLLM,
 }));
 
 vi.mock('@/lib/server/resolve-model', () => ({
@@ -32,6 +33,11 @@ vi.mock('@/lib/generation/generation-pipeline', () => ({
   generateSceneActions: mocks.generateSceneActions,
   buildCompleteScene: mocks.buildCompleteScene,
   buildVisionUserContent: mocks.buildVisionUserContent,
+}));
+
+vi.mock('@/lib/generation/scene-generator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/generation/scene-generator')>()),
+  generateSceneActions: mocks.generateSceneActions,
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -79,7 +85,15 @@ describe('scene API retry boundary', () => {
       thinkingConfig: undefined,
     });
     mocks.applyOutlineFallbacks.mockImplementation((value) => value);
-    mocks.callLLM.mockResolvedValue({ text: 'ok' });
+    mocks.callLLM.mockImplementation(async (_params, source) => ({
+      text:
+        source === 'classroom-review' || source === 'classroom-review-repair'
+          ? JSON.stringify({ checks: ['Content verified.'], issues: [] })
+          : 'ok',
+      finishReason: 'stop',
+      reasoningText: '',
+    }));
+    mocks.generateSceneActions.mockResolvedValue([]);
     mocks.resolveVocationalActive.mockReturnValue(false);
   });
 

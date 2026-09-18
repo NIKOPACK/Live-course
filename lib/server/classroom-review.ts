@@ -1,9 +1,6 @@
 import type { LanguageModel } from 'ai';
 import { collectStreamedCompletion } from '@/lib/ai/llm';
-import {
-  thinkingConfigForHtmlClassroom,
-  thinkingConfigForTeaching,
-} from '@/lib/ai/thinking-config';
+import { thinkingConfigForHtmlClassroom } from '@/lib/ai/thinking-config';
 import type { AICallFn } from '@/lib/generation/pipeline-types';
 import { isAbortError, withGenerationRetry } from '@/lib/generation/generation-retry';
 import {
@@ -37,11 +34,7 @@ export function createClassroomReviewer(
     try {
       return await withGenerationRetry(
         async () => {
-          const thinking =
-            purpose === 'html-repair' &&
-            (typeof resolved.model === 'string' || resolved.model.provider !== 'openai.responses')
-              ? thinkingConfigForHtmlClassroom(true, resolved.thinkingConfig)
-              : thinkingConfigForTeaching(resolved.thinkingConfig);
+          const thinking = thinkingConfigForHtmlClassroom(true, resolved.thinkingConfig);
           const result = await collectStreamedCompletion(
             {
               model: resolved.model,
