@@ -87,7 +87,9 @@ export async function POST(request: NextRequest) {
         `prompt="${body.prompt.slice(0, 80)}...", size=${body.width ?? 'auto'}x${body.height ?? 'auto'}`,
     );
 
-    const result = await generateImage({ providerId, apiKey, baseUrl, model: clientModel }, body);
+    const result = await generateImage({ providerId, apiKey, baseUrl, model: clientModel }, body, {
+      signal: request.signal,
+    });
 
     void recordGenerationUsage({
       kind: 'image',
@@ -100,15 +102,17 @@ export async function POST(request: NextRequest) {
     return apiSuccess({ result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // Detect content safety filter rejections (e.g. Seedream OutputImageSensitiveContentDetected)
-    if (message.includes('SensitiveContent') || message.includes('sensitive information')) {
-      log.warn(`Image blocked by content safety filter: ${message}`);
-      return apiError('CONTENT_SENSITIVE', 400, message);
-    }
     log.error(
       `Image generation failed [provider=${request.headers.get('x-image-provider') ?? 'seedream'}, model=${request.headers.get('x-image-model') ?? 'default'}]:`,
       error,
     );
-    return apiError('INTERNAL_ERROR', 500, message);
+    if (message.includes('SensitiveContent') || message.includes('sensitive information')) {
+      return apiError(
+        'CONTENT_SENSITIVE',
+        400,
+        'Image was blocked by the safety filter.',
+      );
+    }
+    return apiError('INTERNAL_ERROR', 500, 'Image generation failed. Please try again.');
   }
 }

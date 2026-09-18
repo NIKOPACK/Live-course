@@ -78,6 +78,7 @@ export async function generateWithOpenAIImage(
       n: 1,
       size: resolveSize(options),
     }),
+    signal: options.signal,
   });
 
   if (!response.ok) {

@@ -159,6 +159,8 @@ export interface ImageGenerationOptions {
   aspectRatio?: '16:9' | '4:3' | '1:1' | '9:16';
   /** Optional artistic style (must be supported by the chosen provider) */
   style?: string;
+  /** Cancels the in-flight provider request. Abort is never retried. */
+  signal?: AbortSignal;
 }
 
 /**

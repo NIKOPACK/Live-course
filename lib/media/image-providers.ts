@@ -9,6 +9,8 @@ import type {
   ImageGenerationResult,
   ImageProviderConfig,
 } from './types';
+import { createLogger } from '@/lib/logger';
+import { generateImageWithTimeoutRetry } from './image-generation-retry';
 import { generateWithSeedream, testSeedreamConnectivity } from './adapters/seedream-adapter';
 import {
   generateWithOpenAIImage,
@@ -188,7 +190,9 @@ export async function testImageConnectivity(
   }
 }
 
-export async function generateImage(
+const log = createLogger('ImageGeneration');
+
+async function dispatchImageGeneration(
   config: ImageGenerationConfig,
   options: ImageGenerationOptions,
 ): Promise<ImageGenerationResult> {
@@ -212,6 +216,26 @@ export async function generateImage(
     default:
       throw new Error(`Unsupported image provider: ${config.providerId}`);
   }
+}
+
+export async function generateImage(
+  config: ImageGenerationConfig,
+  options: ImageGenerationOptions,
+  retry?: { signal?: AbortSignal },
+): Promise<ImageGenerationResult> {
+  return generateImageWithTimeoutRetry(
+    () => dispatchImageGeneration(config, { ...options, signal: retry?.signal }),
+    {
+      signal: retry?.signal,
+      onRetry: (event) => {
+        log.warn(
+          `Retrying image generation after ${event.reason} ` +
+            `(attempt ${event.attempt}/${event.maxAttempts}, provider=${config.providerId}, ` +
+            `model=${config.model || 'default'})`,
+        );
+      },
+    },
+  );
 }
 
 export function aspectRatioToDimensions(
