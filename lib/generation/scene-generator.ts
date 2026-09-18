@@ -1581,7 +1581,7 @@ export async function generateSceneActions(
     };
     const response = await generateHtmlClassroomActionOutput(
       outline,
-      content.html,
+      html,
       aiCall,
       actionOptions,
     );
