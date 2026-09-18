@@ -14,6 +14,10 @@ const RETRYABLE_SPEECH =
 export function isRetryableRealtimeSpeechError(error: unknown): boolean {
   if (isAbortError(error)) return false;
   const message = error instanceof Error ? error.message : String(error ?? '');
+  // Typed questions can be aborted by leftover microphone ASR or a concurrent
+  // session.update. Retry the same ask; do not retry a learner barge-in of
+  // authored narration (`Volc model narration was interrupted`).
+  if (/Volc model question was interrupted/i.test(message)) return true;
   if (NON_RETRYABLE_SPEECH.test(message)) return false;
   if (isVolcAudioInputTimeout(error)) return true;
   if (RETRYABLE_SPEECH.test(message)) return true;

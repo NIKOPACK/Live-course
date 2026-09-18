@@ -760,6 +760,30 @@ describe('VolcTeacherSpeechSession', () => {
     await session.close();
   });
 
+  it('retries a typed question cancelled mid-flight, then resumes the same held node', async () => {
+    const interruptNode = vi.fn(async () => undefined);
+    const resumeNode = vi.fn(async () => undefined);
+    sessionMocks.askQuestion
+      .mockRejectedValueOnce(new Error('Volc model question was interrupted'))
+      .mockResolvedValueOnce(undefined);
+    const session = new VolcTeacherSpeechSession({
+      getInstructions: () => 'Teach rates.',
+      getLocation: () => ({ nodeId: 'node:rate', sceneId: 'rate' }),
+      interruptNode,
+      resumeNode,
+      speechRetry: instantRetry,
+    });
+    await session.connect();
+    await session.ask('为什么导数是切线斜率？');
+    expect(sessionMocks.setInputEnabled).toHaveBeenCalledWith(false);
+    expect(sessionMocks.setInputEnabled).toHaveBeenLastCalledWith(true);
+    expect(sessionMocks.askQuestion).toHaveBeenCalledTimes(2);
+    expect(interruptNode).toHaveBeenCalledExactlyOnceWith('node:rate');
+    expect(resumeNode).toHaveBeenCalledExactlyOnceWith('node:rate');
+    expect(session.connected).toBe(true);
+    await session.close();
+  });
+
   it('does not resume after a typed answer fails and retries the same held node', async () => {
     const interruptNode = vi.fn(async () => undefined);
     const resumeNode = vi.fn(async () => undefined);

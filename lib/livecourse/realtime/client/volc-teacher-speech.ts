@@ -103,28 +103,36 @@ export class VolcTeacherSpeechSession implements TeacherSpeechPort {
     const generation = ++this.#responseGeneration;
     this.#emit({ type: 'transcript', speaker: 'student', text });
     await this.#holdPlayback('ask');
-    await withRealtimeSpeechRetry(
-      async () => {
-        if (generation !== this.#responseGeneration) throw speechAbortError();
-        if (!this.connected) await this.#connectOnce();
-        const session = this.#requireSession();
-        try {
-          await session.cancelNarration();
-          await this.#syncInstructions(session);
+    this.#session?.setInputEnabled(false);
+    try {
+      await withRealtimeSpeechRetry(
+        async () => {
           if (generation !== this.#responseGeneration) throw speechAbortError();
-          await session.askQuestion(text, { requireAudio: true });
-        } catch (error) {
-          if (isSessionLostError(error)) this.connected = false;
-          throw error;
-        }
-      },
-      {
-        label: 'volc.ask',
-        ...this.#options.speechRetry,
-      },
-    );
-    if (generation !== this.#responseGeneration) throw speechAbortError();
-    await this.#queueReleasePlayback(generation);
+          if (!this.connected) await this.#connectOnce();
+          const session = this.#requireSession();
+          try {
+            session.setInputEnabled(false);
+            await session.cancelNarration();
+            await this.#syncInstructions(session);
+            if (generation !== this.#responseGeneration) throw speechAbortError();
+            await session.askQuestion(text, { requireAudio: true });
+          } catch (error) {
+            if (isSessionLostError(error)) this.connected = false;
+            throw error;
+          }
+        },
+        {
+          label: 'volc.ask',
+          ...this.#options.speechRetry,
+        },
+      );
+      if (generation !== this.#responseGeneration) throw speechAbortError();
+      await this.#queueReleasePlayback(generation);
+    } finally {
+      if (this.connected && this.#session && !this.#closing && !this.#options.readOnly) {
+        this.#session.setInputEnabled(true);
+      }
+    }
   }
 
   async question(question: OralQuestion, options: OralQuestionOptions): Promise<void> {

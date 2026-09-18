@@ -23,6 +23,9 @@ describe('isRetryableRealtimeSpeechError', () => {
     expect(isRetryableRealtimeSpeechError(new Error('AudioServerNoAudioInputTooLongError'))).toBe(
       true,
     );
+    expect(isRetryableRealtimeSpeechError(new Error('Volc model question was interrupted'))).toBe(
+      true,
+    );
   });
 
   it('does not retry cancellation, auth, or configuration errors', () => {
