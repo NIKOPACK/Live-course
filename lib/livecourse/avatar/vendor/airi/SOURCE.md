@@ -20,5 +20,9 @@ framework-neutral classes (Vue refs/watch removed; algorithms verbatim):
 Blink/saccade/re-anchor logic in `../../airi-vrm-element.ts` mirrors
 `src/composables/vrm/animation.ts` (same curves and constants).
 
+Local adaptation: `lip-sync.ts` exposes its existing silence-detection result as
+read-only `isSpeaking` for presentation-only arm gestures. Disconnected or
+suspended audio is inactive; phoneme weights and mouth smoothing are unchanged.
+
 Related vendored asset: `public/vendor/airi/idle_loop.vrma` (see
 `public/vendor/airi/SOURCE.md`).

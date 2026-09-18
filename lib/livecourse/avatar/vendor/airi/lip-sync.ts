@@ -42,6 +42,7 @@ export class AiriVrmLipSync {
   #audioNode: AudioNode | undefined;
   #smoothState: Record<LipKey, number> = { A: 0, E: 0, I: 0, O: 0, U: 0 };
   #lastActiveAt = 0;
+  #speaking = false;
 
   static readonly ATTACK = 50; // the speed moving to the next mouth shape animation
   static readonly RELEASE = 30; // the speed ending the current mouth shape animation
@@ -49,6 +50,10 @@ export class AiriVrmLipSync {
   static readonly SILENCE_VOL = 0.04;
   static readonly SILENCE_GAIN = 0.05;
   static readonly IDLE_MS = 160;
+
+  get isSpeaking(): boolean {
+    return this.#audioNode?.context.state === 'running' && this.#speaking;
+  }
 
   async connect(audioNode: AudioNode): Promise<void> {
     this.disconnect();
@@ -78,11 +83,16 @@ export class AiriVrmLipSync {
     this.#audioNode = undefined;
     this.#lipSyncNode = undefined;
     this.#smoothState = { A: 0, E: 0, I: 0, O: 0, U: 0 };
+    this.#speaking = false;
+    this.#lastActiveAt = 0;
   }
 
   update(vrm: Pick<VRM, 'expressionManager'> | undefined, delta = 0.016): void {
     const node = this.#lipSyncNode;
-    if (!vrm?.expressionManager || !node) return;
+    if (!vrm?.expressionManager || !node) {
+      this.#speaking = false;
+      return;
+    }
 
     const vol = node.volume ?? 0;
     const amp = Math.min(vol * 0.9, 1) ** 0.7;
@@ -120,6 +130,7 @@ export class AiriVrmLipSync {
     let silent = amp < AiriVrmLipSync.SILENCE_VOL || winnerVal < AiriVrmLipSync.SILENCE_GAIN;
     if (!silent) this.#lastActiveAt = now;
     if (now - this.#lastActiveAt > AiriVrmLipSync.IDLE_MS) silent = true;
+    this.#speaking = !silent;
 
     // winner + runner weights
     const target: Record<LipKey, number> = { A: 0, E: 0, I: 0, O: 0, U: 0 };
