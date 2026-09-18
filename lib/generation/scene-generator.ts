@@ -1564,7 +1564,11 @@ export async function generateSceneActions(
         'Formal checkpoints cannot contain oral question triggers',
       );
     }
-    const elementInventory = extractInteractiveElements(content.html);
+    const html = 'html' in content ? content.html?.trim() : undefined;
+    if (!html) {
+      throw new ClassroomHtmlActionsError('HTML classroom page is required');
+    }
+    const elementInventory = extractInteractiveElements(html);
     const teachingInventory = htmlTeachingIdInventory(elementInventory);
     if (!teachingInventory) {
       throw new ClassroomHtmlActionsError('HTML page has no teaching region ids');
