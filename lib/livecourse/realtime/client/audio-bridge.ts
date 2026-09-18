@@ -87,7 +87,14 @@ export class RealtimeAudioBridge {
     }
 
     if (this.#context.state === 'suspended') {
-      await this.#context.resume();
+      await Promise.race([
+        this.#context.resume(),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(() => {
+            reject(new Error('Audio context resume timed out'));
+          }, 4_000);
+        }),
+      ]);
     }
   }
 

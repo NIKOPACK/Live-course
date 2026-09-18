@@ -36,6 +36,7 @@ import {
   type RealtimeTeacherStatus,
 } from '@/lib/livecourse/realtime/client/session';
 import { VolcTeacherSpeechSession } from '@/lib/livecourse/realtime/client/volc-teacher-speech';
+import { selectClassroomRealtimeTransport } from '@/lib/livecourse/realtime/client/select-transport';
 import { RealtimePlaybackControlError } from '@/lib/livecourse/session/realtime-playback-control';
 import type { RealtimeTeachingCommand } from '@/lib/livecourse/realtime/contracts';
 import {
@@ -360,12 +361,24 @@ export function RealtimeTeacherControls({
       throw new Error('Classroom voice is not ready');
     }
     setError(null);
+    await useSettingsStore.getState().fetchServerProviders();
+    const transport = selectClassroomRealtimeTransport(useSettingsStore.getState());
+    if (!transport) {
+      throw new Error(t('livecourse.voiceRequired'));
+    }
 
     let realtime = realtimeRef.current;
     let audioBridge = audioBridgeRef.current;
-    const preferVolc = Boolean(
-      useSettingsStore.getState().realtimeProvidersConfig?.volc?.isServerConfigured,
-    );
+    if (realtime && transport === 'volc' && !(realtime instanceof VolcTeacherSpeechSession)) {
+      await realtime.close().catch(() => undefined);
+      realtimeRef.current = null;
+      audioBridgeRef.current = null;
+      unregisterAudioBridgeRef.current?.();
+      unregisterAudioBridgeRef.current = null;
+      realtime = null;
+      audioBridge = null;
+    }
+    const preferVolc = transport === 'volc';
     const getLocation = () => locationRef.current;
     const getTeachingContext = () => {
       const playback = playbackSpeechContextRef.current?.();
