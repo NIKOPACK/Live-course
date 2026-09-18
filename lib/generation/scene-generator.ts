@@ -1556,9 +1556,9 @@ export async function generateSceneActions(
         ? undefined
         : lessonNodeDesignSchema.parse(options.lessonNodeDesign);
     const oralQuestion =
-      content.oralQuestion === undefined
-        ? undefined
-        : oralQuestionSchema.parse(content.oralQuestion);
+      'oralQuestion' in content && content.oralQuestion !== undefined
+        ? oralQuestionSchema.parse(content.oralQuestion)
+        : undefined;
     if (oralQuestion && (outline.type === 'quiz' || 'questions' in content)) {
       throw new ClassroomHtmlActionsError(
         'Formal checkpoints cannot contain oral question triggers',
