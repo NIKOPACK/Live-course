@@ -21,6 +21,7 @@ export class ShareMediaError extends Error {
 export function classifyShareMediaRef(ref: string): CourseShareMediaKind | 'external' {
   const value = ref.trim();
   if (!value) throw new ShareMediaError('Empty media ref');
+  if (value.startsWith('#')) return 'external';
   if (value.startsWith('blob:')) return 'blob';
   if (value.startsWith('data:')) return 'data';
   if (CLASSROOM_MEDIA_RE.test(value)) return 'classroom-media';
@@ -147,7 +148,10 @@ export async function resolveShareMediaBytes(input: {
   throw new ShareMediaError(`Missing media bytes for ${input.ref}`);
 }
 
-function rewriteSlideSlots(slide: Pick<Slide, 'background' | 'elements'>, map: Map<string, string>) {
+function rewriteSlideSlots(
+  slide: Pick<Slide, 'background' | 'elements'>,
+  map: Map<string, string>,
+) {
   for (const slot of slideMediaReferenceSlots(slide)) {
     const current = slot.read();
     if (!current) continue;
@@ -213,10 +217,7 @@ export function bindShareMediaRefs(input: {
 
 export function collectShareDocumentRefs(stage: Stage, scenes: readonly Scene[]): Set<string> {
   return new Set(
-    collectStageAssetRefs(
-      { stage, scenes },
-      { mediaRows: [], audioRows: [] },
-    ).referenced,
+    collectStageAssetRefs({ stage, scenes }, { mediaRows: [], audioRows: [] }).referenced,
   );
 }
 

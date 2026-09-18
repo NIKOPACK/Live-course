@@ -182,4 +182,27 @@ describe('htmlMediaReferences CSS and parent blob URLs', () => {
     expect([...refs.referenced]).toEqual(['lesson_img_scene_2_1']);
     expect(refs.imageSrc.has('lesson_img_scene_2_1')).toBe(true);
   });
+
+  it('does not treat SVG/CSS fragment urls as media files', () => {
+    const html = `<style>
+      .wave { fill: url(#wave-grad); mask: url("#ink-mask"); }
+    </style>
+    <svg style="filter: url('#blur')"><defs>
+      <linearGradient id="wave-grad"></linearGradient>
+    </defs></svg>`;
+    expect(htmlMediaReferences(html).map(({ ref }) => ref)).toEqual([]);
+    const scene = {
+      id: 'scene',
+      stageId: 'stage',
+      title: 'HTML',
+      order: 0,
+      type: 'interactive',
+      content: { type: 'interactive', url: '', html },
+    } as Scene;
+    const refs = collectStageAssetRefs(
+      { stage: { id: 'stage', name: 'Test', createdAt: 1, updatedAt: 1 }, scenes: [scene] },
+      { mediaRows: [], audioRows: [] },
+    );
+    expect([...refs.referenced]).toEqual([]);
+  });
 });

@@ -54,7 +54,9 @@ export interface HtmlMediaReference {
 }
 
 function isCssMediaUrl(ref: string): boolean {
-  return !/^(javascript|vbscript|about):/i.test(ref.trim());
+  const value = ref.trim();
+  if (!value || value.startsWith('#')) return false;
+  return !/^(javascript|vbscript|about):/i.test(value);
 }
 
 function pushCssUrls(
