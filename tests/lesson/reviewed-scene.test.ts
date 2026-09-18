@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { generateReviewedTeachingMaterial } from '@/lib/generation/reviewed-scene';
-import { ClassroomQualityError } from '@/lib/livecourse/lesson/quality-review';
 import { attachHtmlTeacherBridge } from '@/lib/livecourse/html/teacher-bridge';
 import type { AICallFn } from '@/lib/generation/pipeline-types';
 import type { SceneOutline } from '@/lib/types/generation';
@@ -116,7 +115,7 @@ describe('reviewed classroom material', () => {
       .fn()
       .mockResolvedValueOnce(issue('actions'))
       .mockResolvedValueOnce(rechecked);
-    const repairHtmlCall = vi.fn();
+    const repairHtmlCall = vi.fn().mockResolvedValue('{"edits":[]}');
     const result = await generateReviewedTeachingMaterial(
       outline,
       content,
@@ -125,8 +124,61 @@ describe('reviewed classroom material', () => {
       { reviewCall, repairHtmlCall },
     );
     expect(result.content).toBe(content);
-    expect(repairHtmlCall).not.toHaveBeenCalled();
+    expect(repairHtmlCall).toHaveBeenCalledTimes(1);
     expect(author).toHaveBeenCalledTimes(2);
+  });
+
+  it('repairs page dependencies even when a synchronization finding targets actions', async () => {
+    const content = {
+      html: html('<span id="value" hidden>3</span>'),
+      htmlPresentation: true as const,
+    };
+    const author = vi
+      .fn()
+      .mockResolvedValueOnce(speech('The value 3 is now visible.'))
+      .mockResolvedValueOnce(speech('The value 3 is now visible.'));
+    const reviewCall = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          checks: ['The assigned value is 3.'],
+          issues: [
+            {
+              severity: 'blocking',
+              confidence: 'high',
+              target: 'actions',
+              evidence: 'Highlighting #plot cannot unhide its #value descendant.',
+              correction:
+                'Make the value visible when it is narrated, without relying on an uncalled hook.',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(rechecked);
+    const repairHtmlCall = vi.fn().mockResolvedValue(patch('id="value" hidden', 'id="value"'));
+    const result = await generateReviewedTeachingMaterial(
+      outline,
+      content,
+      author,
+      {},
+      { reviewCall, repairHtmlCall },
+    );
+    expect('html' in result.content && result.content.html).toContain('<span id="value">3</span>');
+    expect(content.html).toContain('hidden');
+    expect(author.mock.calls[1][1]).toContain('<span id="value">3</span>');
+    expect(repairHtmlCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the usable original rather than accepting an empty corrective HTML patch', async () => {
+    const content = { html: html('Incorrect'), htmlPresentation: true as const };
+    const result = await generateReviewedTeachingMaterial(
+      outline,
+      content,
+      async () => speech('Incorrect'),
+      {},
+      { reviewCall: async () => issue('html'), repairHtmlCall: async () => '{"edits":[]}' },
+    );
+    expect(result.content).toBe(content);
   });
 
   it('does not audit or modify the trusted host bridge', async () => {
@@ -157,24 +209,23 @@ describe('reviewed classroom material', () => {
     const content = { html: html('Amplitude is 0.707.'), htmlPresentation: true as const };
     const original = content.html;
     const author = vi.fn().mockResolvedValue(speech('Amplitude is 0.707.'));
-    await expect(
-      generateReviewedTeachingMaterial(
-        outline,
-        content,
-        author,
-        {},
-        {
-          reviewCall: async () => issue('html'),
-          repairHtmlCall: async () =>
-            JSON.stringify({
-              edits: [
-                { oldText: 'Amplitude is 0.707.', newText: 'Amplitude is 1.' },
-                { oldText: 'An anchor that does not exist.', newText: 'A second correction.' },
-              ],
-            }),
-        },
-      ),
-    ).rejects.toMatchObject({ name: 'ClassroomQualityError', isRetryable: false });
+    const result = await generateReviewedTeachingMaterial(
+      outline,
+      content,
+      author,
+      {},
+      {
+        reviewCall: async () => issue('html'),
+        repairHtmlCall: async () =>
+          JSON.stringify({
+            edits: [
+              { oldText: 'Amplitude is 0.707.', newText: 'Amplitude is 1.' },
+              { oldText: 'An anchor that does not exist.', newText: 'A second correction.' },
+            ],
+          }),
+      },
+    );
+    expect(result.content).toBe(content);
     expect(content.html).toBe(original);
     expect(author).toHaveBeenCalledTimes(1);
   });
@@ -207,19 +258,37 @@ describe('reviewed classroom material', () => {
     expect(reviewCall).toHaveBeenCalledTimes(2);
   });
 
-  it('fails instead of accepting a malformed HTML repair', async () => {
-    await expect(
-      generateReviewedTeachingMaterial(
-        outline,
-        { html: html('Bad'), htmlPresentation: true },
-        async () => speech('Bad'),
-        {},
-        {
-          reviewCall: async () => issue('html'),
-          repairHtmlCall: async () => patch('</body>', '<script>const broken = ;</script></body>'),
-        },
-      ),
-    ).rejects.toMatchObject({ name: 'ClassroomQualityError', isRetryable: false });
+  it('keeps authored HTML and narration when the reviewer returns an invalid fragment', async () => {
+    const content = { html: html('Amplitude is 1.'), htmlPresentation: true as const };
+    const repairHtmlCall = vi.fn();
+    const result = await generateReviewedTeachingMaterial(
+      outline,
+      content,
+      async () => speech('Amplitude is 1.'),
+      {},
+      {
+        reviewCall: async () => '[{"verdict":"broken"},{"issues":"none"}]',
+        repairHtmlCall,
+      },
+    );
+    expect(result.content).toBe(content);
+    expect(result.actions.filter((action) => action.type === 'speech')).toHaveLength(1);
+    expect(repairHtmlCall).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original valid page instead of publishing an invalid HTML repair', async () => {
+    const content = { html: html('Bad'), htmlPresentation: true as const };
+    const result = await generateReviewedTeachingMaterial(
+      outline,
+      content,
+      async () => speech('Bad'),
+      {},
+      {
+        reviewCall: async () => issue('html'),
+        repairHtmlCall: async () => patch('</body>', '<script>const broken = ;</script></body>'),
+      },
+    );
+    expect(result.content).toBe(content);
   });
 
   it('does not rewrite authoritative checkpoint questions or grading keys', async () => {
@@ -233,18 +302,17 @@ describe('reviewed classroom material', () => {
     };
     const content = { html: html('Question'), questions: [question] };
     const repairHtmlCall = vi.fn();
-    await expect(
-      generateReviewedTeachingMaterial(
-        { ...outline, type: 'quiz' },
-        content,
-        async () => '[]',
-        {},
-        {
-          reviewCall: async () => issue('questions'),
-          repairHtmlCall,
-        },
-      ),
-    ).rejects.toBeInstanceOf(ClassroomQualityError);
+    const result = await generateReviewedTeachingMaterial(
+      { ...outline, type: 'quiz' },
+      content,
+      async () => '[]',
+      {},
+      {
+        reviewCall: async () => issue('questions'),
+        repairHtmlCall,
+      },
+    );
+    expect(result.content).toBe(content);
     expect(content.questions).toEqual([question]);
     expect(repairHtmlCall).not.toHaveBeenCalled();
   });

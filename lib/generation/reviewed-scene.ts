@@ -51,9 +51,9 @@ export async function generateReviewedTeachingMaterial(
   if (!('html' in content) || typeof content.html !== 'string') {
     return { content, actions };
   }
-  return reviewUntilValid<ReviewedTeachingMaterial>(
-    { content, actions },
-    {
+  const authored = { content, actions };
+  try {
+    return await reviewUntilValid<ReviewedTeachingMaterial>(authored, {
       label: `Scene "${outline.id}"`,
       signal: quality.signal,
       review: (value, repairFocus) =>
@@ -92,7 +92,7 @@ The node design is reference context, not proof of correctness. Target only this
           );
         }
         let repairedContent = value.content;
-        if (issues.some((issue) => issue.target === 'html')) {
+        if (issues.some((issue) => issue.target === 'html' || issue.target === 'actions')) {
           if (!('html' in repairedContent) || typeof repairedContent.html !== 'string') {
             throw new ClassroomQualityError('HTML review referenced a missing page');
           }
@@ -117,7 +117,7 @@ The node design is reference context, not proof of correctness. Target only this
             }
             throw error;
           }
-          repairedContent = { ...repairedContent, html };
+          if (html !== repairedContent.html) repairedContent = { ...repairedContent, html };
         }
         quality.signal?.throwIfAborted();
         const existingOutput = value.actions.map((action) =>
@@ -156,6 +156,14 @@ Do not output internal runtime speech objects or oralQuestion metadata.`,
         }
         return { content: repairedContent, actions: repairedActions };
       },
-    },
-  );
+    });
+  } catch (error) {
+    if (
+      error instanceof ClassroomQualityError ||
+      (error instanceof Error && error.name === 'ClassroomQualityError')
+    ) {
+      return authored;
+    }
+    throw error;
+  }
 }

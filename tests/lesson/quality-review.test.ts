@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ClassroomQualityError,
+  ClassroomReviewUnavailableError,
   reviewLessonPlan,
   reviewTeaching,
   reviewUntilValid,
@@ -98,19 +99,79 @@ describe('independent quality reports', () => {
   );
 
   it('does not let jsonrepair turn a truncated issues array into a pass', async () => {
-    await expect(
-      reviewTeaching(async () => '{"checks":["ok"],"issues":[', '', {}, ['html']),
-    ).rejects.toBeInstanceOf(ClassroomQualityError);
+    const call = vi.fn().mockResolvedValue('{"checks":["ok"],"issues":[');
+    await expect(reviewTeaching(call, '', {}, ['html'])).rejects.toBeInstanceOf(
+      ClassroomQualityError,
+    );
+    expect(call).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    '{"checks":["Checked, but no verdict."]}\n{"checks":["Still no verdict."]}',
-    '{"checks":["ok"],"issues":[]}\n{"issues":"none"}',
-    '{"checks":["ok"],"issues":[]}\n{"verdict":"a serious error"}',
-  ])('does not turn missing or malformed multipart verdicts into a pass (%s)', async (raw) => {
-    await expect(reviewTeaching(async () => raw, '', {}, ['html'])).rejects.toBeInstanceOf(
-      ClassroomQualityError,
+    new ClassroomQualityError('Malformed report'),
+    new ClassroomReviewUnavailableError('Reviewer unavailable'),
+    Object.assign(new Error('Upstream unavailable'), { statusCode: 502 }),
+  ])('keeps usable material when optional review cannot finish (%s)', async (failure) => {
+    const material = { text: 'A complete usable lesson.' };
+    const review = vi.fn().mockRejectedValue(failure);
+    const repair = vi.fn();
+    expect(await reviewUntilValid(material, { label: 'test', review, repair })).toBe(material);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original material when the optional repair fails', async () => {
+    const repair = vi.fn().mockRejectedValue(new ClassroomQualityError('Invalid patch'));
+    const review = vi.fn().mockResolvedValue({ ...pass, issues: [error] });
+    expect(await reviewUntilValid('usable original', { label: 'test', review, repair })).toBe(
+      'usable original',
     );
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(review).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([new TypeError('Programming bug'), new DOMException('Cancelled', 'AbortError')])(
+    'does not hide cancellation or unexpected programming errors (%s)',
+    async (failure) => {
+      await expect(
+        reviewUntilValid('draft', {
+          label: 'test',
+          review: async () => {
+            throw failure;
+          },
+          repair: vi.fn(),
+        }),
+      ).rejects.toBe(failure);
+    },
+  );
+
+  it('keeps valid report fragments and ignores malformed siblings', async () => {
+    expect(
+      await reviewTeaching(
+        async () => `${JSON.stringify(pass)}\n{"verdict":"a serious error"}\n{"issues":"none"}`,
+        '',
+        {},
+        ['html'],
+      ),
+    ).toEqual(pass);
+  });
+
+  it('does not let jsonrepair turn a report with no usable fragments into a pass', async () => {
+    await expect(
+      reviewTeaching(async () => '{"verdict":"a serious error"}\n{"issues":"none"}', '', {}, [
+        'html',
+      ]),
+    ).rejects.toBeInstanceOf(ClassroomQualityError);
+  });
+
+  it('keeps usable material when a duck-typed quality error escapes instanceof', async () => {
+    const material = { text: 'A complete usable lesson.' };
+    const failure = Object.assign(new Error('Quality review returned an invalid report fragment'), {
+      name: 'ClassroomQualityError',
+    });
+    const review = vi.fn().mockRejectedValue(failure);
+    const repair = vi.fn();
+    expect(await reviewUntilValid(material, { label: 'test', review, repair })).toBe(material);
+    expect(repair).not.toHaveBeenCalled();
   });
 
   it('ignores harmless report metadata instead of interrupting generation', async () => {
@@ -216,13 +277,16 @@ describe('independent quality reports', () => {
     const review = vi.fn().mockResolvedValue({ ...pass, issues: [error] });
     const repair = vi.fn().mockResolvedValue('still incorrect');
     const sleep = vi.fn();
-    await expect(
-      withGenerationRetry(() => reviewUntilValid('incorrect', { label: 'test', review, repair }), {
-        label: 'outer',
-        maxRetries: 5,
-        sleep,
-      }),
-    ).rejects.toMatchObject({ isRetryable: false });
+    expect(
+      await withGenerationRetry(
+        () => reviewUntilValid('incorrect', { label: 'test', review, repair }),
+        {
+          label: 'outer',
+          maxRetries: 5,
+          sleep,
+        },
+      ),
+    ).toBe('still incorrect');
     expect(repair).toHaveBeenCalledTimes(1);
     expect(repair).toHaveBeenCalledWith('incorrect', [error], pass.checks);
     expect(review).toHaveBeenCalledTimes(2);
@@ -310,14 +374,18 @@ describe('lesson design review and targeted repair', () => {
       nodes: [{ sceneId: 'first', design: correctDesign }],
       teachingBrief: { throughline: 'Unrequested change.' },
     },
-  ])('rejects missing, duplicated or out-of-scope repair targets (%j)', async (patch) => {
-    await expect(
-      reviewLessonPlan(
-        makePlan(),
-        input,
-        async () => JSON.stringify({ ...pass, issues: [error] }),
-        async () => JSON.stringify(patch),
-      ),
-    ).rejects.toBeInstanceOf(ClassroomQualityError);
-  });
+  ])(
+    'retains the original plan when an optional patch is incomplete or out of scope (%j)',
+    async (patch) => {
+      const plan = makePlan();
+      expect(
+        await reviewLessonPlan(
+          plan,
+          input,
+          async () => JSON.stringify({ ...pass, issues: [error] }),
+          async () => JSON.stringify(patch),
+        ),
+      ).toEqual(plan);
+    },
+  );
 });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonrepair } from 'jsonrepair';
 import { parseJsonResponse } from '@/lib/generation/json-repair';
+import { isAbortError, isRetryableGenerationError } from '@/lib/generation/generation-retry';
 import type { AICallFn } from '@/lib/generation/pipeline-types';
 import { createLogger } from '@/lib/logger';
 import {
@@ -9,7 +10,7 @@ import {
   lessonTeachingBriefSchema,
   type LessonPlan,
 } from '@/lib/livecourse/domain/schemas';
-import type { DesignLessonPlanInput } from './designer';
+import { TeachingOutputError, type DesignLessonPlanInput } from './designer';
 import { HTML_TEACHER_ACTION_CONTRACT } from '@/lib/livecourse/html/teacher-bridge';
 import { HTML_QUIZ_STATE_CONTRACT } from '@/lib/livecourse/html/quiz-bridge';
 
@@ -128,24 +129,30 @@ function reviewPayload(raw: string, focused: boolean): unknown {
   if (!Array.isArray(json)) return json;
   const fields = focused ? ['checks', 'resolutions', 'regressions'] : ['checks', 'issues'];
   const merged: Record<string, unknown[]> = {};
+  let accepted = 0;
   for (const part of json) {
-    if (
-      !part ||
-      typeof part !== 'object' ||
-      Array.isArray(part) ||
-      !fields.some((field) => field in part)
-    ) {
-      throw new ClassroomQualityError('Quality review returned an invalid report fragment');
+    if (!part || typeof part !== 'object' || Array.isArray(part)) {
+      log.warn('Skipping invalid quality-report fragment');
+      continue;
     }
-    for (const field of fields) {
-      if (!(field in part)) continue;
-      const value: unknown = (part as Record<string, unknown>)[field];
-      if (!Array.isArray(value))
-        throw new ClassroomQualityError('Quality report fields must be arrays');
-      (merged[field] ??= []).push(...value);
+    const usable = fields.filter((field) => {
+      if (!(field in part)) return false;
+      return Array.isArray((part as Record<string, unknown>)[field]);
+    });
+    if (!usable.length) {
+      log.warn('Skipping invalid quality-report fragment');
+      continue;
+    }
+    accepted += 1;
+    for (const field of usable) {
+      const value = (part as Record<string, unknown>)[field];
+      (merged[field] ??= []).push(...(value as unknown[]));
     }
   }
-  log.info(`Merged ${json.length} quality-report fragments without discarding findings`);
+  if (!accepted) {
+    throw new ClassroomQualityError('Quality review returned an invalid report fragment');
+  }
+  log.info(`Merged ${accepted} quality-report fragments without discarding findings`);
   return merged;
 }
 
@@ -207,23 +214,12 @@ For a node target also include its exact sceneId. Put HTML IDs in evidence, not 
 Do not report pre-existing problems as newly introduced regressions.
 Use the course language.`;
 
-export async function reviewTeaching(
-  aiCall: AICallFn,
-  instruction: string,
-  material: unknown,
+function parseQualityReport(
+  raw: string,
   targets: QualityIssue['target'][],
   sceneIds?: ReadonlySet<string>,
   repairFocus?: QualityIssue[],
-): Promise<QualityReport> {
-  const system = repairFocus
-    ? `${RECHECK_PROMPT}\nAllowed targets: ${targets.join(', ')}.`
-    : `${REVIEW_PROMPT}\n${instruction}\nAllowed targets: ${targets.join(', ')}.`;
-  const raw = await aiCall(
-    targets.includes('html')
-      ? `${system}\n${HTML_TEACHER_ACTION_CONTRACT}\n${HTML_QUIZ_STATE_CONTRACT}`
-      : system,
-    JSON.stringify(material),
-  );
+): QualityReport {
   const json = reviewPayload(raw, Boolean(repairFocus));
   let report: QualityReport;
   if (repairFocus) {
@@ -260,6 +256,15 @@ export async function reviewTeaching(
     }
     report = parsed.data;
   }
+  validateRepairTargets(report, targets, sceneIds);
+  return report;
+}
+
+function validateRepairTargets(
+  report: QualityReport,
+  targets: QualityIssue['target'][],
+  sceneIds?: ReadonlySet<string>,
+) {
   for (const issue of report.issues) {
     if (issue.severity !== 'blocking' || issue.confidence !== 'high') continue;
     if (
@@ -269,9 +274,47 @@ export async function reviewTeaching(
       throw new ClassroomQualityError('Quality review referenced an invalid repair target');
     }
   }
-  return report;
 }
 
+export async function reviewTeaching(
+  aiCall: AICallFn,
+  instruction: string,
+  material: unknown,
+  targets: QualityIssue['target'][],
+  sceneIds?: ReadonlySet<string>,
+  repairFocus?: QualityIssue[],
+): Promise<QualityReport> {
+  const system = repairFocus
+    ? `${RECHECK_PROMPT}\nAllowed targets: ${targets.join(', ')}.`
+    : `${REVIEW_PROMPT}\n${instruction}\nAllowed targets: ${targets.join(', ')}.`;
+  const raw = await aiCall(
+    targets.includes('html')
+      ? `${system}\n${HTML_TEACHER_ACTION_CONTRACT}\n${HTML_QUIZ_STATE_CONTRACT}`
+      : system,
+    JSON.stringify(material),
+  );
+  return parseQualityReport(raw, targets, sceneIds, repairFocus);
+}
+
+function isNamedError(error: unknown, name: string): boolean {
+  return error instanceof Error && error.name === name;
+}
+
+function optionalQualityFailure(error: unknown, signal?: AbortSignal): boolean {
+  signal?.throwIfAborted();
+  if (isAbortError(error)) return false;
+  return (
+    error instanceof ClassroomQualityError ||
+    isNamedError(error, 'ClassroomQualityError') ||
+    error instanceof ClassroomReviewUnavailableError ||
+    isNamedError(error, 'ClassroomReviewUnavailableError') ||
+    error instanceof TeachingOutputError ||
+    isNamedError(error, 'TeachingOutputError') ||
+    isRetryableGenerationError(error)
+  );
+}
+
+/** Best-effort improvement of already structurally valid material, never an accuracy gate. */
 export async function reviewUntilValid<T>(
   initial: T,
   options: {
@@ -285,7 +328,17 @@ export async function reviewUntilValid<T>(
   let repairFocus: QualityIssue[] | undefined;
   for (let repairs = 0; ; repairs += 1) {
     options.signal?.throwIfAborted();
-    const report = await options.review(value, repairFocus);
+    let report: QualityReport;
+    try {
+      report = await options.review(value, repairFocus);
+    } catch (error) {
+      if (!optionalQualityFailure(error, options.signal)) throw error;
+      log.warn(
+        `${options.label}: review unavailable; retaining usable material without a pass verdict`,
+        error,
+      );
+      return value;
+    }
     options.signal?.throwIfAborted();
     const blocking = report.issues.filter(
       (issue) => issue.severity === 'blocking' && issue.confidence === 'high',
@@ -300,14 +353,26 @@ export async function reviewUntilValid<T>(
       log.info(`${options.label}: passed ${report.checks.length} checks after ${repairs} repairs`);
       return value;
     }
-    log.warn(`${options.label}: blocking teaching errors`, blocking);
+    log.warn(`${options.label}: suggested teaching improvements`, blocking);
     if (repairs === 1) {
-      throw new ClassroomQualityError(
-        `${options.label} still has a material teaching error after targeted repair`,
+      log.warn(
+        `${options.label}: unresolved review findings are nonblocking; retaining usable material`,
       );
+      return value;
     }
     repairFocus = blocking;
-    value = await options.repair(value, blocking, report.checks);
+    try {
+      const repaired = await options.repair(value, blocking, report.checks);
+      options.signal?.throwIfAborted();
+      value = repaired;
+    } catch (error) {
+      if (!optionalQualityFailure(error, options.signal)) throw error;
+      log.warn(
+        `${options.label}: optional repair failed; retaining the previous usable material`,
+        error,
+      );
+      return value;
+    }
   }
 }
 
