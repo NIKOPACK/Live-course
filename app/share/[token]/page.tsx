@@ -152,7 +152,6 @@ export default function ShareLandingPage() {
               <Button
                 type="button"
                 data-testid="share-landing-join"
-                disabled={state.status === 'joining'}
                 onClick={() => void join()}
               >
                 {t('shareLanding.join')}
