@@ -718,9 +718,12 @@ html:has(.lc-preview-shell) {
   animation-timing-function: linear;
 }
 @media (prefers-reduced-motion: reduce) {
-  .lc-preparation-enter,
-  .lc-preview-collapse[data-state] {
+  .lc-preparation-enter {
     animation: none;
+  }
+  .lc-preview-collapse[data-state] {
+    /* Preserve animationend so Radix can finish an in-flight collapse. */
+    animation-duration: 0.01ms;
   }
 }
 

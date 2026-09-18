@@ -2,6 +2,20 @@ import type { QuizQuestion } from '@/lib/types/stage';
 import type { QuestionResult } from '@/lib/quiz/grading';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
 
+export const HTML_QUIZ_STATE_CONTRACT = `For graded checkpoint HTML only, the host's
+livecourse:quiz-state event detail has this exact shape: {phase, readOnly, answers, results}.
+answers is an object keyed by question ID holding the LEARNER'S selections; choice answers are
+string[] and short answers are strings. results is an ARRAY, NOT an object keyed by question ID.
+Find a result with state.results.find(result => result.questionId === questionId).
+Each result has {questionId, correct: true|false|null, status: "correct"|"incorrect", earned: number,
+answer?: string[], analysis?: string, aiComment?: string}. result.answer is the CORRECT ANSWER KEY,
+NOT the learner's selection. Restore inputs and show "your answer" ONLY from state.answers[questionId],
+never from result.answer. Label the correct answer separately. Display host analysis/aiComment as text.
+Do not invent feedback/message/explanation fields. Show feedback only when phase === "reviewing";
+before submission results is empty. Enable inputs only when phase === "answering" && !state.readOnly.
+Other phases are not_started, submitting, grading and grading_error; keep questions visible and
+inputs locked in all of them. No host state means inputs stay disabled.`;
+
 export type HtmlQuizPhase =
   | 'not_started'
   | 'answering'
@@ -86,12 +100,16 @@ export function parseHtmlQuizAnswer(
   };
 }
 
+const QUIZ_SCROLL = `<style data-livecourse-quiz-scroll>
+html { height: 100% !important; overflow-y: auto !important; overflow-x: hidden !important; }
+body { height: auto !important; min-height: 100% !important; max-height: none !important; overflow: visible !important; }
+</style>`;
+
 const QUIZ_BRIDGE = `<script data-livecourse-quiz-bridge>
 (function () {
   var state = null;
   function publish() {
     if (!state) return;
-    if (document.body) document.body.inert = state.readOnly || state.phase !== 'answering';
     window.dispatchEvent(new CustomEvent('livecourse:quiz-state', { detail: state }));
   }
   window.livecourseQuiz = Object.freeze({
@@ -110,7 +128,6 @@ const QUIZ_BRIDGE = `<script data-livecourse-quiz-bridge>
     publish();
   });
   document.addEventListener('DOMContentLoaded', function () {
-    if (document.body) document.body.inert = !state || state.readOnly || state.phase !== 'answering';
     publish();
     window.parent.postMessage({ __livecourseQuiz: true, kind: 'ready' }, '*');
   });
@@ -120,5 +137,7 @@ const QUIZ_BRIDGE = `<script data-livecourse-quiz-bridge>
 export function patchQuizHtml(html: string): string {
   const head = /<head\b[^>]*>/i.exec(html);
   const position = head ? head.index + head[0].length : 0;
-  return patchHtmlForIframe(html.slice(0, position) + QUIZ_BRIDGE + html.slice(position));
+  return patchHtmlForIframe(
+    html.slice(0, position) + QUIZ_SCROLL + QUIZ_BRIDGE + html.slice(position),
+  );
 }

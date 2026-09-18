@@ -132,9 +132,16 @@ describe('HTML quiz answer boundary', () => {
       source: parent,
       data: { __livecourseQuiz: true, kind: 'state', state: { ...state, readOnly: true } },
     });
-    expect(doc.body.inert).toBe(true);
+    expect(doc.body.inert).toBe(false);
     postMessage.mockClear();
     win.livecourseQuiz.setAnswer('single', []);
     expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('makes the checkpoint document the scrollport instead of locking the page', () => {
+    const html = patchQuizHtml('<html><head></head><body><p>tall checkpoint</p></body></html>');
+    expect(html).toContain('data-livecourse-quiz-scroll');
+    expect(html).toMatch(/overflow-y:\s*auto\s*!important/);
+    expect(html).not.toMatch(/document\.body\.inert\s*=/);
   });
 });

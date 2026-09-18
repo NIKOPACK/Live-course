@@ -326,14 +326,22 @@ describe('HTML assessment lifecycle', () => {
     expect(container.querySelector('[role=alert]')).toBeNull();
   });
 
+  it('lets learners scroll the checkpoint HTML before starting', async () => {
+    await render(quiz());
+    expect(button('quiz.startQuiz')).toBeTruthy();
+    expect(iframe().style.pointerEvents).not.toBe('none');
+    expect(iframe().parentElement?.hasAttribute('inert')).toBe(false);
+    expect(iframe().hasAttribute('inert')).toBe(false);
+  });
+
   it('renders replay HTML without hydrating, grading, or writing attempts/evidence', async () => {
     await render(quiz(true));
     expect(iframe().srcdoc).toContain('Real model layout');
     await answer();
     await post({ __livecourseQuiz: true, kind: 'complete', score: 1 });
     expect(container.querySelector('button')).toBeNull();
-    expect(iframe().tabIndex).toBe(-1);
-    expect(iframe().parentElement?.hasAttribute('inert')).toBe(true);
+    expect(iframe().style.pointerEvents).not.toBe('none');
+    expect(iframe().parentElement?.hasAttribute('inert')).toBe(false);
     expect(mocks.load).not.toHaveBeenCalled();
     expect(mocks.draft).not.toHaveBeenCalled();
     expect(mocks.writer.recordPhase).not.toHaveBeenCalled();

@@ -192,7 +192,7 @@ export function HtmlQuizSurface({
           ) : null}
         </div>
       ) : null}
-      <div className="min-h-0 flex-1" inert={state.readOnly || !!error}>
+      <div className="min-h-0 flex-1" inert={!!error || undefined}>
         <iframe
           key={`${html}\u0000${version}`}
           ref={iframeRef}
@@ -207,8 +207,8 @@ export function HtmlQuizSurface({
           title={title ?? t('quiz.title')}
           className="h-full w-full border-0"
           sandbox="allow-scripts"
-          tabIndex={state.readOnly || error ? -1 : undefined}
-          style={{ pointerEvents: state.readOnly || error ? 'none' : undefined }}
+          tabIndex={error ? -1 : undefined}
+          style={{ pointerEvents: error ? 'none' : undefined }}
         />
       </div>
     </div>
