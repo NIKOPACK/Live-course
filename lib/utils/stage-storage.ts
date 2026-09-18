@@ -106,6 +106,7 @@ export interface StageListItem {
   interactiveMode?: boolean;
   taskEngineMode?: boolean;
   coverAssetId?: string;
+  generationComplete?: boolean;
 }
 
 function stampStage(stageId: string, stage: Stage, now: number): Stage {

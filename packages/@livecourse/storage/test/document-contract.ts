@@ -123,6 +123,24 @@ export function runDocumentStoreContract(
       ]);
     });
 
+    test('listDocuments includes generationComplete from the outline when it is a boolean', async () => {
+      const store = makeStore();
+      await store.saveDocument(makeDocument());
+      await expect(store.listDocuments()).resolves.toEqual([
+        expect.objectContaining({ id: 'stage-1', generationComplete: true, sceneCount: 2 }),
+      ]);
+    });
+
+    test('listDocuments omits generationComplete when the outline field is missing', async () => {
+      const store = makeStore();
+      const doc = makeDocument();
+      doc.outline = { entries: [{ id: 'o1', title: 'Intro' }] };
+      await store.saveDocument(doc);
+      const list = await store.listDocuments();
+      expect(list[0]).toMatchObject({ id: 'stage-1', sceneCount: 2 });
+      expect(list[0]).not.toHaveProperty('generationComplete');
+    });
+
     test('deleteDocument removes the stage, its scenes, and its outline', async () => {
       const store = makeStore();
       await store.saveDocument(makeDocument());

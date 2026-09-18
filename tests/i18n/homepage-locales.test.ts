@@ -18,6 +18,16 @@ const homeKeys = [
   'deleteCourseConfirm',
   'deleteCourseDeleting',
   'deleteCourseFailed',
+  'shareCourse',
+  'shareCourseAria',
+  'shareCourseTitle',
+  'shareCourseDescription',
+  'shareCourseCopy',
+  'shareCourseCopied',
+  'shareCourseSharing',
+  'shareCourseFailed',
+  'shareCourseRetry',
+  'shareCourseClose',
 ] as const;
 
 describe('homepage locale coverage', () => {

@@ -89,7 +89,8 @@
 - 改角色：问题失败必须保留已答并提供重试或跳过。范围失败区分两类：首次知识树加载失败且没有推荐范围时，只能重试或明确「跳过范围确认，按需求与合理默认备课」；知识树已成功加载后的确认 / 提交失败，必须保留已选项和缓存推荐项，可重试或使用缓存推荐范围。全程只有一个「开始上课」，预览页内不再发第二次 start 命令
 - 待撤产品面：首页「联网」开关。检索保留在设置，默认关；设置使用遮罩字段与显式保存，只写配置存储，不接 W / C / L
 - 改角色（A7）：`app/page.tsx` 最近课堂行拆成可打开的主区域 + 独立删除控件，删除不嵌在打开用的 button 里。确认使用现有 `components/ui/alert-dialog.tsx`。文案走 `lib/i18n/locales/zh-CN.json` 与 `en-US.json`。`SHOWCASE_CLASSROOM_ID` 卡片不渲染删除控件
-- 改角色（A7）：外层 `.lc-course-row` 为 `display:grid; grid-template-columns: minmax(0,1fr) 44px`。内层打开按钮 **保持** 现有 `88px | minmax(0,1fr) | 16px`（`min-width: 640px` 时封面 `144px`）+ 标题 + `ArrowRight`。删除列 **不替换** 打开控件内部任何一列。打开 button 不得 `display:contents`
+- 改角色（A7）：外层 `.lc-course-row-with-delete` 为 `display:grid; grid-template-columns: minmax(0,1fr) 44px`。内层打开按钮 **保持** 现有 `88px | minmax(0,1fr) | 16px`（`min-width: 640px` 时封面 `144px`）+ 标题 + `ArrowRight`。删除列 **不替换** 打开控件内部任何一列。打开 button 不得 `display:contents`
+- 改角色（A8）：完成课用新修饰类 `.lc-course-row-with-share-and-delete` → `minmax(0,1fr) 44px 44px`（分享列、删除列）。仅删除保持 `.lc-course-row-with-delete` 两列。展示课单列 `.lc-course-row`。打开按钮内部列不变。禁止把删除两列改成三列，以免展示课/备课中出现空槽
 - 改角色（A7）：开始删除该 `stageId` 时：若 `CourseEntryDialog` 的 `classroomId` 相同则关闭；`courseEntryRequestEpochRef` 加一；继续 / 再听对 deleting / deleted id 为 no-op；成功后 `?course=` 不得对该 id 再调 `openCourseEntry`
 - 才新写（A7）：`lib/classroom/delete-user-classroom.ts` —— 只编排 `DELETE /api/classroom?id=`（`res.status === 404 || res.ok`）再 `deleteStageData`，并以 `listStages()` 是否仍含该 id 作为返回成功的依据。**不** 读 `sessionStorage`、**不** import `app/`。对字面量 `'fourier-intro'` 在发请求前 throw。`generationSession` / `liveGeneration` 的清除、以及从 React `classrooms` 去掉该 id，留在 `app/page.tsx`，且只在成功谓词成立时执行
 - 才新写（A7）：`deleteClassroom(id)`，落在现有 `lib/server/classroom-storage.ts`。`id === 'fourier-intro'` 时在任何 `fs` 之前抛错，不得 unlink
@@ -97,8 +98,16 @@
 - 沿用：`deleteStageData` / `DocumentStore.deleteDocument` / `beginStageRuntimeDeletionSafely`。禁止新 DocumentStore 方法，禁止第二套级联，禁止 `deleteStageWithRelatedData`
 - 改角色（A7）：`app/api/classroom/route.ts` 增加 `DELETE`，与 GET 共用 `isValidClassroomId` 与 ACCESS_CODE middleware。`id === 'fourier-intro'` 返回 `INVALID_REQUEST` 400，不调用 `deleteClassroom`
 - 改角色（A7）：用户删除成功后，在无 in-flight one-shot runner 时，`GET /api/classroom` 对该 id 为 404，`runClassroomLoad` 不得 `unmarkStageDeleted` 或重建本地文档。不修改 settled-deletion 时 `loadFromStorage` 为 Back-during-delete 保留的 fallthrough
+- 改角色（A8）：`listDocuments` / `StageListItem` / `DocumentSummary` 增加可选 `generationComplete?: boolean`（browser 同一 readonly 事务 join OUTLINES；PG 从 outline JSON 取布尔；HTTP 透传）。缺字段或非 boolean 则省略。`ClassroomCard`：`canShare = id !== SHOWCASE_CLASSROOM_ID && generationComplete === true && !generating`。点击仍 `assertHtmlClassroom` fail closed，但不能当唯一可见性条件。禁止新 DocumentStore 方法
+- 改角色（A8）：分享 Dialog 用现有 `components/ui/dialog.tsx`（非 AlertDialog）。文案键 `home.shareCourse*`；不征用、不改语义 `share.notReady`。删副本成功后由 `app/page.tsx` 调用 `clearShareRedeemRegistration(stageId)`，**不**改 `delete-user-classroom.ts`
+- 才新写（A8）：`lib/livecourse/lesson/outlines-from-scenes.ts`（从 `app/generation-preview/resume-session.ts` 迁出纯 scene→outline 投影，`resume-session` 再导出）
+- 才新写（A8）：`lib/livecourse/share/` — schema、剥离非材料字段、ref 分类 / `resolveShareMediaBytes` / 不可变 `bindShareMediaRefs` / `rewriteShareMaterials`、create/redeem 客户端、兑付登记。**禁止** import `app/`。**禁止** mutate `loadStageData` 返回的源文档；create-client 不得 `saveStageData` / `useStageStore.setState`
+- 才新写（A8）：`lib/server/classroom-share-storage.ts` 与 `app/api/classroom-shares/`。快照落 `data/classroom-shares/{token}.json` + `{token}/media|audio/`。令牌不可猜测（熵 ≥ 128 bit）。Create 只接受上传字节，禁止 `POST { sourceClassroomId }` 再 `readClassroom`。Redeem 才 `createGenerationIdentity(nanoid())`，种子禁止用 token。GET 元数据 200/404，无列表。multipart 字段名 `snapshot`，文件字段名 = `mediaManifest.path`；对账失败 400。请求合计 ≤ 50MB（抄 `extract-document`，无 `export const sizeLimit`）。顶层 `{token}.json` 个数 ≥ 100 或 `du`（含本请求）≥ 2 GiB → 413。ACCESS_CODE 沿用根布局 + 现有 middleware，新 API 不进白名单
+- 才新写（A8）：`app/share/[token]/page.tsx` 落地页不执行课堂 HTML。首次兑付 `initializeCourseState` 且不调 `persistGenerationCourseIntake`。本机 KV：`share.redeems.{token}` 与 `share.redeemByStage.{stageId}`；坏指针当从未兑付
 
-完成：首页主路径上看不到三种模式；提交只产生一堂可上的课；上传、追问与范围失败均可原地恢复，且全程只有一个「开始上课」。最近课堂可确认硬删除自己生成的课；展示课不可删。
+禁止：create 时铸接收者身份；用 token 当 seed；redeem 复用源 id；把 C 快照或 intake 打进 JSON；`bindShareMediaRefs` mutate 入参。
+
+完成：首页主路径上看不到三种模式；提交只产生一堂可上的课；上传、追问与范围失败均可原地恢复，且全程只有一个「开始上课」。最近课堂可确认硬删除自己生成的课；展示课不可删。列表态已完成课可分享材料；接收者新身份上空 C。
 
 ## 4. 编辑器与改课 — 待撤产品面
 
@@ -172,6 +181,10 @@
 | finalization 后「离开」 | 不读写 | 不读写 | 不读写；只导航首页 |
 | 设置保存 | 不读写 | 不读写 | 不读写；只改配置存储 |
 | 首页确认删除课程 | 该 stage 上 teaching / replay W 经产品路径不可再读（runtime cascade，fail-soft）；不新建 | 该 stage 分区上的课程快照、evidence 与 course memory 经产品路径不可再读；不读其他 `courseId` | 不读写 |
+| 首页分享课程 | 不读写 | 不读写；不读分享者 C | 不读写 |
+| 打开分享链接（元数据） | 不读写 | 不读写；不读源课 C | 不读写 |
+| 加入分享课 | 不建 W | 为新三元组 `initializeCourseState`（空 snapshot，无 intake）；不读分享者 C | 不写 |
+| 进入刚加入的课 | 新建 teaching W | 读空 C | 读本机 L；`buildTeacherContext({ mode: 'new-course' })` 与 in-class 空 C 均不得含分享者 leak tokens |
 
 删除不是学习事件：不产 `EvidenceRecord`、不改 `GoalState`、不调用 `finalizeSession`。不要求 `livecourse-runtime` 在 timeout 后物理清空。存储继续沿用 IndexedDB / HTTP / PG 与课堂文件存储；有文件副本时删除必须打到两个平面。J1 IndexedDB-only 课没有文件副本，DELETE ENOENT 即为该平面成功。
 
@@ -245,6 +258,7 @@
 | 全双工 | OpenAI Realtime + Agents SDK、`lib/livecourse/realtime` | 不得再接一套课中 ASR/TTS 主路径 |
 | 形象 | `@pixiv/three-vrm` / Airi | 不得换形象栈 |
 | 存储 | IndexedDB 默认、HTTP adapter、可选 PostgreSQL、`@livecourse/storage` | 不得为课程或记忆再写一套数据库 |
+| 课程分享 | `persistClassroom` / `isValidClassroomId` / ACCESS_CODE middleware / 根布局 `AccessCodeGuard` / `createGenerationIdentity` / `initializeCourseState` / `assertHtmlClassroom` / `collectStageAssetRefs` / `htmlMediaReferences` / `replaceHtmlMediaReferences` / `rewriteStageAndScenes` 槽位 / `withAssetUrl` / `resolveAudioBlob` / `mediaFileKey` / `applyClassroomStageAndScenes` / `listDocuments`（加字段） / Dialog | 现有 GET-by-id、ZIP、RuntimeStore 都不够：主路径课常只在 IndexedDB；进度必须用新 `courseId` 分区归零。才新写 `lib/livecourse/share/` 与 `data/classroom-shares/` |
 | 记忆作用域 | [LangGraph JS memory](https://docs.langchain.com/oss/javascript/langgraph/add-memory) / [persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence)：thread / checkpointer 与 Store namespace、profile / collection 的职责划分；项目已有 `@langchain/langgraph` | 沿用分层与 namespace 模式；不得新增另一套编排框架。是否接其 Store / checkpointer 必须先证明现有 `RuntimeStore` 缝不够 |
 | 作用域 metadata | [Mem0 memory operations](https://docs.mem0.ai/open-source/features/memory-operations) / [metadata filtering](https://docs.mem0.ai/open-source/features/metadata-filtering)：`user_id` / `run_id` 与来源 metadata | 只借鉴标识与 provenance；filter 不是安全边界，不引入 Mem0 依赖或第二事实源 |
 | 上下文装配 | [Letta memory](https://docs.letta.com/guides/agents/memory) / [MemGPT architecture](https://docs.letta.com/guides/agents/architectures/memgpt)：bounded core 与 archival 分离 | 只借鉴有上限的 core packet；不引入 Letta runtime，也不允许 Agent 自治改写全部画像 |

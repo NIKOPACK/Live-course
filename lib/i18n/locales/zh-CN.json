@@ -56,7 +56,32 @@
     "deleteCourseDescription": "本课材料、学习进度和作答会永久删除，无法恢复。你的跨课学习偏好会保留。",
     "deleteCourseConfirm": "删除课程",
     "deleteCourseDeleting": "正在删除…",
-    "deleteCourseFailed": "删除失败，请重试。课程仍在。"
+    "deleteCourseFailed": "删除失败，请重试。课程仍在。",
+    "shareCourse": "分享",
+    "shareCourseAria": "分享课程 {{name}}",
+    "shareCourseTitle": "分享「{{name}}」",
+    "shareCourseDescription": "对方将从头学习，不会带上你的进度与作答。",
+    "shareCourseCopy": "复制链接",
+    "shareCourseCopied": "已复制",
+    "shareCourseSharing": "正在创建分享链接…",
+    "shareCourseFailed": "分享失败，请重试。课程仍在。",
+    "shareCourseRetry": "重试",
+    "shareCourseClose": "关闭"
+  },
+  "shareLanding": {
+    "kicker": "分享的课堂",
+    "loading": "正在打开分享…",
+    "sceneCount": "{{count}} 页",
+    "zeroProgress": "加入后从头学习，不会带上分享者的进度与作答。",
+    "join": "加入课堂，从头学习",
+    "joining": "正在加入…",
+    "openCopy": "打开我的这份课",
+    "enter": "进入课堂",
+    "home": "返回首页",
+    "missingTitle": "找不到这份分享",
+    "missingBody": "链接无效或已被移除。",
+    "failed": "加入失败，请重试。",
+    "retry": "重试"
   },
   "toolbar": {
     "pdfParser": "解析器",

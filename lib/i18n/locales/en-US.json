@@ -56,7 +56,32 @@
     "deleteCourseDescription": "Course materials, progress, and answers for this class will be permanently removed and cannot be undone. Your cross-course learning preferences are kept.",
     "deleteCourseConfirm": "Delete class",
     "deleteCourseDeleting": "Deleting…",
-    "deleteCourseFailed": "Could not delete this class. It is still here. Retry."
+    "deleteCourseFailed": "Could not delete this class. It is still here. Retry.",
+    "shareCourse": "Share",
+    "shareCourseAria": "Share class {{name}}",
+    "shareCourseTitle": "Share “{{name}}”",
+    "shareCourseDescription": "The other person starts from the beginning. Your progress and answers are not included.",
+    "shareCourseCopy": "Copy link",
+    "shareCourseCopied": "Copied",
+    "shareCourseSharing": "Creating a share link…",
+    "shareCourseFailed": "Could not share this class. It is still here. Retry.",
+    "shareCourseRetry": "Retry",
+    "shareCourseClose": "Close"
+  },
+  "shareLanding": {
+    "kicker": "Shared classroom",
+    "loading": "Opening the shared class…",
+    "sceneCount": "{{count}} pages",
+    "zeroProgress": "Joining starts this class from the beginning. The sharer’s progress and answers are not included.",
+    "join": "Join class from the beginning",
+    "joining": "Joining…",
+    "openCopy": "Open my copy",
+    "enter": "Enter class",
+    "home": "Back home",
+    "missingTitle": "This share was not found",
+    "missingBody": "The link is invalid or no longer available.",
+    "failed": "Could not join. Retry.",
+    "retry": "Retry"
   },
   "toolbar": {
     "pdfParser": "Parser",

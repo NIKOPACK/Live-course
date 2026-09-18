@@ -233,9 +233,35 @@ worker Agent 支持派生并行 subagent（`04` §7）：
 - 不出现回收站、课堂内删除、对 L 的写入
 - **非验收：** in-flight `generateClassroom` 在 DELETE 后写回文件
 
-## A8 及以后
+## A8 课程分享
 
-A8 尚未定义。多课时课程规划、BKT / FSRS、摄像头仅是未来候选；任何功能必须先按 `docs/spec` 权威顺序写入旅程、手册、设计和可测验收后才能开发。在此之前继续禁止，作品简介不能授权开发。
+依据：`01` J4.6 / J6、`02` 首页与分享页、`04` §3 / §6。
+
+加：
+
+- 首页完成课独立分享列：复制不可猜测链接，指向材料快照（HTML、教案、封面、动作、媒体）
+- 接收者打开 `/share/{token}` 后加入，铸新 `stageId` / `courseId` / `lessonId`，`initializeCourseState` 空 C，进度为零
+- `lib/livecourse/share/` + `lib/server/classroom-share-storage.ts` + `app/api/classroom-shares/` + `app/share/[token]/page.tsx`
+
+约束：不复制 C / W / evidence / intake；不引入账号；不征用 `share.notReady`；不改 A7 编排器；create 不铸接收者身份；`lib/livecourse/share` 不 import `app/`；bind 不回写源课。
+
+验收：
+
+- 仅列表 `generationComplete === true`、非展示课的卡片有分享列；未完成落盘课无列；取消不改数据；401/缺媒体/413 可重试
+- 链接不可猜测；GET 无列表；未知 404；未完成 400
+- 快照仍为源 id；两次 redeem 三元组全不等；空 snapshot；无 intake；无再听直到自己讲过
+- 教师上下文负测含 leak tokens
+- 删源：快照与副本仍在；删副本：源与快照仍在，再开 token 为新零进度课；展示课仍不可删
+- ACCESS_CODE 未通过 API 401
+- 不出现课堂/预览/设置分享；不改 `share.notReady`
+- placeholder / pool / cover / speech / classroom-media 五类 fixture 兑付后画面不裂
+- 盘超限 413（计数顶层 token JSON，不是媒体文件数）；无封面可分享
+- 无 `presentation.mode = html` 的快照兑付失败
+- bind 后源 HTML 仍为 `gen_img_1`；multipart 对账失败 400
+
+## A9 及以后
+
+快照过期 / 撤销 UI、多课时课程规划、BKT / FSRS、摄像头仅是未来候选；任何功能必须先按 `docs/spec` 权威顺序写入旅程、手册、设计和可测验收后才能开发。在此之前继续禁止，作品简介不能授权开发。未做撤销 UI 之前，运维删 `data/classroom-shares/{token}` 即失效，已兑付副本保留。
 
 ## 完成标准
 

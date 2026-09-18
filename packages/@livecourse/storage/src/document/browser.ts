@@ -66,6 +66,12 @@ function reqP<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+function readListGenerationComplete(outline: unknown): boolean | undefined {
+  if (!outline || typeof outline !== 'object' || Array.isArray(outline)) return undefined;
+  const value = (outline as { generationComplete?: unknown }).generationComplete;
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 /** Throw a fail-loud error listing every validation issue, or pass. */
 function assertValid(result: ReturnType<typeof validateStage>, label: string): void {
   if (result.valid) return;
@@ -368,12 +374,15 @@ export class BrowserDocumentStore<
     // version and no content is migrated or returned here, so a corrupt/unknown
     // `dslVersion` stamp is not read — one bad row must not break the whole list
     // (it still fails loud when the document itself is loaded).
-    return this.txRun([STAGES, SCENES], 'readonly', async (tx) => {
+    return this.txRun([STAGES, SCENES, OUTLINES], 'readonly', async (tx) => {
       const stageRows = await reqP<StageRow<TStage>[]>(tx.objectStore(STAGES).getAll());
       const index = tx.objectStore(SCENES).index(SCENES_BY_STAGE);
+      const outlines = tx.objectStore(OUTLINES);
       const summaries: DocumentSummary[] = [];
       for (const stage of stageRows) {
         const sceneCount = await reqP<number>(index.count(stage.id));
+        const outlineRow = await reqP<OutlineRow | undefined>(outlines.get(stage.id));
+        const generationComplete = readListGenerationComplete(outlineRow?.outline);
         summaries.push({
           id: stage.id,
           name: stage.name,
@@ -381,6 +390,7 @@ export class BrowserDocumentStore<
           interactiveMode: stage.interactiveMode,
           taskEngineMode: stage.taskEngineMode,
           ...(stage.coverAssetId ? { coverAssetId: stage.coverAssetId } : {}),
+          ...(generationComplete === undefined ? {} : { generationComplete }),
           createdAt: stage.createdAt,
           updatedAt: stage.updatedAt,
           sceneCount,

@@ -113,6 +113,8 @@ export interface DocumentSummary {
   taskEngineMode?: boolean;
   /** Homepage cover media ref from the stage row; absent when the course has none. */
   coverAssetId?: string;
+  /** Outline join: only a real boolean is copied. Missing/non-boolean stays omitted. */
+  generationComplete?: boolean;
   createdAt: number;
   updatedAt: number;
   sceneCount: number;

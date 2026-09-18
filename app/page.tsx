@@ -12,6 +12,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  Share2,
   Trash2,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
@@ -30,6 +31,8 @@ import {
 import { cn } from '@/lib/utils';
 import { SettingsDialog } from '@/components/settings';
 import { deleteUserClassroom } from '@/lib/classroom/delete-user-classroom';
+import { ShareCourseDialog } from '@/components/livecourse/ShareCourseDialog';
+import { clearShareRedeemRegistration, createCourseShare } from '@/lib/livecourse/share';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -185,6 +188,12 @@ function HomePage() {
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteFailed, setDeleteFailed] = useState(false);
+  const [pendingShare, setPendingShare] = useState<{ id: string; name: string } | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | undefined>(undefined);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareFailed, setShareFailed] = useState(false);
+  const shareBusyRef = useRef(false);
+  const shareRequestIdRef = useRef<string | null>(null);
   const generationAttemptEpochRef = useRef(0);
   const generationSubmittingRef = useRef(false);
   const generationSessionIdRef = useRef<string | null>(null);
@@ -442,6 +451,32 @@ function HomePage() {
     setLiveGeneration((live) => (live?.stageId === stageId ? null : live));
   };
 
+  const requestShareClassroom = async (classroom: Pick<StageListItem, 'id' | 'name'>) => {
+    if (classroom.id === SHOWCASE_CLASSROOM_ID) return;
+    if (shareBusyRef.current) return;
+    const requestId = classroom.id;
+    shareBusyRef.current = true;
+    shareRequestIdRef.current = requestId;
+    setPendingShare({ id: classroom.id, name: classroom.name });
+    setShareUrl(undefined);
+    setShareFailed(false);
+    setShareBusy(true);
+    try {
+      const result = await createCourseShare(classroom.id);
+      if (shareRequestIdRef.current !== requestId) return;
+      setShareUrl(result.url);
+    } catch (error) {
+      log.error(`Failed to share classroom ${classroom.id}:`, error);
+      if (shareRequestIdRef.current !== requestId) return;
+      setShareFailed(true);
+    } finally {
+      if (shareRequestIdRef.current === requestId) {
+        shareBusyRef.current = false;
+        setShareBusy(false);
+      }
+    }
+  };
+
   const requestDeleteClassroom = (classroom: Pick<StageListItem, 'id' | 'name'>) => {
     if (classroom.id === SHOWCASE_CLASSROOM_ID) return;
     setPendingDelete({ id: classroom.id, name: classroom.name });
@@ -469,6 +504,11 @@ function HomePage() {
       await deleteUserClassroom(stageId);
       dropClassroomFromHomeList(stageId);
       clearMatchingGenerationSession(stageId);
+      try {
+        await clearShareRedeemRegistration(stageId);
+      } catch (error) {
+        log.warn(`Failed to clear share redeem registration for ${stageId}:`, error);
+      }
       setPendingDelete(null);
     } catch (error) {
       log.error(`Failed to delete classroom ${stageId}:`, error);
@@ -1047,12 +1087,19 @@ function HomePage() {
                   slide={thumbnails[classroom.id]}
                   formatDate={formatDate}
                   generating={generatingStageId === classroom.id}
+                  canShare={
+                    classroom.id !== SHOWCASE_CLASSROOM_ID &&
+                    classroom.generationComplete === true &&
+                    generatingStageId !== classroom.id
+                  }
                   canDelete={classroom.id !== SHOWCASE_CLASSROOM_ID}
                   deleting={deletingIds.has(classroom.id)}
+                  shareBusy={shareBusy}
                   onClick={() => {
                     if (deletingIdsRef.current.has(classroom.id)) return;
                     void openCourseEntry(classroom);
                   }}
+                  onShare={() => void requestShareClassroom(classroom)}
                   onDelete={() => requestDeleteClassroom(classroom)}
                 />
               </motion.div>
@@ -1060,6 +1107,27 @@ function HomePage() {
           </div>
         </section>
       </main>
+
+      <ShareCourseDialog
+        open={pendingShare !== null}
+        courseName={pendingShare?.name ?? ''}
+        url={shareUrl}
+        busy={shareBusy}
+        error={shareFailed}
+        onCopy={async () => {
+          if (!shareUrl) return;
+          await navigator.clipboard.writeText(shareUrl);
+        }}
+        onRetry={() => {
+          if (pendingShare) void requestShareClassroom(pendingShare);
+        }}
+        onClose={() => {
+          if (shareBusy) return;
+          setPendingShare(null);
+          setShareUrl(undefined);
+          setShareFailed(false);
+        }}
+      />
 
       <AlertDialog
         open={pendingDelete !== null}
@@ -1115,9 +1183,12 @@ function ClassroomCard({
   slide,
   formatDate,
   generating = false,
+  canShare = false,
   canDelete = false,
   deleting = false,
+  shareBusy = false,
   onClick,
+  onShare,
   onDelete,
 }: {
   classroom: StageListItem;
@@ -1125,9 +1196,12 @@ function ClassroomCard({
   slide?: Slide;
   formatDate: (ts: number) => string;
   generating?: boolean;
+  canShare?: boolean;
   canDelete?: boolean;
   deleting?: boolean;
+  shareBusy?: boolean;
   onClick: () => void;
+  onShare: () => void;
   onDelete: () => void;
 }) {
   const { t } = useI18n();
@@ -1146,7 +1220,13 @@ function ClassroomCard({
   }, [coverUrl]);
 
   return (
-    <div className={cn('lc-course-row', canDelete && 'lc-course-row-with-delete')}>
+    <div
+      className={cn(
+        'lc-course-row',
+        canShare && canDelete && 'lc-course-row-with-share-and-delete',
+        !canShare && canDelete && 'lc-course-row-with-delete',
+      )}
+    >
       <button
         type="button"
         onClick={onClick}
@@ -1197,6 +1277,23 @@ function ClassroomCard({
           aria-hidden="true"
         />
       </button>
+      {canShare ? (
+        <button
+          type="button"
+          data-testid="share-course"
+          disabled={deleting || shareBusy}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onShare();
+          }}
+          aria-label={t('home.shareCourseAria', { name: classroom.name })}
+          className="lc-course-row-share inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Share2 className="size-4" />
+          <span className="sr-only">{t('home.shareCourse')}</span>
+        </button>
+      ) : null}
       {canDelete ? (
         <button
           type="button"

@@ -117,9 +117,16 @@ interface SummaryRow extends Record<string, unknown> {
   interactive_mode: boolean | null;
   task_engine_mode: boolean | null;
   cover_asset_id: string | null;
+  outline_data: unknown;
   created_at: number | string;
   updated_at: number | string;
   scene_count: number | string;
+}
+
+function readListGenerationComplete(outline: unknown): boolean | undefined {
+  if (!outline || typeof outline !== 'object' || Array.isArray(outline)) return undefined;
+  const value = (outline as { generationComplete?: unknown }).generationComplete;
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function assertValid(
@@ -482,25 +489,31 @@ export class PgDocumentStore<
               stages.interactive_mode,
               stages.task_engine_mode,
               MAX(NULLIF(stages.data->>'coverAssetId', '')) AS cover_asset_id,
+              outlines.data AS outline_data,
               stages.created_at,
               stages.updated_at,
               COUNT(scenes.id)::text AS scene_count
          FROM document_stages AS stages
          LEFT JOIN document_scenes AS scenes ON scenes.stage_id = stages.id
-        GROUP BY stages.id
+         LEFT JOIN document_outlines AS outlines ON outlines.stage_id = stages.id
+        GROUP BY stages.id, outlines.data
         ORDER BY stages.id ASC`,
     );
-    return result.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      ...(row.description === null ? {} : { description: row.description }),
-      ...(row.interactive_mode === null ? {} : { interactiveMode: row.interactive_mode }),
-      ...(row.task_engine_mode === null ? {} : { taskEngineMode: row.task_engine_mode }),
-      ...(row.cover_asset_id ? { coverAssetId: row.cover_asset_id } : {}),
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at),
-      sceneCount: Number(row.scene_count),
-    }));
+    return result.rows.map((row) => {
+      const generationComplete = readListGenerationComplete(row.outline_data);
+      return {
+        id: row.id,
+        name: row.name,
+        ...(row.description === null ? {} : { description: row.description }),
+        ...(row.interactive_mode === null ? {} : { interactiveMode: row.interactive_mode }),
+        ...(row.task_engine_mode === null ? {} : { taskEngineMode: row.task_engine_mode }),
+        ...(row.cover_asset_id ? { coverAssetId: row.cover_asset_id } : {}),
+        ...(generationComplete === undefined ? {} : { generationComplete }),
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+        sceneCount: Number(row.scene_count),
+      };
+    });
   }
 
   async deleteDocument(stageId: string): Promise<void> {

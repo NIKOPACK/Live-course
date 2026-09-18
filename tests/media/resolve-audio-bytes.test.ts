@@ -51,10 +51,13 @@ describe('allocated audio byte resolution', () => {
     expect(await resolveAudioBlob('ast_missing')).toBeNull();
   });
 
-  it('does not consult the pool for a concrete address', async () => {
-    mocks.audioGet.mockResolvedValue({ id: 'https://cdn/a.mp3', blob: new Blob(['served']) });
+  it('fetches a concrete classroom-media address with credentials', async () => {
+    const fetchMock = vi.fn(async () => new Response(new Blob(['served'])));
+    vi.stubGlobal('fetch', fetchMock);
 
     expect(await (await resolveAudioBlob('https://cdn/a.mp3'))?.text()).toBe('served');
+    expect(fetchMock).toHaveBeenCalledWith('https://cdn/a.mp3', { credentials: 'include' });
     expect(mocks.poolResolve).not.toHaveBeenCalled();
+    expect(mocks.audioGet).not.toHaveBeenCalled();
   });
 });

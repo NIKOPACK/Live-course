@@ -13,6 +13,16 @@ import { withAssetUrl } from './use-asset-url';
  * that were never pool-backed.
  */
 export async function resolveAudioBlob(audioId: string): Promise<Blob | null> {
+  const concrete = audioId.trim();
+  if (isConcreteMediaAddress(concrete)) {
+    try {
+      const response = await fetch(concrete, { credentials: 'include' });
+      if (!response.ok) return null;
+      return await response.blob();
+    } catch {
+      return null;
+    }
+  }
   const pooled = await pooledAudioBlob(audioId);
   if (pooled) return pooled;
   const record = await db.audioFiles.get(audioId);
